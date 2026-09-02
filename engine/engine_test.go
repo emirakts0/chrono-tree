@@ -197,3 +197,24 @@ func TestTriggerQueueConcurrent(t *testing.T) {
 			len(delivered), q.Dropped(), got, total)
 	}
 }
+
+func TestInterner(t *testing.T) {
+	in := NewInterner()
+	if _, ok := in.Get("USDTRY"); ok {
+		t.Fatal("Get on empty interner returned true")
+	}
+	a := in.Intern("USDTRY")
+	b := in.Intern("EURTRY")
+	if a == b {
+		t.Fatal("distinct symbols got same id")
+	}
+	if again := in.Intern("USDTRY"); again != a {
+		t.Fatal("re-intern returned different id")
+	}
+	if got, ok := in.Get("USDTRY"); !ok || got != a {
+		t.Fatal("Get after intern failed")
+	}
+	if in.Name(a) != "USDTRY" || in.Name(b) != "EURTRY" {
+		t.Fatal("Name round trip broken")
+	}
+}
