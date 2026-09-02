@@ -18,7 +18,11 @@
 - Every task: TDD — failing test first, then minimal implementation, then commit. All tests must pass with `-race`.
 - `btype` API assumptions this plan codes against (pinned by the Task 1 conformance test):
   `btype.NewTableOptions(btype.TableOptions[T]{Compare: func(a, b T) int})` builds a table;
-  `Ascend(key)`/`Descend(key)` return `iter.Seq[T]` over items `>= key` / `<= key`;
+  `Ascend(key)`/`Descend(key)` return `iter.Seq[T]` over items `>= key` / `<= key`
+  under the FULL comparator (tie-break included): a pivot equal to an existing
+  item stops Descend AT that item, so a Descend probe must carry an id that
+  sorts after every real id or same-price entries are skipped (pinned by the
+  Task 1 conformance test; GTE scans use `entryKeyMax`);
   `Insert(item)` adds (no-op on exact duplicate), `Delete(item)` removes;
   `Copy()` returns an O(1) COW clone safe to mutate independently; `Release()` frees a retired copy.
   If any signature differs when Task 1 runs, **stop and adapt all later code in this plan to the real API** before continuing (the conformance test exists precisely to catch this early).
@@ -66,6 +70,7 @@ Create `engine/btype_conformance_test.go`:
 package engine
 
 import (
+	"math"
 	"slices"
 	"testing"
 
@@ -116,13 +121,25 @@ func TestBtypeConformance(t *testing.T) {
 		t.Fatalf("Ascend(10) = %v, want [10 10 20 20]", got)
 	}
 
-	// Descend(key): items <= key, descending.
+	// Descend(key): items <= key under the FULL compare (price then id),
+	// descending. A price-only pivot (id 0) stops at the first id at the
+	// boundary price, so same-price items with a larger id are excluded.
 	got = got[:0]
 	for it := range tbl.Descend(confItem{price: 10}) {
 		got = append(got, it.price)
 	}
+	if !slices.Equal(got, []float64{10, 5}) {
+		t.Fatalf("Descend({10,0}) = %v, want [10 5]", got)
+	}
+
+	// A max-id probe includes every item at the boundary price: this is the
+	// pivot form the engine's GTE scan must use.
+	got = got[:0]
+	for it := range tbl.Descend(confItem{price: 10, id: math.MaxUint32}) {
+		got = append(got, it.price)
+	}
 	if !slices.Equal(got, []float64{10, 10, 5}) {
-		t.Fatalf("Descend(10) = %v, want [10 10 5]", got)
+		t.Fatalf("Descend({10,max}) = %v, want [10 10 5]", got)
 	}
 
 	// Delete removes exactly one item (tie-break by id).
@@ -329,8 +346,10 @@ func makeFlags(pt PriceType, dir Direction, autoDeactivate bool) uint8 {
 }
 
 // compareEntry orders entries by (price, id): price-ordered iteration with
-// UUIDs breaking ties. AlertID{} sorts before any real UUID, so probes built
-// by entryKey seek to the price boundary exactly.
+// UUIDs breaking ties. btype pivots are compared with the FULL comparator, so
+// boundary probes must be id-aware: AlertID{} sorts before any real UUID
+// (correct for Ascend); a Descend probe needs an id that sorts after every
+// real UUID or same-price entries are skipped (pinned by Task 1's test).
 func compareEntry(a, b entry) int {
 	if a.price < b.price {
 		return -1
@@ -341,8 +360,20 @@ func compareEntry(a, b entry) int {
 	return bytes.Compare(a.id[:], b.id[:])
 }
 
-// entryKey builds a probe entry for keyed Ascend/Descend seeks.
+// entryKey builds a probe entry for keyed Ascend seeks: id AlertID{} sorts
+// first, so Ascend(entryKey(price)) yields every entry with price >= probe.
 func entryKey(price float64) entry { return entry{price: price} }
+
+// entryKeyMax builds a probe entry for keyed Descend seeks: the all-ones id
+// sorts after every real UUID, so Descend(entryKeyMax(price)) yields every
+// entry with price <= probe (including entries exactly at the boundary price).
+func entryKeyMax(price float64) entry {
+	var maxID AlertID
+	for i := range maxID {
+		maxID[i] = 0xff
+	}
+	return entry{price: price, id: maxID}
+}
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
@@ -2004,8 +2035,10 @@ func (e *Engine) Match(t *Tick) {
 		}
 		price := priceOf(t, pt)
 		// GTE fires when market >= target ⇔ every target <= price:
-		// Descend from the tick price downward — all entries qualify.
-		for en := range snap.trees[treeIndex(pt, DirGTE)].Descend(entryKey(price)) {
+		// Descend from the tick price downward — all entries qualify. The
+		// probe carries the max id so entries exactly at the tick price are
+		// not skipped by the id tie-break.
+		for en := range snap.trees[treeIndex(pt, DirGTE)].Descend(entryKeyMax(price)) {
 			e.fire(sid, &en, price, t.TS)
 		}
 		// LTE fires when market <= target ⇔ every target >= price:
