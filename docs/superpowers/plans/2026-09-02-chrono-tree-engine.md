@@ -240,7 +240,8 @@ func TestCompareEntry(t *testing.T) {
 	if compareEntry(a, a) != 0 {
 		t.Fatal("equality broken")
 	}
-	if bytes.Compare(AlertID{}.[:], AlertID{1}[:]) >= 0 {
+	var zero AlertID
+	if bytes.Compare(zero[:], AlertID{1}[:]) >= 0 {
 		t.Fatal("zero AlertID must sort first (entryKey relies on it)")
 	}
 }
