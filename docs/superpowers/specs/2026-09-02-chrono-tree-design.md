@@ -157,8 +157,9 @@ fire(e, price):
   entry lingering in the tree until the flusher removes it is simply re-skipped.
 - `removeOp` enqueue is best-effort non-blocking; a miss defers removal to the reaper.
   Nothing on the hot path ever blocks.
-- Per-tick cost: one map probe + one atomic load + up to 4 tree scans over qualifying
-  entries only. Target: **0 allocs/op**, low-hundreds-of-ns for sparse hits.
+- Per-tick cost: one map probe + one atomic load + up to 8 tree scans (GTE + LTE per
+  price type present in the tick), each over qualifying entries only. Target:
+  **0 allocs/op**, low-hundreds-of-ns for sparse hits.
 
 ## 8. Lifecycle
 
