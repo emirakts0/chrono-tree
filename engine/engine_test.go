@@ -3,6 +3,7 @@ package engine
 import (
 	"bytes"
 	"testing"
+	"time"
 	"unsafe"
 )
 
@@ -51,5 +52,44 @@ func TestCompareEntry(t *testing.T) {
 	one := AlertID{1}
 	if bytes.Compare(zero[:], one[:]) >= 0 {
 		t.Fatal("zero AlertID must sort first (entryKey relies on it)")
+	}
+}
+
+func TestSlotArena(t *testing.T) {
+	a := newSlotArena(1000)
+	seen := map[uint32]bool{}
+	for i := 0; i < 100; i++ {
+		idx := a.alloc()
+		if seen[idx] {
+			t.Fatalf("idx %d handed out twice", idx)
+		}
+		seen[idx] = true
+		if s := Status(a.get(idx).Load()); s != StatusZero {
+			t.Fatalf("fresh slot status = %v, want StatusZero", s)
+		}
+		a.get(idx).Store(uint32(StatusActive))
+	}
+	// Retire two slots; they must not be reusable until recycle's grace passes.
+	a.retire(7)
+	a.retire(8)
+	for i := 0; i < 10; i++ {
+		if idx := a.alloc(); idx == 7 || idx == 8 {
+			t.Fatal("retired slot reused before recycle")
+		}
+	}
+	// Recycle with a before-time in the future: retired slots return to use.
+	a.recycle(time.Now().Add(time.Hour))
+	reused := 0
+	for i := 0; i < 2; i++ {
+		idx := a.alloc()
+		if idx == 7 || idx == 8 {
+			reused++
+			if s := Status(a.get(idx).Load()); s != StatusZero {
+				t.Fatal("recycled slot not reset to StatusZero")
+			}
+		}
+	}
+	if reused != 2 {
+		t.Fatal("recycle did not return both retired slots")
 	}
 }

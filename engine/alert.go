@@ -2,7 +2,12 @@
 // lock-free snapshot reads, COW batched mutations, CAS-gated exactly-once firing.
 package engine
 
-import "bytes"
+import (
+	"bytes"
+	"sync"
+	"sync/atomic"
+	"time"
+)
 
 // AlertID is a 128-bit UUID (v7 expected: time-ordered). Always stored by value.
 type AlertID [16]byte
@@ -112,4 +117,86 @@ func entryKeyMax(price float64) entry {
 		maxID[i] = 0xff
 	}
 	return entry{price: price, id: maxID}
+}
+
+// slotArena hands out dense uint32 indices into fixed-size chunks of atomic
+// status words. The chunk-pointer slice has fixed length (set at construction
+// from MaxAlerts) so hot-path get() never observes a growing slice header;
+// chunks themselves are allocated lazily under mu. Publication safety: a
+// chunk pointer is stored before any entry referencing the slot is submitted
+// to the mutation queue, and the queue/atomic-pointer chain provides the
+// happens-before edge to readers.
+//
+// Freed slots are retired, not immediately reused: a reader holding an old
+// snapshot may still see the dead entry and touch its slot, so reuse waits
+// for a grace period (2× reaper interval) driven by recycle().
+type slotArena struct {
+	mu      sync.Mutex
+	chunks  []*slotChunk // fixed length, indexed idx>>slotChunkBits
+	free    []uint32
+	retired []retiredSlot
+	next    uint32
+}
+
+type slotChunk = [slotChunkSize]atomic.Uint32 // 256 KiB
+
+type retiredSlot struct {
+	idx uint32
+	at  time.Time
+}
+
+const slotChunkBits = 16
+const slotChunkSize = 1 << slotChunkBits
+
+func newSlotArena(maxAlerts uint64) *slotArena {
+	n := (maxAlerts + slotChunkSize - 1) / slotChunkSize
+	// Margin: slots in flight (allocated, removal queued) can briefly exceed
+	// the live-alert count; one extra chunk absorbs any lag.
+	n++
+	return &slotArena{chunks: make([]*slotChunk, n)}
+}
+
+func (a *slotArena) alloc() uint32 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var idx uint32
+	if n := len(a.free); n > 0 {
+		idx = a.free[n-1]
+		a.free = a.free[:n-1]
+	} else {
+		idx = a.next
+		a.next++
+	}
+	ci := idx >> slotChunkBits
+	if a.chunks[ci] == nil {
+		a.chunks[ci] = new(slotChunk)
+	}
+	a.chunks[ci][idx&(slotChunkSize-1)].Store(uint32(StatusZero))
+	return idx
+}
+
+// get returns the atomic status word for idx. Lock-free; hot-path safe.
+func (a *slotArena) get(idx uint32) *atomic.Uint32 {
+	return &a.chunks[idx>>slotChunkBits][idx&(slotChunkSize-1)]
+}
+
+// retire parks a freed slot until recycle moves it past its grace period.
+func (a *slotArena) retire(idx uint32) {
+	a.mu.Lock()
+	a.retired = append(a.retired, retiredSlot{idx: idx, at: time.Now()})
+	a.mu.Unlock()
+}
+
+// recycle returns retired slots older than before to the free list.
+func (a *slotArena) recycle(before time.Time) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	i := 0
+	for ; i < len(a.retired); i++ {
+		if a.retired[i].at.After(before) {
+			break
+		}
+		a.free = append(a.free, a.retired[i].idx)
+	}
+	a.retired = append(a.retired[:0], a.retired[i:]...)
 }
