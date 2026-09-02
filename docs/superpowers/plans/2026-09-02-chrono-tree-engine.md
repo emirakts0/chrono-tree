@@ -900,7 +900,7 @@ func (in *Interner) Intern(s string) SymbolID {
 	if id, ok := in.ids[s]; ok {
 		return id
 	}
-	id := SymbolID(len(in.names))
+	id = SymbolID(len(in.names))
 	in.ids[s] = id
 	in.names = append(in.names, s)
 	return id
