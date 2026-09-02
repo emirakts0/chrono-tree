@@ -1,2 +1,4 @@
 github.com/tidwall/btype v0.3.0 h1:VU0/oeVecbqY+2OpyzN0wPQU9CBvCnmOv3w5A+pn42A=
 github.com/tidwall/btype v0.3.0/go.mod h1:IRq7GmniRp9OhEKPIalEyUe/3x9oR8AuuKrdv0ANFbc=
+go.uber.org/goleak v1.3.0 h1:2K3zAYmnTNqV73imy9J1T3WC+gmCePx2hEGkimedGto=
+go.uber.org/goleak v1.3.0/go.mod h1:CoHD4mav9JJNrW/WLlf7HGZPjdw8EucARQHekz1X6bE=

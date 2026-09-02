@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 	"unsafe"
+
+	"go.uber.org/goleak"
 )
 
 func TestEntrySize(t *testing.T) {
@@ -249,4 +251,17 @@ func TestSnapshotCopyIsolation(t *testing.T) {
 	}
 	s.release()
 	cp.release()
+}
+
+func TestEngineNewClose(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	e := New(DefaultConfig())
+	if e.Triggers() == nil {
+		t.Fatal("nil trigger queue")
+	}
+	if s := e.Stats(); s.Live != 0 || s.DroppedTriggers != 0 {
+		t.Fatalf("fresh engine stats = %+v, want zeros", s)
+	}
+	e.Close()
+	e.Close() // must be idempotent
 }
