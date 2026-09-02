@@ -164,6 +164,8 @@ func New(cfg Config) *Engine {
 }
 
 // Close stops the flusher and reaper and releases all snapshots. Idempotent.
+// Lifecycle contract: callers must stop submitting before calling Close; a
+// residual race window between a final submit and Close is accepted by design.
 func (e *Engine) Close() {
 	if !e.closed.CompareAndSwap(false, true) {
 		return

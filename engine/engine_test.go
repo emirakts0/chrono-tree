@@ -322,3 +322,41 @@ func TestSyncBarrier(t *testing.T) {
 		t.Fatalf("Len=%d, want 100", got)
 	}
 }
+
+func TestSyncAfterCloseReturns(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	e := New(DefaultConfig())
+	e.Close()
+	done := make(chan struct{})
+	go func() {
+		e.Sync() // must not hang on a closed engine
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Sync hung after Close")
+	}
+}
+
+func TestStateForOverLimitIsStable(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	cfg := DefaultConfig()
+	cfg.MaxSymbols = 2
+	e := New(cfg)
+	defer e.Close()
+	if _, err := e.stateFor("S0"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.stateFor("S0"); err != nil { // fast path, in range
+		t.Fatal(err)
+	}
+	if _, err := e.stateFor("S1"); err != nil { // fills the table
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ { // rejected interning; repeat calls hit the fast path
+		if _, err := e.stateFor("SX"); err != ErrSymbolLimit {
+			t.Fatalf("call %d: err=%v, want ErrSymbolLimit", i, err)
+		}
+	}
+}

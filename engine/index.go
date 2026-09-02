@@ -3,7 +3,10 @@ package engine
 // stateFor interns sym and guarantees an initial published snapshot.
 func (e *Engine) stateFor(sym string) (SymbolID, error) {
 	if sid, ok := e.syms.Get(sym); ok {
-		return sid, nil
+		if uint64(sid) < uint64(len(e.states)) {
+			return sid, nil
+		}
+		return 0, ErrSymbolLimit
 	}
 	sid := e.syms.Intern(sym)
 	if uint64(sid) >= uint64(len(e.states)) {
@@ -19,6 +22,11 @@ func (e *Engine) stateFor(sym string) (SymbolID, error) {
 // submit blocks until m is queued (control plane only; the hot path uses
 // trySubmit). Returns ErrClosed when the engine is shutting down.
 func (e *Engine) submit(m mutation) error {
+	select {
+	case <-e.done:
+		return ErrClosed
+	default:
+	}
 	select {
 	case e.mutQ <- m:
 		return nil
@@ -40,9 +48,12 @@ func (e *Engine) trySubmit(m mutation) bool {
 }
 
 // Sync blocks until every mutation submitted before Sync has been applied.
+// Returns immediately if the engine is closed (barrier cannot complete).
 func (e *Engine) Sync() {
 	done := make(chan struct{})
-	e.submit(mutation{op: mutSync, done: done})
+	if err := e.submit(mutation{op: mutSync, done: done}); err != nil {
+		return
+	}
 	<-done
 }
 
