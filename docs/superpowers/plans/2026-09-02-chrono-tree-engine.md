@@ -1403,9 +1403,15 @@ Create `engine/index.go`:
 package engine
 
 // stateFor interns sym and guarantees an initial published snapshot.
+// The fast path re-checks the bound: a symbol previously interned-then-
+// rejected (past MaxSymbols) stays in the interner forever, and returning
+// its out-of-range sid would panic e.states[sid] in applyBatch.
 func (e *Engine) stateFor(sym string) (SymbolID, error) {
 	if sid, ok := e.syms.Get(sym); ok {
-		return sid, nil
+		if uint64(sid) < uint64(len(e.states)) {
+			return sid, nil
+		}
+		return 0, ErrSymbolLimit
 	}
 	sid := e.syms.Intern(sym)
 	if uint64(sid) >= uint64(len(e.states)) {
@@ -1419,8 +1425,15 @@ func (e *Engine) stateFor(sym string) (SymbolID, error) {
 }
 
 // submit blocks until m is queued (control plane only; the hot path uses
-// trySubmit). Returns ErrClosed when the engine is shutting down.
+// trySubmit). The pre-check prefers the done signal so a racing submit is
+// less likely to land in mutQ after the flusher's final drain; callers must
+// still stop submitting before Close (residual window accepted by design).
 func (e *Engine) submit(m mutation) error {
+	select {
+	case <-e.done:
+		return ErrClosed
+	default:
+	}
 	select {
 	case e.mutQ <- m:
 		return nil
@@ -1442,9 +1455,12 @@ func (e *Engine) trySubmit(m mutation) bool {
 }
 
 // Sync blocks until every mutation submitted before Sync has been applied.
+// Returns immediately if the engine is closed (the barrier cannot complete).
 func (e *Engine) Sync() {
 	done := make(chan struct{})
-	e.submit(mutation{op: mutSync, done: done})
+	if err := e.submit(mutation{op: mutSync, done: done}); err != nil {
+		return
+	}
 	<-done
 }
 
