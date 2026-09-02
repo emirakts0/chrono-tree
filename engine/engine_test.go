@@ -218,3 +218,35 @@ func TestInterner(t *testing.T) {
 		t.Fatal("Name round trip broken")
 	}
 }
+
+func TestTreeIndexDistinct(t *testing.T) {
+	seen := map[int]bool{}
+	for pt := PriceType(0); pt < priceTypeCount; pt++ {
+		for _, dir := range []Direction{DirGTE, DirLTE} {
+			i := treeIndex(pt, dir)
+			if i < 0 || i >= 8 {
+				t.Fatalf("treeIndex(%d,%d)=%d out of range", pt, dir, i)
+			}
+			if seen[i] {
+				t.Fatalf("treeIndex(%d,%d)=%d collides", pt, dir, i)
+			}
+			seen[i] = true
+		}
+	}
+	if len(seen) != 8 {
+		t.Fatalf("expected 8 distinct trees, got %d", len(seen))
+	}
+}
+
+func TestSnapshotCopyIsolation(t *testing.T) {
+	s := newSnapshot()
+	ti := treeIndex(PriceBid, DirGTE)
+	s.trees[ti].Insert(entry{price: 42.5, id: AlertID{1}, idx: 1, flags: makeFlags(PriceBid, DirGTE, true)})
+	cp := s.copy()
+	cp.trees[ti].Insert(entry{price: 10, id: AlertID{2}, idx: 2, flags: makeFlags(PriceBid, DirGTE, true)})
+	if s.trees[ti].Len() != 1 || cp.trees[ti].Len() != 2 {
+		t.Fatalf("COW isolation broken: orig=%d copy=%d, want 1 and 2", s.trees[ti].Len(), cp.trees[ti].Len())
+	}
+	s.release()
+	cp.release()
+}
