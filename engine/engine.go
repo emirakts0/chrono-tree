@@ -158,8 +158,8 @@ func New(cfg Config) *Engine {
 		meta:     make(map[AlertID]*AlertMeta),
 		done:     make(chan struct{}),
 	}
-	// Flusher (Task 8) and reaper (Task 11) goroutines are started here as
-	// their tasks land; Close waits on both WaitGroups.
+	e.flushWG.Add(1)
+	go e.runFlusher()
 	return e
 }
 

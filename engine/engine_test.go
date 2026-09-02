@@ -265,3 +265,60 @@ func TestEngineNewClose(t *testing.T) {
 	e.Close()
 	e.Close() // must be idempotent
 }
+
+func TestFlusherAppliesMutations(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	e := New(DefaultConfig())
+	defer e.Close()
+	sid, err := e.stateFor("USDTRY")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.states[sid].snap.Load() == nil {
+		t.Fatal("stateFor did not publish an initial snapshot")
+	}
+	ent := entry{price: 42.5, id: AlertID{1}, idx: e.slots.alloc(),
+		validFrom: 1, flags: makeFlags(PriceBid, DirGTE, true)}
+	e.slots.get(ent.idx).Store(uint32(StatusActive))
+
+	e.submit(mutation{op: mutInsert, sid: sid, e: ent})
+	e.Sync()
+	ti := treeIndex(PriceBid, DirGTE)
+	if got := e.states[sid].snap.Load().trees[ti].Len(); got != 1 {
+		t.Fatalf("after insert Len=%d, want 1", got)
+	}
+
+	e.submit(mutation{op: mutRemove, sid: sid, e: ent})
+	e.Sync()
+	if got := e.states[sid].snap.Load().trees[ti].Len(); got != 0 {
+		t.Fatalf("after remove Len=%d, want 0", got)
+	}
+	// mutRemove cleanup: refs/meta deleted, live decremented, slot retired.
+	if _, ok := e.refs[ent.id]; ok {
+		t.Fatal("refs entry survived removal")
+	}
+}
+
+func TestSyncBarrier(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	e := New(DefaultConfig())
+	defer e.Close()
+	sid, _ := e.stateFor("EURTRY")
+	for i := 0; i < 100; i++ {
+		idx := e.slots.alloc()
+		e.slots.get(idx).Store(uint32(StatusActive))
+		e.mu.Lock()
+		e.refs[AlertID{byte(i + 1)}] = &alertRef{sid: sid, e: entry{
+			price: float64(i), id: AlertID{byte(i + 1)}, idx: idx,
+			flags: makeFlags(PriceLast, DirLTE, false)}}
+		e.live++
+		e.mu.Unlock()
+		e.submit(mutation{op: mutInsert, sid: sid,
+			e: entry{price: float64(i), id: AlertID{byte(i + 1)}, idx: idx,
+				validFrom: 1, flags: makeFlags(PriceLast, DirLTE, false)}})
+	}
+	e.Sync()
+	if got := e.states[sid].snap.Load().trees[treeIndex(PriceLast, DirLTE)].Len(); got != 100 {
+		t.Fatalf("Len=%d, want 100", got)
+	}
+}
