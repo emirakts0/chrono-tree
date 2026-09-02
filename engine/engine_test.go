@@ -2,6 +2,9 @@ package engine
 
 import (
 	"bytes"
+	"runtime"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 	"unsafe"
@@ -91,5 +94,106 @@ func TestSlotArena(t *testing.T) {
 	}
 	if reused != 2 {
 		t.Fatal("recycle did not return both retired slots")
+	}
+}
+
+func TestTriggerQueueFIFO(t *testing.T) {
+	q := NewTriggerQueue(4)
+	for i := 0; i < 4; i++ {
+		if !q.TryPush(Trigger{Price: float64(i)}) {
+			t.Fatalf("push %d rejected on non-full queue", i)
+		}
+	}
+	if q.TryPush(Trigger{}) {
+		t.Fatal("push accepted on full queue")
+	}
+	if q.Dropped() != 1 {
+		t.Fatalf("Dropped = %d, want 1", q.Dropped())
+	}
+	var got []float64
+	for {
+		tr, ok := q.Pop()
+		if !ok {
+			break
+		}
+		got = append(got, tr.Price)
+	}
+	if !slices.Equal(got, []float64{0, 1, 2, 3}) {
+		t.Fatalf("FIFO broken: %v", got)
+	}
+	// Queue is empty again; slot reused after full cycle.
+	if !q.TryPush(Trigger{Price: 9}) {
+		t.Fatal("push rejected after drain")
+	}
+	tr, ok := q.Pop()
+	if !ok || tr.Price != 9 {
+		t.Fatal("reuse after drain broken")
+	}
+}
+
+func TestTriggerQueuePopBatch(t *testing.T) {
+	q := NewTriggerQueue(8)
+	for i := 0; i < 5; i++ {
+		q.TryPush(Trigger{Price: float64(i)})
+	}
+	dst := make([]Trigger, 3)
+	if n := q.PopBatch(dst); n != 3 {
+		t.Fatalf("PopBatch = %d, want 3", n)
+	}
+	if n := q.PopBatch(dst); n != 2 {
+		t.Fatalf("PopBatch = %d, want 2", n)
+	}
+	if n := q.PopBatch(dst); n != 0 {
+		t.Fatalf("PopBatch = %d, want 0", n)
+	}
+}
+
+func TestTriggerQueueConcurrent(t *testing.T) {
+	q := NewTriggerQueue(1024)
+	const producers, each = 8, 10_000
+	var wg sync.WaitGroup
+	producersDone := make(chan struct{})
+	for p := 0; p < producers; p++ {
+		wg.Add(1)
+		go func(p int) {
+			defer wg.Done()
+			for i := 0; i < each; i++ {
+				// Unique value per push: duplicate delivery is detectable.
+				q.TryPush(Trigger{Price: float64(p*each + i)})
+			}
+		}(p)
+	}
+	delivered := make(map[float64]bool)
+	consumerDone := make(chan struct{})
+	go func() {
+		defer close(consumerDone)
+		for {
+			tr, ok := q.Pop()
+			if ok {
+				if delivered[tr.Price] {
+					t.Errorf("trigger %v delivered twice", tr.Price)
+					return
+				}
+				delivered[tr.Price] = true
+				continue
+			}
+			select {
+			case <-producersDone: // drained after all producers finished
+				return
+			default:
+				runtime.Gosched()
+			}
+		}
+	}()
+	wg.Wait()
+	close(producersDone)
+	<-consumerDone
+	// Drop+count contract: every push was either delivered exactly once or
+	// counted in Dropped. With the consumer draining until empty after the
+	// producers finish, every successful TryPush is eventually popped.
+	total := producers * each
+	if got := len(delivered) + int(q.Dropped()); got != total {
+		t.Fatalf("delivered %d + dropped %d = %d, want %d",
+			len(delivered), q.Dropped(), got, total)
 	}
 }
