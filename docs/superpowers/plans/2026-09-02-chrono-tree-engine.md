@@ -632,26 +632,49 @@ func TestTriggerQueueConcurrent(t *testing.T) {
 	q := NewTriggerQueue(1024)
 	const producers, each = 8, 10_000
 	var wg sync.WaitGroup
+	producersDone := make(chan struct{})
 	for p := 0; p < producers; p++ {
 		wg.Add(1)
-		go func() {
+		go func(p int) {
 			defer wg.Done()
 			for i := 0; i < each; i++ {
-				q.TryPush(Trigger{Price: 1})
+				// Unique value per push: duplicate delivery is detectable.
+				q.TryPush(Trigger{Price: float64(p*each + i)})
 			}
-		}()
+		}(p)
 	}
-	wg.Wait()
-	total, _ := 0, false
-	for {
-		_, ok := q.Pop()
-		if !ok {
-			break
+	delivered := make(map[float64]bool)
+	consumerDone := make(chan struct{})
+	go func() {
+		defer close(consumerDone)
+		for {
+			tr, ok := q.Pop()
+			if ok {
+				if delivered[tr.Price] {
+					t.Errorf("trigger %v delivered twice", tr.Price)
+					return
+				}
+				delivered[tr.Price] = true
+				continue
+			}
+			select {
+			case <-producersDone: // drained after all producers finished
+				return
+			default:
+				runtime.Gosched()
+			}
 		}
-		total++
-	}
-	if total != producers*each {
-		t.Fatalf("delivered %d of %d", total, producers*each)
+	}()
+	wg.Wait()
+	close(producersDone)
+	<-consumerDone
+	// Drop+count contract: every push was either delivered exactly once or
+	// counted in Dropped. With the consumer draining until empty after the
+	// producers finish, every successful TryPush is eventually popped.
+	total := producers * each
+	if got := len(delivered) + int(q.Dropped()); got != total {
+		t.Fatalf("delivered %d + dropped %d = %d, want %d",
+			len(delivered), q.Dropped(), got, total)
 	}
 }
 ```
