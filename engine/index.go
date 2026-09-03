@@ -190,6 +190,13 @@ func (e *Engine) Upsert(a AlertSpec) error {
 
 	idx := e.slots.alloc()
 	e.slots.setStatus(idx, StatusActive)
+	// Capture the handout generation now, before the refs are published and
+	// before any blocking submit below: a full mutQ can stall the submits for
+	// longer than the recycle grace, and once refs are visible another
+	// goroutine can cancel this alert — retire, recycle, reuse — so a gen
+	// read at expEntry-construction time could be the NEW occupant's.
+	// Nothing can retire an unpublished idx, so this point is airtight.
+	gen := e.slots.gen(idx)
 	ent := entry{
 		price:     a.TargetPrice,
 		id:        a.ID,
@@ -217,8 +224,7 @@ func (e *Engine) Upsert(a AlertSpec) error {
 		return err
 	}
 	if a.Expires != 0 {
-		return e.submitExpiry(expEntry{expires: a.Expires, sid: sid, e: ent,
-			gen: e.slots.gen(idx)})
+		return e.submitExpiry(expEntry{expires: a.Expires, sid: sid, e: ent, gen: gen})
 	}
 	return nil
 }
@@ -242,11 +248,17 @@ func (e *Engine) removeIfLive(id AlertID, want Status) (mutation, error) {
 	if !ok {
 		return mutation{}, ErrNotFound
 	}
-	if !e.slots.casAny(ref.e.idx, want, StatusActive, StatusPaused) {
+	for {
+		if e.slots.casAny(ref.e.idx, want, StatusActive, StatusPaused) {
+			return mutation{op: mutRemove, sid: ref.sid, e: ref.e}, nil
+		}
+		// Lost the race (e.g. a concurrent pause/resume): retry while the
+		// alert is still live; anything else is terminal.
 		// TRIGGERED (removal already queued), CANCELLED, EXPIRED
-		return mutation{}, ErrInvalidTransition
+		if s := e.slots.status(ref.e.idx); s != StatusActive && s != StatusPaused {
+			return mutation{}, ErrInvalidTransition
+		}
 	}
-	return mutation{op: mutRemove, sid: ref.sid, e: ref.e}, nil
 }
 
 // Cancel permanently retires an alert.

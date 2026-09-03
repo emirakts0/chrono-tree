@@ -259,6 +259,10 @@ func (a *slotArena) casGen(idx uint32, gen uint32, from, to Status) bool {
 
 // casGenAny attempts the generation-checked transition to from each of
 // froms once.
+//
+// Accepted ABA window: the 24-bit generation wraps after 16,777,216 handouts
+// of a single slot; a stale expiry entry whose expires horizon spans that
+// many reuses of its slot could match once — bounded, non-cascading, accepted.
 func (a *slotArena) casGenAny(idx uint32, gen uint32, to Status, froms ...Status) bool {
 	for _, from := range froms {
 		if a.casGen(idx, gen, from, to) {
