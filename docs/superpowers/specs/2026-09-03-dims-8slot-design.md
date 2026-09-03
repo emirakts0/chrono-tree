@@ -40,16 +40,26 @@ type entry struct {          // 64 bytes, pointer-free — one cache line
 ```
 
 - No `width` field in the entry: width is engine-wide, and trailing slots are
-  always sentinel everywhere, so a full 8-slot compare is always correct and
-  branch-free regardless of configured width.
+  always sentinel everywhere. The comparator is **width-specialized per
+  engine**: tables are built with a comparator closure over the engine's
+  width, so the dim-prefix loop runs only over configured slots — a width-0
+  engine compares `(price, id)` exactly like the pre-dims engine. (The
+  original design compared all 8 slots unconditionally; measurement showed
+  the fixed loop taxes every seek comparison even at width 0 and missed the
+  Sparse1M gate by ~40%, so the closure replaced it.)
 - `TestEntrySize` updates 48 → 64.
 - GC pressure is unchanged: zero new pointers, same object count. The entry
   remains a flat value inside B-tree nodes.
 
 ## 4. Comparator
 
-`compareEntry` becomes lexicographic over `(dims[0..7], price, id)`. The dim
-prefix is a flat loop over 8 uint16s, then the existing price/id logic.
+`compareEntry` is lexicographic over `(dims[0..width), price, id)`, built per
+engine via a comparator closure that captures the width at table
+construction. btype's keyed `Ascend`/`Descend` are seek-and-walk iterators
+with no key bound; because dim combinations now share one tree, each Match
+loop carries a dim-block stop guard (`en.dims != dims` → break, skipped
+entirely at width 0) — entries arrive in `(dims, price, id)` order, so once
+dims differ every remaining entry belongs to another combination.
 
 Boundary probes gain the dim prefix:
 
