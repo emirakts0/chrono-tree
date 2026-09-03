@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"runtime"
 	"sync/atomic"
 
 	"github.com/tidwall/btype"
@@ -63,6 +64,20 @@ func (s *snapshot) pin() bool {
 }
 
 func (s *snapshot) unpin() { s.readers.Add(-1) }
+
+// shutdownRelease is Close's synchronous variant of retireRelease: mark the
+// snapshot retired (late pins back off and reload), then wait for every
+// in-flight reader to unpin before releasing the trees. This enforces the
+// no-release-under-a-scan invariant at shutdown instead of trusting the
+// lifecycle contract: Close cannot free trees a Match scan is still walking.
+// Readers only ever decrement, so the spin always terminates.
+func (s *snapshot) shutdownRelease() {
+	s.retired.Store(true)
+	for s.readers.Load() != 0 {
+		runtime.Gosched()
+	}
+	s.release()
+}
 
 // retireRelease marks the snapshot retired (late pins back off and reload
 // the newer snapshot) and releases its trees once no reader remains.

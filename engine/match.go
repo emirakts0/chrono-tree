@@ -32,11 +32,20 @@ func priceOf(t *Tick, pt PriceType) float64 {
 // Lock-free and allocation-free; it never blocks and never mutates shared
 // trees — firing is CAS-gated per alert, tree removal is deferred.
 func (e *Engine) Match(t *Tick) {
+	if e.closed.Load() {
+		return // engine shut down; trees may be released
+	}
 	if t.Present == 0 {
 		return
 	}
 	sid, ok := e.syms.Get(t.Symbol)
 	if !ok {
+		return
+	}
+	// A symbol interned past MaxSymbols stays in the interner after stateFor
+	// rejected it (sid >= len(states), no snapshot ever published); indexing
+	// states with it would panic. Same guard stateFor has.
+	if uint64(sid) >= uint64(len(e.states)) {
 		return
 	}
 	st := &e.states[sid]
@@ -84,17 +93,22 @@ func (e *Engine) fire(sid SymbolID, en *entry, price float64, ts int64) {
 		return
 	}
 	s := e.slots.get(en.idx)
+	var gen uint32
 	for {
 		cur := s.Load()
 		if slotStatus(cur) != StatusActive {
 			return // paused, or already fired/retired by another path
 		}
-		// CAS on the full word preserves the generation bits; a stale entry
-		// from an older generation can never win this CAS.
+		// CAS on the full word preserves the generation and retired bits; a
+		// stale entry from an older generation can never win this CAS.
 		if s.CompareAndSwap(cur, cur&^0xff|uint32(StatusTriggered)) {
+			// Per the grace argument (see slotArena): at CAS-win time the
+			// word's generation IS this entry's handout gen — a tree entry
+			// this stale cannot meet a recycled slot.
+			gen = cur >> slotGenShift
 			break
 		}
 	}
 	e.triggers.TryPush(Trigger{ID: en.id, Price: price, TS: ts})
-	e.trySubmit(mutation{op: mutRemove, sid: sid, e: *en})
+	e.trySubmit(mutation{op: mutRemove, sid: sid, e: *en, gen: gen})
 }

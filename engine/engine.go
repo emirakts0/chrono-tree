@@ -2,6 +2,7 @@ package engine
 
 import (
 	"errors"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -27,7 +28,14 @@ type Config struct {
 	FlushBatch         int           // max ops applied per flush cycle
 	RingSize           int           // trigger ring capacity (rounded to pow2)
 	ReaperInterval     time.Duration // expiry sweep + slot recycle period
+	IntegrityEvery     int           // integrity sweep cadence, in reaper ticks (<=0 → default)
 }
+
+// defaultIntegrityEvery is the integrity sweep cadence in reaper ticks. The
+// sweep re-submits removals for TRIGGERED entries whose original enqueue was
+// lost (fire's trySubmit is best-effort), so a leaked entry is cleaned within
+// IntegrityEvery × ReaperInterval + flush lag.
+const defaultIntegrityEvery = 30
 
 func DefaultConfig() Config {
 	return Config{
@@ -37,6 +45,7 @@ func DefaultConfig() Config {
 		FlushBatch:         256,
 		RingSize:           1 << 16,
 		ReaperInterval:     time.Second,
+		IntegrityEvery:     defaultIntegrityEvery,
 	}
 }
 
@@ -104,6 +113,7 @@ type mutation struct {
 	op   mutOp
 	sid  SymbolID
 	e    entry
+	gen  uint32        // op == mutRemove: handout generation of e.idx, gates retireGen
 	done chan struct{} // op == mutSync: closed once applied
 }
 
@@ -120,12 +130,21 @@ const (
 // grace, so sweep must reject entries whose slot has since been recycled and
 // reused (its generation moved) — a fresh word alone can't tell stale from
 // current, the generation captured here can.
+//
+// EVERY alert is registered, never-expiring ones with the expiryNever
+// sentinel: the table doubles as the integrity sweep's registry of live
+// alerts (see reaper.integrity).
 type expEntry struct {
 	expires int64
 	sid     SymbolID
 	e       entry
 	gen     uint32
 }
+
+// expiryNever is the never-due deadline sentinel for alerts without Expires:
+// the expiry sweep skips it (expires > now for any real now); only the
+// integrity sweep ever acts on sentinel entries.
+const expiryNever = math.MaxInt64
 
 // Engine is the alert evaluation engine. Zero network, zero I/O.
 type Engine struct {
@@ -152,6 +171,9 @@ type Engine struct {
 }
 
 func New(cfg Config) *Engine {
+	if cfg.IntegrityEvery <= 0 {
+		cfg.IntegrityEvery = defaultIntegrityEvery
+	}
 	e := &Engine{
 		cfg:      cfg,
 		syms:     NewInterner(),
@@ -172,6 +194,10 @@ func New(cfg Config) *Engine {
 }
 
 // Close stops the flusher and reaper and releases all snapshots. Idempotent.
+// It waits for in-flight Match scans to finish before freeing any tree:
+// each snapshot (current and parked) is shut down via a synchronous
+// mark-retired + spin-until-readers-drain, so a concurrent Match either
+// completes on a valid snapshot or observes closed/nil and returns.
 // Lifecycle contract: callers must stop submitting before calling Close; a
 // residual race window between a final submit and Close is accepted by design.
 func (e *Engine) Close() {
@@ -183,14 +209,14 @@ func (e *Engine) Close() {
 	e.reapWG.Wait()
 	for i := range e.states {
 		if s := e.states[i].snap.Load(); s != nil {
-			s.release()
+			s.shutdownRelease()
 			e.states[i].snap.Store(nil)
 		}
 	}
-	// Readers have stopped per the lifecycle contract; parked snapshots
-	// can be reclaimed too.
+	// Parked snapshots need the same reader drain: their trees must not be
+	// freed under a scan that pinned them before retirement either.
 	for _, s := range e.parked {
-		s.release()
+		s.shutdownRelease()
 	}
 	e.parked = nil
 }

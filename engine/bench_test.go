@@ -53,10 +53,10 @@ func BenchmarkMatchDenseSkip(b *testing.B) {
 	defer e.Close()
 	const perTree = 10_000
 	for i := 0; i < perTree; i++ {
-		e.Upsert(AlertSpec{ID: mkID(uint32(i*2)), Symbol: "SYM0500",
+		e.Upsert(AlertSpec{ID: mkID(uint32(i * 2)), Symbol: "SYM0500",
 			PriceType: PriceType(i % 4), Direction: DirGTE,
 			TargetPrice: 100 + float64(i)*0.01, ValidFrom: 1, AutoDeactivate: true})
-		e.Upsert(AlertSpec{ID: mkID(uint32(i*2+1)), Symbol: "SYM0500",
+		e.Upsert(AlertSpec{ID: mkID(uint32(i*2 + 1)), Symbol: "SYM0500",
 			PriceType: PriceType(i % 4), Direction: DirLTE,
 			TargetPrice: 900 - float64(i)*0.01, ValidFrom: 1, AutoDeactivate: true})
 	}

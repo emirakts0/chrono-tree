@@ -283,6 +283,7 @@ func TestFlusherAppliesMutations(t *testing.T) {
 	ent := entry{price: 42.5, id: AlertID{1}, idx: e.slots.alloc(),
 		validFrom: 1, flags: makeFlags(PriceBid, DirGTE, true)}
 	e.slots.setStatus(ent.idx, StatusActive)
+	entGen := e.slots.gen(ent.idx)
 
 	e.submit(mutation{op: mutInsert, sid: sid, e: ent})
 	e.Sync()
@@ -291,7 +292,7 @@ func TestFlusherAppliesMutations(t *testing.T) {
 		t.Fatalf("after insert Len=%d, want 1", got)
 	}
 
-	e.submit(mutation{op: mutRemove, sid: sid, e: ent})
+	e.submit(mutation{op: mutRemove, sid: sid, e: ent, gen: entGen})
 	e.Sync()
 	if got := e.states[sid].snap.Load().trees[ti].Len(); got != 0 {
 		t.Fatalf("after remove Len=%d, want 0", got)
@@ -663,5 +664,198 @@ func TestStaleExpiryDoesNotKillReusedSlot(t *testing.T) {
 	}
 	if !fired {
 		t.Fatal("B failed to fire after A's stale expiry entry was swept")
+	}
+}
+
+// TestDuplicateRemovalDoesNotAliasSlots pins the double-retire bug: two
+// mutRemoves landing for one entry used to park the slot twice, so alloc
+// handed the SAME index to two future alerts. retireGen's retired-bit dedupe
+// must make the second landing a no-op. The direct part mirrors the
+// reviewer's repro against the internal API.
+func TestDuplicateRemovalDoesNotAliasSlots(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	e := New(DefaultConfig())
+	defer e.Close()
+	sid, err := e.stateFor("USDTRY")
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx := e.slots.alloc()
+	e.slots.setStatus(idx, StatusActive)
+	gen := e.slots.gen(idx)
+	ent := entry{price: 42.5, id: AlertID{1}, idx: idx, validFrom: 1,
+		flags: makeFlags(PriceBid, DirGTE, true)}
+	e.submit(mutation{op: mutInsert, sid: sid, e: ent})
+	e.Sync()
+	// Two direct mutRemove submissions for the same entry (gen-identical):
+	// a replacement racing a fire's removal.
+	e.submit(mutation{op: mutRemove, sid: sid, e: ent, gen: gen})
+	e.submit(mutation{op: mutRemove, sid: sid, e: ent, gen: gen})
+	e.Sync()
+	e.slots.recycle(time.Now().Add(time.Hour))
+	hits := 0
+	var prev uint32
+	for i := 0; i < 2; i++ {
+		a := e.slots.alloc()
+		if i > 0 && a == prev {
+			t.Fatalf("alloc handed the same index %d twice", a)
+		}
+		if a == idx {
+			hits++
+		}
+		prev = a
+	}
+	if hits > 1 {
+		t.Fatalf("retired index %d returned to the free list %d times, want at most 1", idx, hits)
+	}
+
+	// End-to-end: fire an alert, then Upsert-replace the same ID while the
+	// slot is TRIGGERED. The replace must NOT queue a second removal for a
+	// slot whose removal fire already owns.
+	e2 := New(DefaultConfig())
+	defer e2.Close()
+	if err := e2.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, 42.5)); err != nil {
+		t.Fatal(err)
+	}
+	e2.Sync()
+	e2.mu.Lock()
+	oldIdx := e2.refs[AlertID{1}].e.idx
+	e2.mu.Unlock()
+	e2.Match(&Tick{Symbol: "USDTRY", Bid: 43, Present: TickAllPresent(), TS: 100})
+	if got := drainTriggers(e2); len(got) != 1 || got[0].ID != (AlertID{1}) {
+		t.Fatalf("triggers=%+v, want one fire of alert 1", got)
+	}
+	// Replace while TRIGGERED (fire's removal queued, not yet landed).
+	if err := e2.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, 99)); err != nil {
+		t.Fatal(err)
+	}
+	e2.Sync()
+	if s := e2.Stats(); s.Live != 1 {
+		t.Fatalf("after replace Live=%d, want 1", s.Live)
+	}
+	sid2, _ := e2.syms.Get("USDTRY")
+	if n := e2.states[sid2].snap.Load().trees[treeIndex(PriceBid, DirGTE)].Len(); n != 1 {
+		t.Fatalf("entries=%d, want exactly the replacement", n)
+	}
+	// oldIdx must have been retired at most once; allocs stay distinct.
+	// The reviewer looped up to 300 attempts; with the fix it passes first.
+	e2.slots.recycle(time.Now().Add(time.Hour))
+	a1 := e2.slots.alloc()
+	a2 := e2.slots.alloc()
+	if a1 == a2 {
+		t.Fatalf("alloc handed the same index %d twice after replace", a1)
+	}
+	if a1 != oldIdx && a2 != oldIdx {
+		// Fine: free-list ordering is an implementation detail; what matters
+		// is that oldIdx appears at most once among fresh handouts.
+	}
+	seen := 0
+	for _, a := range []uint32{a1, a2} {
+		if a == oldIdx {
+			seen++
+		}
+	}
+	if seen > 1 {
+		t.Fatalf("old index %d handed out %d times, want at most 1", oldIdx, seen)
+	}
+}
+
+// TestMatchOverLimitSymbolNoPanic pins the Match bounds bug: a symbol
+// interned past MaxSymbols is rejected by stateFor but stays in the
+// interner, so its sid indexes past states and Match used to panic.
+func TestMatchOverLimitSymbolNoPanic(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	cfg := DefaultConfig()
+	cfg.MaxSymbols = 2
+	e := New(cfg)
+	defer e.Close()
+	if _, err := e.stateFor("A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.stateFor("B"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.stateFor("CX"); err != ErrSymbolLimit {
+		t.Fatalf("err=%v, want ErrSymbolLimit", err)
+	}
+	// "CX" is interned with sid == len(states) forever: ticks for it must be
+	// silent no-ops, not panics.
+	for i := 0; i < 3; i++ {
+		e.Match(&Tick{Symbol: "CX", Bid: 1, Ask: 1, Mid: 1, Last: 1,
+			Present: TickAllPresent(), TS: 100})
+	}
+	if got := drainTriggers(e); len(got) != 0 {
+		t.Fatalf("triggers=%v, want none", got)
+	}
+}
+
+// TestIntegritySweepCleansLeakedTriggered pins the lost-enqueue leak: a
+// TRIGGERED entry whose removal never reached the mutation queue used to
+// stay indexed forever. The integrity sweep must re-submit it.
+func TestIntegritySweepCleansLeakedTriggered(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	cfg := DefaultConfig()
+	cfg.ReaperInterval = 5 * time.Millisecond
+	cfg.IntegrityEvery = 2 // integrity every 10ms
+	e := New(cfg)
+	defer e.Close()
+	if err := e.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, 42.5)); err != nil {
+		t.Fatal(err) // Expires 0 → sentinel registration
+	}
+	e.Sync()
+	// Simulate a lost enqueue: transition Active→Triggered directly,
+	// bypassing fire's trySubmit entirely.
+	e.mu.Lock()
+	ref := e.refs[AlertID{1}]
+	e.mu.Unlock()
+	s := e.slots.get(ref.e.idx)
+	w := s.Load()
+	if !s.CompareAndSwap(w, w&^0xff|uint32(StatusTriggered)) {
+		t.Fatal("setup CAS failed")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for e.Stats().Live != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("leaked TRIGGERED entry never cleaned by the integrity sweep")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	e.Sync()
+	sid, _ := e.syms.Get("USDTRY")
+	if n := e.states[sid].snap.Load().trees[treeIndex(PriceBid, DirGTE)].Len(); n != 0 {
+		t.Fatalf("tree not empty after integrity sweep: %d entries", n)
+	}
+}
+
+// TestCloseWaitsForReaders pins the Close enforcement: trees must not be
+// released while a reader still holds a pin, and Close must complete once
+// the reader drains.
+func TestCloseWaitsForReaders(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	e := New(DefaultConfig())
+	sid, err := e.stateFor("USDTRY")
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap := e.states[sid].snap.Load()
+	if !snap.pin() {
+		t.Fatal("pin failed on a live snapshot")
+	}
+	closed := make(chan struct{})
+	go func() {
+		e.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+		snap.unpin()
+		t.Fatal("Close returned while a reader held the snapshot")
+	case <-time.After(50 * time.Millisecond):
+	}
+	snap.unpin()
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not complete after readers drained")
 	}
 }

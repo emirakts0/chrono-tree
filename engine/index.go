@@ -123,10 +123,11 @@ func (e *Engine) applyBatch(batch []mutation) {
 			p.next.trees[treeIndex(m.e.priceType(), m.e.direction())].Insert(m.e)
 		case mutRemove:
 			p.next.trees[treeIndex(m.e.priceType(), m.e.direction())].Delete(m.e)
-			// Slot bookkeeping: retire the slot, and clean refs/meta/live only
+			// Slot bookkeeping: retire the slot (gen-gated, so a duplicate
+			// removal parks it at most once), and clean refs/meta/live only
 			// if the live ref still matches this exact entry (a same-ID upsert
 			// may have already replaced it).
-			e.slots.retire(m.e.idx)
+			e.slots.retireGen(m.e.idx, m.gen)
 			e.mu.Lock()
 			if r, ok := e.refs[m.e.id]; ok && r.e.idx == m.e.idx {
 				delete(e.refs, m.e.id)
@@ -176,9 +177,28 @@ func (e *Engine) Upsert(a AlertSpec) error {
 	hasReplace := false
 	e.mu.Lock()
 	if ref, ok := e.refs[a.ID]; ok {
-		e.slots.casAny(ref.e.idx, StatusCancelled, StatusActive, StatusPaused)
-		replace = mutation{op: mutRemove, sid: ref.sid, e: ref.e}
-		hasReplace = true
+		// Gated replace: queue the old entry's removal ONLY if we win the CAS
+		// to CANCELLED. If the slot is already terminal (TRIGGERED/CANCELLED/
+		// EXPIRED), fire/Cancel/the reaper already owns a removal for it —
+		// queueing a second one would retire the slot twice and hand the SAME
+		// index to two future alerts. The existing owner's removal plus the
+		// ref-idx guard in applyBatch still clean the tree entry and the
+		// refs/meta/live bookkeeping below exactly once.
+		s := e.slots.get(ref.e.idx)
+		for {
+			w := s.Load()
+			if st := slotStatus(w); st != StatusActive && st != StatusPaused {
+				break // terminal: another path owns the removal
+			}
+			if s.CompareAndSwap(w, w&^0xff|uint32(StatusCancelled)) {
+				// The generation at CAS-win time is the old entry's handout
+				// gen: while its ref exists the slot has not been recycled.
+				replace = mutation{op: mutRemove, sid: ref.sid, e: ref.e, gen: w >> slotGenShift}
+				hasReplace = true
+				break
+			}
+			// Lost a concurrent transition (pause/resume); re-read and retry.
+		}
 		delete(e.refs, a.ID)
 		delete(e.meta, a.ID)
 		e.live--
@@ -223,10 +243,14 @@ func (e *Engine) Upsert(a AlertSpec) error {
 	if err := e.submit(mutation{op: mutInsert, sid: sid, e: ent}); err != nil {
 		return err
 	}
-	if a.Expires != 0 {
-		return e.submitExpiry(expEntry{expires: a.Expires, sid: sid, e: ent, gen: gen})
+	// Every alert is registered with the reaper: never-expiring ones carry
+	// the expiryNever sentinel so the integrity sweep can find them (the
+	// expiry sweep itself never acts on sentinel entries).
+	exp := a.Expires
+	if exp == 0 {
+		exp = expiryNever
 	}
-	return nil
+	return e.submitExpiry(expEntry{expires: exp, sid: sid, e: ent, gen: gen})
 }
 
 // submitExpiry registers an alert with the reaper's expiry table.
@@ -248,16 +272,20 @@ func (e *Engine) removeIfLive(id AlertID, want Status) (mutation, error) {
 	if !ok {
 		return mutation{}, ErrNotFound
 	}
+	s := e.slots.get(ref.e.idx)
 	for {
-		if e.slots.casAny(ref.e.idx, want, StatusActive, StatusPaused) {
-			return mutation{op: mutRemove, sid: ref.sid, e: ref.e}, nil
-		}
-		// Lost the race (e.g. a concurrent pause/resume): retry while the
-		// alert is still live; anything else is terminal.
-		// TRIGGERED (removal already queued), CANCELLED, EXPIRED
-		if s := e.slots.status(ref.e.idx); s != StatusActive && s != StatusPaused {
+		w := s.Load()
+		if st := slotStatus(w); st != StatusActive && st != StatusPaused {
+			// TRIGGERED (removal already queued), CANCELLED, EXPIRED
 			return mutation{}, ErrInvalidTransition
 		}
+		if s.CompareAndSwap(w, w&^0xff|uint32(want)) {
+			// Generation at CAS-win time is the entry's handout gen: the
+			// slot cannot be recycled while its ref is still live.
+			return mutation{op: mutRemove, sid: ref.sid, e: ref.e, gen: w >> slotGenShift}, nil
+		}
+		// Lost the race (e.g. a concurrent pause/resume): retry while the
+		// alert is still live.
 	}
 }
 
