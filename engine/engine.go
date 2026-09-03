@@ -133,6 +133,7 @@ type Engine struct {
 	expQ     chan expEntry
 	triggers *TriggerQueue
 	expiry   btype.Table[expEntry] // owned by the reaper only
+	parked   []*snapshot           // flusher-owned: retired snapshots pinned by readers, released once drained
 
 	mu   sync.Mutex // guards refs, meta, live
 	refs map[AlertID]*alertRef
@@ -179,6 +180,12 @@ func (e *Engine) Close() {
 			e.states[i].snap.Store(nil)
 		}
 	}
+	// Readers have stopped per the lifecycle contract; parked snapshots
+	// can be reclaimed too.
+	for _, s := range e.parked {
+		s.release()
+	}
+	e.parked = nil
 }
 
 // Triggers exposes the trigger ring for downstream consumption.

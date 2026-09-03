@@ -138,8 +138,21 @@ func (e *Engine) applyBatch(batch []mutation) {
 	}
 	for _, p := range bySym {
 		p.st.snap.Store(p.next)
-		p.old.release()
+		if !p.old.retireRelease() {
+			e.parked = append(e.parked, p.old)
+		}
 	}
+	// Sweep parked snapshots whose readers have drained. In-place filter:
+	// the write index never passes the read index.
+	alive := e.parked[:0]
+	for _, s := range e.parked {
+		if s.readers.Load() != 0 {
+			alive = append(alive, s)
+		} else {
+			s.release()
+		}
+	}
+	e.parked = alive
 	for _, d := range syncs {
 		close(d)
 	}
