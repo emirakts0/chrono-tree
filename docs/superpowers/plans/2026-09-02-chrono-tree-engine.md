@@ -1646,10 +1646,10 @@ func TestUpsertValidation(t *testing.T) {
 	e := New(DefaultConfig())
 	defer e.Close()
 	cases := []AlertSpec{
-		{Symbol: "X", PriceType: PriceBid, Direction: DirGTE},            // zero ID
-		{ID: AlertID{1}, PriceType: PriceBid, Direction: DirGTE},         // empty symbol
-		{ID: AlertID{1}, Symbol: "X", Direction: DirGTE},                 // bad price type
-		{ID: AlertID{1}, Symbol: "X", PriceType: PriceBid},               // bad direction
+		{Symbol: "X", PriceType: PriceBid, Direction: DirGTE},                       // zero ID
+		{ID: AlertID{1}, PriceType: PriceBid, Direction: DirGTE},                    // empty symbol
+		{ID: AlertID{1}, Symbol: "X", PriceType: priceTypeCount, Direction: DirGTE}, // bad price type
+		{ID: AlertID{1}, Symbol: "X", PriceType: PriceBid, Direction: 99},           // bad direction
 		{ID: AlertID{1}, Symbol: "X", PriceType: PriceBid, Direction: DirGTE,
 			ValidFrom: 100, Expires: 50}, // expires before valid
 	}
@@ -1663,7 +1663,9 @@ func TestUpsertValidation(t *testing.T) {
 func TestUpsertLimits(t *testing.T) {
 	defer goleak.VerifyNone(t)
 	cfg := DefaultConfig()
-	cfg.MaxAlerts = 2
+	// MaxAlerts covers the alert-limit probe plus the five live alerts needed
+	// for the symbol-limit section (USDTRY + S0..S2).
+	cfg.MaxAlerts = 5
 	cfg.MaxSymbols = 4
 	e := New(cfg)
 	defer e.Close()
@@ -1672,15 +1674,16 @@ func TestUpsertLimits(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := e.Upsert(testSpec(3, "USDTRY", PriceBid, DirGTE, 42.5)); err != ErrAlertLimit {
-		t.Fatalf("err=%v, want ErrAlertLimit", err)
-	}
 	// MaxSymbols=4 with USDTRY already interned: S0..S2 fill the remaining
 	// slots; S3 must be rejected.
 	for i := byte(0); i < 3; i++ {
 		if err := e.Upsert(testSpec(10+i, fmt.Sprintf("S%d", i), PriceBid, DirGTE, 1)); err != nil {
 			t.Fatalf("symbol %d: err=%v, want nil", i, err)
 		}
+	}
+	// live == MaxAlerts now: a fresh insert must be rejected.
+	if err := e.Upsert(testSpec(3, "USDTRY", PriceBid, DirGTE, 42.5)); err != ErrAlertLimit {
+		t.Fatalf("err=%v, want ErrAlertLimit", err)
 	}
 	if err := e.Upsert(testSpec(20, "S3", PriceBid, DirGTE, 1)); err != ErrSymbolLimit {
 		t.Fatalf("err=%v, want ErrSymbolLimit", err)
