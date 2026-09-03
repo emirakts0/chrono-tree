@@ -97,12 +97,23 @@ Each `symbolState` holds **8** `btype.Table[entry]` — one per
 `trees[priceType<<1|dir]`. Every entry reached by a scan is a candidate by
 construction: symbol, price type, and direction never need per-entry checks.
 
-Scan shapes (targeted order, no scanning of non-matching records):
+Scan shapes (targeted order — a scan seeks to the tick price and only ever
+visits qualifying entries; non-matching records are never touched):
 
-- **GTE** fires when `market ≥ target` → all targets `≤ market` → `Descend(market)`
-  walks downward from the tick price, terminating at the first target below it.
-- **LTE** fires when `market ≤ target` → all targets `≥ market` → `Ascend(market)`
-  walks upward from the tick price, terminating at the first target above it.
+- **GTE** fires when `market ≥ target` → all targets `≤ market` → `Descend` seeks
+  to the tick price (max-id probe) and walks downward — every entry visited
+  qualifies.
+- **LTE** fires when `market ≤ target` → all targets `≥ market` → `Ascend` seeks
+  to the tick price and walks upward — every entry visited qualifies.
+
+Note on per-tick cost: because firing uses deferred removal (readers never
+mutate shared trees), already-triggered entries remain visible until the
+flusher removes them, so per-tick cost is **O(qualifying entries)** — the
+seek lands at the boundary instantly (sub-µs for a sparse book: ~540 ns
+measured at 1M alerts), while a dense gap-crossing tick pays ~9 ns per
+already-fired entry it walks past (~185 µs for a 20k-entry book).
+Capacity planning for Phase B should use the qualifying-entries number,
+not the sparse headline.
 
 Rationale for 8 trees vs fewer: a single tree keyed `(price, id)` cannot distinguish
 directions, and per-entry direction filtering would reintroduce scans of non-matching
