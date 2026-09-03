@@ -198,10 +198,15 @@ metric). Consumers drain via `Pop` or batched `PopBatch`. No per-trigger gorouti
 ## 10. Memory & GC Budget (10M alerts)
 
 Hot entries 48B + b-tree node overhead (~1.5×) + slots 4B + cold metadata ~120B
-⇒ roughly **2.5–3 GB**. Pointer density is minimal (cold map + tree internals only),
-so GC scan cost stays near-linear in cold objects; the hot arena is effectively
-invisible to GC. Shadow-node allocations from COW are amortized away by the light
-write load.
+⇒ roughly **2.5–3 GB**, plus the reaper's expiry registry (landed with the
+integrity-sweep backstop): one `expEntry` per live alert, ~72B + tree overhead
+⇒ **~1 GB more at 10M alerts**, for a total budget of **~3.5–4 GB**. Pointer
+density is minimal (cold map + tree internals only), so GC scan cost stays
+near-linear in cold objects; the hot arena is effectively invisible to GC.
+Shadow-node allocations from COW are amortized away by the light write load.
+Phase B sizing should use the 3.5–4 GB figure; if it's too rich, the registry
+can be limited to expiring alerts plus a periodic full-tree integrity walk
+(traded away during implementation — revisit if needed).
 
 ## 11. Service Layer (gRPC)
 
