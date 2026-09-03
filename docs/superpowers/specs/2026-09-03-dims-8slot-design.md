@@ -88,9 +88,12 @@ type Tick struct {
 }
 ```
 
-- `Upsert` validates: slots `< width` must be real values, slots `>= width`
-  must be sentinel; violation returns new sentinel error `ErrDims`. No
-  partial specification — fan-out is the caller's job.
+- `Upsert` validates that every slot `< width` carries a real value; a
+  sentinel inside width returns new sentinel error `ErrDims`. No partial
+  specification — fan-out is the caller's job.
+- Slots `>= width` are **normalized** to the sentinel by the engine (both
+  `Upsert` and `Match`), not validated — a zero-value `Dims` array must work
+  at any width, or every existing zero-value `AlertSpec`/`Tick` would break.
 - `Match` cannot return errors; a malformed tick dim array (sentinel inside
   width) is dropped like `Present == 0` — a silent no-op. The `Dims(...)`
   helper makes the correct form the easy form:
@@ -139,8 +142,9 @@ Existing suite passes unchanged at width 0 (except `TestEntrySize` → 64).
    width (0–3) and values; the naive check is element-wise dim equality plus
    existing price/direction logic. Main correctness net for the comparator
    rewrite.
-3. `TestDimsValidation` — `Upsert` rejects sentinel-inside-width and
-   real-past-width (`ErrDims`); `New` panics on >8 dims.
+3. `TestDimsValidation` — `Upsert` rejects sentinel-inside-width (`ErrDims`)
+   and normalizes trailing slots (zero-value compatible); `New` panics on >8
+   dims.
 4. `TestDimsHelper` — `Dims(...)` pads with sentinel.
 5. Zero-alloc assertions (`AllocsPerRun == 0`) run with width > 0 ticks.
 6. Race tests run with a dims-bearing config variant.
