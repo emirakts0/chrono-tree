@@ -120,7 +120,12 @@ func Format(v int64, decimals uint8) string {
 		panic("price: decimals must be 0..18")
 	}
 	neg := v < 0
-	u := uint64(v) // two's-complement magnitude; correct for MinInt64 too
+	// uint64(v) wraps negatives; negating in uint64 space yields the true
+	// magnitude (and 2^63 for MinInt64).
+	u := uint64(v)
+	if neg {
+		u = -u
+	}
 	scale := uint64(pow10[decimals])
 	whole, frac := u/scale, u%scale
 	b := make([]byte, 0, 24)
