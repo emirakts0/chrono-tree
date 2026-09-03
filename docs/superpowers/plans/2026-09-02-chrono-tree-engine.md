@@ -2554,6 +2554,16 @@ git add engine/oracle_test.go
 git commit -m "test(engine): brute-force oracle and concurrency stress"
 ```
 
+**AMENDMENT (landed during Task 12 execution):** two defects in this task's verbatim
+test code were fixed on landing (engine source untouched): (1) the oracle's seed-1
+stream emits `expires == validFrom` for one alert, which `validate()` correctly
+rejects — expiry is now sanitized before Upsert with the RNG stream unchanged and
+the sanitized spec recorded; (2) the stress test's "no alert fires twice" invariant
+contradicted its own mutators (Upsert-replace on fired IDs legitimately re-arms a
+fresh alert with a fresh Active slot, per spec §7/§8 ONCE-per-activation semantics)
+— the landed invariant is `fires(ID) <= arms(ID)`, which still catches any genuine
+exactly-once violation.
+
 ---
 
 ### Task 13: Benchmarks
