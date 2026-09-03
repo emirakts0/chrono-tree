@@ -6,7 +6,15 @@ import (
 	"github.com/tidwall/btype"
 )
 
-// compareExp orders the reaper's expiry table by (expires, idx).
+// compareExp orders the reaper's expiry table by (expires, idx, gen). The
+// gen tie-break makes keys unique per handout: a recycled slot's NEW
+// registration must not collide with its previous occupant's stale entry
+// (integrity cleanup lags the recycle grace by the cadence), and btype
+// Insert is a no-op on equal keys — a collision would silently drop the new
+// registration, losing the integrity backstop and, when the expires values
+// also match, letting the alert fire past expiry (sweep deletes the stale
+// entry, the gen-checked CAS fails on the mismatch, nothing re-registers).
+// Expiry-ordered iteration is unaffected, and Delete becomes exact.
 func compareExp(a, b expEntry) int {
 	if a.expires < b.expires {
 		return -1
@@ -18,6 +26,12 @@ func compareExp(a, b expEntry) int {
 	case a.e.idx < b.e.idx:
 		return -1
 	case a.e.idx > b.e.idx:
+		return 1
+	}
+	switch {
+	case a.gen < b.gen:
+		return -1
+	case a.gen > b.gen:
 		return 1
 	}
 	return 0

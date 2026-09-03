@@ -859,3 +859,64 @@ func TestCloseWaitsForReaders(t *testing.T) {
 		t.Fatal("Close did not complete after readers drained")
 	}
 }
+
+// TestExpiryRegistrySlotReuse pins the comparator-collision hole: the expiry
+// registry keyed by (expires, idx) alone made a recycled slot's new
+// registration equal to its previous occupant's stale entry, and btype
+// Insert is a no-op on equal keys — the new registration was silently
+// dropped. The gen tie-break must keep both entries distinct.
+func TestExpiryRegistrySlotReuse(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	cfg := DefaultConfig()
+	// Slow reaper: recycle grace 400ms, integrity cadence 30 ticks = 6s, so
+	// the stale registration deterministically outlives this test and the
+	// collision window is wide open when B registers.
+	cfg.ReaperInterval = 200 * time.Millisecond
+	e := New(cfg)
+	// A: never-expiring; gets slot X plus a sentinel registration.
+	if err := e.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, 42.5)); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+	e.mu.Lock()
+	aIdx := e.refs[AlertID{1}].e.idx
+	e.mu.Unlock()
+	if err := e.Cancel(AlertID{1}); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+	// Wait past the recycle grace so slot X returns to the free list.
+	time.Sleep(600 * time.Millisecond)
+	// B: never-expiring; must recycle slot X and register with a NEW gen.
+	if err := e.Upsert(testSpec(2, "USDTRY", PriceBid, DirGTE, 43)); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+	e.mu.Lock()
+	bIdx := e.refs[AlertID{2}].e.idx
+	e.mu.Unlock()
+	if bIdx != aIdx {
+		t.Fatalf("setup failed: B got slot %d, wanted recycled %d", bIdx, aIdx)
+	}
+	// Let the reaper drain B's registration, then stop it: after Close the
+	// expiry table is quiescent and safe to inspect from the test.
+	time.Sleep(250 * time.Millisecond)
+	e.Close()
+	bGen := e.slots.gen(bIdx)
+	found := 0
+	for x := range e.expiry.All() {
+		if x.e.id != (AlertID{2}) {
+			continue
+		}
+		if x.expires != expiryNever {
+			t.Fatalf("B registration expires=%d, want the never-due sentinel", x.expires)
+		}
+		if x.gen != bGen {
+			t.Fatalf("stale registration for B: gen %d, want the new occupant's %d", x.gen, bGen)
+		}
+		found++
+	}
+	if found != 1 {
+		t.Fatalf("registry holds %d registrations for B, want exactly 1 (collision dropped it)", found)
+	}
+}

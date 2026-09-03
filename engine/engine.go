@@ -197,7 +197,10 @@ func New(cfg Config) *Engine {
 // It waits for in-flight Match scans to finish before freeing any tree:
 // each snapshot (current and parked) is shut down via a synchronous
 // mark-retired + spin-until-readers-drain, so a concurrent Match either
-// completes on a valid snapshot or observes closed/nil and returns.
+// completes on a valid snapshot or observes closed/nil and returns. That
+// wait spins until the longest in-flight scan drains, so Close can block
+// for as long as a reader holds a pin — never call it from a
+// latency-sensitive path.
 // Lifecycle contract: callers must stop submitting before calling Close; a
 // residual race window between a final submit and Close is accepted by design.
 func (e *Engine) Close() {

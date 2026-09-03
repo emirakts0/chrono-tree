@@ -196,6 +196,12 @@ func (a *slotArena) alloc() uint32 {
 		a.chunks[ci] = new(slotChunk)
 	}
 	s := &a.chunks[ci][idx&(slotChunkSize-1)]
+	// The non-CAS Load/Store below is safe: alloc runs under a.mu, and a
+	// free-listed slot always carries the retired bit — production retire
+	// paths all go through retireGen (bare retire is test-only) — while a
+	// never-touched slot is invisible to everyone until this Store publishes
+	// it, and references to a freed slot die within flush lag, well inside
+	// the recycle grace, so no transition CAS can be in flight on it.
 	w := s.Load() // 0 for a never-touched slot: generation 0
 	// Fresh word: next generation, retired bit clear, status zero.
 	s.Store(((w>>slotGenShift)+1)<<slotGenShift | uint32(StatusZero))
