@@ -2661,6 +2661,17 @@ git commit -m "bench(engine): sparse/dense Match benchmarks, 1M default + gated 
 
 ---
 
+**AMENDMENT (landed during Task 10 execution):** btype's `Release()` clears Table
+headers in place, so the Task 6/8 store-then-release pattern raced with in-flight
+snapshot readers. The landed engine amends the snapshot lifecycle: `snapshot` carries
+seq-cst `readers`/`retired` words; `Match` pins before scanning (retry on retired);
+the flusher parks retired snapshots and releases them in a later `applyBatch` sweep
+once `readers == 0` (Close drains the parked list). The hot path remains lock-free
+and alloc-free (~3 extra atomic ops per Match). Also: `fire`'s price parameter is
+`float64` (the plan's `int64` sketch did not compile), and `TestMatchSkips`'s final
+assertion was corrected (alert 4 legitimately fires on the closing BID tick; the
+test now asserts alerts 1–3 stay silent).
+
 ## Self-Review (conducted after writing; fixes applied inline)
 
 **Spec coverage** (spec section → tasks):
