@@ -2,6 +2,7 @@ package engine
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"sync"
 	"sync/atomic"
@@ -18,6 +19,7 @@ var (
 	ErrInvalidTransition = errors.New("chrono-tree: invalid status transition")
 	ErrSymbolLimit       = errors.New("chrono-tree: symbol limit exceeded")
 	ErrAlertLimit        = errors.New("chrono-tree: max alerts exceeded")
+	ErrDims              = errors.New("chrono-tree: sentinel dim value inside configured width")
 )
 
 // Config bounds all preallocated structures. See DefaultConfig.
@@ -29,6 +31,7 @@ type Config struct {
 	RingSize           int           // trigger ring capacity (rounded to pow2)
 	ReaperInterval     time.Duration // expiry sweep + slot recycle period
 	IntegrityEvery     int           // integrity sweep cadence, in reaper ticks (<=0 → default)
+	Dims               []string      // positional dimension names; slot i = Dims[i]; max 8. Width is len(Dims).
 }
 
 // defaultIntegrityEvery is the integrity sweep cadence in reaper ticks. The
@@ -59,7 +62,8 @@ type AlertSpec struct {
 	ValidFrom      int64 // unix nanos
 	Expires        int64 // unix nanos; 0 = never
 	AutoDeactivate bool
-	Meta           AlertMeta // cold data, stored verbatim
+	Dims           [dimMax]uint16 // width real values; trailing slots normalized by the engine
+	Meta           AlertMeta      // cold data, stored verbatim
 }
 
 func (a *AlertSpec) validate() error {
@@ -148,10 +152,11 @@ const expiryNever = math.MaxInt64
 
 // Engine is the alert evaluation engine. Zero network, zero I/O.
 type Engine struct {
-	cfg    Config
-	syms   *Interner
-	states []symbolState // fixed len MaxSymbols, indexed by SymbolID
-	slots  *slotArena
+	cfg      Config
+	dimWidth uint8 // len(cfg.Dims); fixed for the engine's lifetime
+	syms     *Interner
+	states   []symbolState // fixed len MaxSymbols, indexed by SymbolID
+	slots    *slotArena
 
 	mutQ     chan mutation
 	expQ     chan expEntry
@@ -174,8 +179,17 @@ func New(cfg Config) *Engine {
 	if cfg.IntegrityEvery <= 0 {
 		cfg.IntegrityEvery = defaultIntegrityEvery
 	}
+	if len(cfg.Dims) > dimMax {
+		panic(fmt.Sprintf("chrono-tree: at most %d dims, got %d", dimMax, len(cfg.Dims)))
+	}
+	for _, n := range cfg.Dims {
+		if n == "" {
+			panic("chrono-tree: dim names must be non-empty")
+		}
+	}
 	e := &Engine{
 		cfg:      cfg,
+		dimWidth: uint8(len(cfg.Dims)),
 		syms:     NewInterner(),
 		states:   make([]symbolState, cfg.MaxSymbols),
 		slots:    newSlotArena(cfg.MaxAlerts),

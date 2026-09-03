@@ -15,8 +15,8 @@ import (
 
 func TestEntrySize(t *testing.T) {
 	// Field order is chosen for minimal padding; hot arena must stay dense.
-	if got := unsafe.Sizeof(entry{}); got != 48 {
-		t.Fatalf("sizeof(entry) = %d, want 48 (check field order/padding)", got)
+	if got := unsafe.Sizeof(entry{}); got != 64 {
+		t.Fatalf("sizeof(entry) = %d, want 64 (check field order/padding)", got)
 	}
 }
 

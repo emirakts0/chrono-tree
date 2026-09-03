@@ -9,7 +9,8 @@ type Tick struct {
 	Mid     Price
 	Last    Price
 	Present uint8
-	TS      int64 // unix nanos
+	TS      int64          // unix nanos
+	Dims    [dimMax]uint16 // width real values; trailing slots normalized by Match
 }
 
 // TickAllPresent returns a Present mask covering all four price types.

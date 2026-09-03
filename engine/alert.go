@@ -51,13 +51,16 @@ const (
 )
 
 // entry is the hot-path alert record, stored by value inside btype.Table.
-// Field order minimizes padding: 48 bytes on 64-bit (guarded by TestEntrySize).
+// Field order keeps the record at exactly one cache line: 64 bytes on 64-bit
+// (guarded by TestEntrySize). dims is sentinel-padded past the engine width,
+// so comparator and probes never branch on width.
 type entry struct {
-	price     Price   // target price in base units, primary sort key
-	id        AlertID // tie-breaker so equal prices coexist
-	validFrom int64   // unix nanos
-	expires   int64   // unix nanos; 0 = never
-	idx       uint32  // index into Engine slot arena
+	price     Price          // target price in base units, secondary sort key
+	id        AlertID        // tie-breaker so equal (dims, price) coexist
+	dims      [dimMax]uint16 // leading sort keys, caller-owned values
+	validFrom int64          // unix nanos
+	expires   int64          // unix nanos; 0 = never
+	idx       uint32         // index into Engine slot arena
 	flags     uint8
 }
 

@@ -210,6 +210,10 @@ func (e *Engine) Upsert(a AlertSpec) error {
 
 	idx := e.slots.alloc()
 	e.slots.setStatus(idx, StatusActive)
+	dims, ok := normalizeDims(a.Dims, e.dimWidth)
+	if !ok {
+		return ErrDims
+	}
 	// Capture the handout generation now, before the refs are published and
 	// before any blocking submit below: a full mutQ can stall the submits for
 	// longer than the recycle grace, and once refs are visible another
@@ -220,6 +224,7 @@ func (e *Engine) Upsert(a AlertSpec) error {
 	ent := entry{
 		price:     a.TargetPrice,
 		id:        a.ID,
+		dims:      dims,
 		validFrom: a.ValidFrom,
 		expires:   a.Expires,
 		idx:       idx,
