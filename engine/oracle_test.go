@@ -220,3 +220,213 @@ func TestStressRace(t *testing.T) {
 		}
 	}
 }
+
+// TestOracleDims extends the brute-force oracle with width-3 dims: the
+// engine's trigger set must equal a naive scan that additionally requires
+// element-wise dim equality between alert and tick. This is the main
+// correctness net for the comparator rewrite.
+func TestOracleDims(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	rng := rand.New(rand.NewSource(11))
+	cfg := DefaultConfig()
+	cfg.Dims = []string{"segment", "tier", "region"}
+	e := New(cfg)
+	defer e.Close()
+
+	const nAlerts, nTicks = 500, 300
+	const base = int64(1 << 40)
+	const step = int64(1e9)
+	randDims := func() [dimMax]uint16 {
+		return Dims(uint16(rng.Intn(3)), uint16(rng.Intn(3)), uint16(rng.Intn(3)))
+	}
+
+	type rec struct {
+		spec AlertSpec
+	}
+	var recs []rec
+	for i := 0; i < nAlerts; i++ {
+		validFrom := base - int64(rng.Intn(2))*step
+		var expires int64
+		if rng.Intn(4) == 0 {
+			expires = base + int64(rng.Intn(nTicks/10))*step
+		}
+		s := AlertSpec{
+			ID:             mkID(uint32(i + 1)),
+			Symbol:         fmt.Sprintf("S%d", rng.Intn(20)),
+			PriceType:      PriceType(rng.Intn(int(priceTypeCount))),
+			Direction:      Direction(rng.Intn(2)),
+			TargetPrice:    Price(rng.Intn(1600)),
+			ValidFrom:      validFrom,
+			Expires:        expires,
+			AutoDeactivate: true,
+			Dims:           randDims(),
+		}
+		if s.Expires != 0 && s.Expires <= s.ValidFrom {
+			s.Expires = s.ValidFrom + step
+		}
+		if err := e.Upsert(s); err != nil {
+			t.Fatalf("upsert %d: %v", i, err)
+		}
+		recs = append(recs, rec{spec: s})
+	}
+	e.Sync()
+
+	ticks := make([]Tick, nTicks)
+	for k := range ticks {
+		ticks[k] = Tick{
+			Symbol:  fmt.Sprintf("S%d", rng.Intn(20)),
+			Bid:     Price(rng.Intn(1600)),
+			Ask:     Price(rng.Intn(1600)),
+			Mid:     Price(rng.Intn(1600)),
+			Last:    Price(rng.Intn(1600)),
+			Present: TickAllPresent(),
+			TS:      base + int64(k)*step,
+			Dims:    randDims(),
+		}
+	}
+
+	expected := map[AlertID]Price{}
+	for _, r := range recs {
+		for _, tk := range ticks {
+			if tk.Symbol != r.spec.Symbol || tk.Dims != r.spec.Dims {
+				continue
+			}
+			price := priceOf(&tk, r.spec.PriceType)
+			if tk.TS < r.spec.ValidFrom {
+				continue
+			}
+			if r.spec.Expires != 0 && tk.TS >= r.spec.Expires {
+				continue
+			}
+			hit := (r.spec.Direction == DirGTE && price >= r.spec.TargetPrice) ||
+				(r.spec.Direction == DirLTE && price <= r.spec.TargetPrice)
+			if hit {
+				expected[r.spec.ID] = price
+				break // ONCE semantics
+			}
+		}
+	}
+
+	for k := range ticks {
+		e.Match(&ticks[k])
+	}
+	got := map[AlertID]Price{}
+	for _, tr := range drainTriggers(e) {
+		if _, dup := got[tr.ID]; dup {
+			t.Fatalf("alert %v fired twice", tr.ID)
+		}
+		got[tr.ID] = tr.Price
+	}
+
+	if len(got) != len(expected) {
+		t.Fatalf("fired %d alerts, expected %d", len(got), len(expected))
+	}
+	for id, price := range expected {
+		if gp, ok := got[id]; !ok || gp != price {
+			t.Fatalf("alert %v: fired at %v (ok=%v), expected %v", id, gp, ok, price)
+		}
+	}
+}
+
+// TestStressRaceDims is TestStressRace with width-2 dims on alerts and ticks.
+func TestStressRaceDims(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	cfg := DefaultConfig()
+	cfg.Dims = []string{"segment", "tier"}
+	e := New(cfg)
+	defer e.Close()
+	const nAlerts = 2000
+
+	// arms counts activations per ID: the initial Upsert plus every mutator
+	// Upsert that replaced it. fires(ID) > arms(ID) is a genuine double fire.
+	var armsMu sync.Mutex
+	arms := make(map[AlertID]int, nAlerts)
+	for i := 0; i < nAlerts; i++ {
+		id := mkID(uint32(i + 1))
+		if err := e.Upsert(AlertSpec{
+			ID: id, Symbol: "HOT", PriceType: PriceType(i % 4),
+			Direction: Direction(i % 2), TargetPrice: Price(100 + i%400),
+			ValidFrom: 1, AutoDeactivate: true,
+			Dims: Dims(uint16(i%3), uint16(i%5)),
+		}); err != nil {
+			t.Fatalf("upsert %d: %v", i, err)
+		}
+		arms[id] = 1
+	}
+	e.Sync()
+
+	const producers, mutators = 4, 2
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	for p := 0; p < producers; p++ {
+		wg.Add(1)
+		go func(p int) {
+			defer wg.Done()
+			rng := rand.New(rand.NewSource(int64(p)))
+			price := Price(300)
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				price += Price(rng.Intn(21) - 10)
+				if price < 1 {
+					price = 1
+				}
+				e.Match(&Tick{Symbol: "HOT", Bid: price, Ask: price, Mid: price,
+					Last: price, Present: TickAllPresent(), TS: time.Now().UnixNano(),
+					Dims: Dims(uint16(rng.Intn(3)), uint16(rng.Intn(5)))})
+			}
+		}(p)
+	}
+	for m := 0; m < mutators; m++ {
+		wg.Add(1)
+		go func(m int) {
+			defer wg.Done()
+			rng := rand.New(rand.NewSource(1000 + int64(m)))
+			for i := 0; i < 2000; i++ {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				id := mkID(uint32(rng.Intn(nAlerts) + 1))
+				switch rng.Intn(3) {
+				case 0:
+					err := e.Upsert(AlertSpec{ID: id, Symbol: "HOT",
+						PriceType: PriceBid, Direction: DirGTE,
+						TargetPrice: Price(100 + rng.Intn(400)),
+						ValidFrom:   1, AutoDeactivate: true,
+						Dims: Dims(uint16(rng.Intn(3)), uint16(rng.Intn(5)))})
+					if err == nil {
+						armsMu.Lock()
+						arms[id]++
+						armsMu.Unlock()
+					}
+				case 1:
+					e.SetStatus(id, Status(rng.Intn(3)+1)) // may fail; ignore
+				case 2:
+					e.Cancel(id) // may fail; ignore
+				}
+			}
+		}(m)
+	}
+	time.Sleep(300 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+	e.Sync()
+
+	fired := map[AlertID]int{}
+	for _, tr := range drainTriggers(e) {
+		fired[tr.ID]++
+	}
+	// Exactly-once per activation: an alert may fire once per Upsert that
+	// activated it (replace re-arms), never more. IDs never re-upserted by a
+	// mutator must fire at most once.
+	for id, n := range fired {
+		if n > arms[id] {
+			t.Fatalf("alert %v fired %d times but was activated only %d times", id, n, arms[id])
+		}
+	}
+}
