@@ -15,8 +15,8 @@ func TestParseExact(t *testing.T) {
 	}{
 		// Exactness matrix pinned by spec §4.
 		{"0.1", 8, 10000000, nil},
-		{"0.100000000", 8, 10000000, nil},       // zeros beyond scale are exact
-		{"0.000000005", 8, 0, ErrPrecisionLoss}, // never silently rounded
+		{"0.100000000", 8, 10000000, nil},          // zeros beyond scale are exact
+		{"0.000000005", 8, 0, ErrPrecisionLoss},    // never silently rounded
 		{"9223372036854775808", 0, 0, ErrOverflow}, // MaxInt64+1
 		{"-0", 8, 0, nil},
 		{"", 8, 0, ErrSyntax},
