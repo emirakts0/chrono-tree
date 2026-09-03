@@ -455,6 +455,102 @@ func TestUpsertLimits(t *testing.T) {
 	}
 }
 
+func drainTriggers(e *Engine) []Trigger {
+	var out []Trigger
+	dst := make([]Trigger, 64)
+	for {
+		n := e.Triggers().PopBatch(dst)
+		if n == 0 {
+			return out
+		}
+		out = append(out, dst[:n]...)
+	}
+}
+
+func TestMatchGTEFiresOnce(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	e := New(DefaultConfig())
+	defer e.Close()
+	e.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, 42.5))
+	e.Sync()
+	tick := Tick{Symbol: "USDTRY", Bid: 43, Present: TickAllPresent(), TS: 100}
+	e.Match(&tick)
+	e.Match(&tick) // duplicate delivery of the same tick must not re-fire
+	got := drainTriggers(e)
+	if len(got) != 1 || got[0].ID != (AlertID{1}) || got[0].Price != 43 {
+		t.Fatalf("triggers=%+v, want one fire of alert 1 at 43", got)
+	}
+	e.Sync()
+	sid, _ := e.syms.Get("USDTRY")
+	if n := e.states[sid].snap.Load().trees[treeIndex(PriceBid, DirGTE)].Len(); n != 0 {
+		t.Fatalf("fired alert still indexed: %d entries", n)
+	}
+}
+
+func TestMatchLTEAndBoundary(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	e := New(DefaultConfig())
+	defer e.Close()
+	// LTE at exactly the market price must fire (<=).
+	e.Upsert(testSpec(2, "USDTRY", PriceAsk, DirLTE, 50))
+	e.Sync()
+	e.Match(&Tick{Symbol: "USDTRY", Ask: 50, Present: TickAllPresent(), TS: 100})
+	got := drainTriggers(e)
+	if len(got) != 1 || got[0].ID != (AlertID{2}) {
+		t.Fatalf("triggers=%+v, want one fire of alert 2", got)
+	}
+}
+
+func TestMatchSkips(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	e := New(DefaultConfig())
+	defer e.Close()
+	// Paused.
+	e.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, 42.5))
+	e.SetStatus(AlertID{1}, StatusPaused)
+	// Not yet valid.
+	e.Upsert(AlertSpec{ID: AlertID{2}, Symbol: "USDTRY", PriceType: PriceBid,
+		Direction: DirGTE, TargetPrice: 42.5, ValidFrom: 200, AutoDeactivate: true})
+	// Expired (lazy inline check; reaper runs on 1s cadence, don't wait).
+	e.Upsert(AlertSpec{ID: AlertID{3}, Symbol: "USDTRY", PriceType: PriceBid,
+		Direction: DirGTE, TargetPrice: 42.5, ValidFrom: 1, Expires: 50, AutoDeactivate: true})
+	// Wrong price type: alert on BID, tick carries only ASK.
+	e.Upsert(testSpec(4, "USDTRY", PriceBid, DirGTE, 42.5))
+	e.Sync()
+	e.Match(&Tick{Symbol: "USDTRY", Ask: 100, Present: 1 << uint(PriceAsk), TS: 100})
+	if got := drainTriggers(e); len(got) != 0 {
+		t.Fatalf("skips failed, triggers=%+v", got)
+	}
+	// Unknown symbol: no-op.
+	e.Match(&Tick{Symbol: "NOPE", Bid: 100, Present: TickAllPresent(), TS: 100})
+	// Not triggered by later valid tick for alert 1 (still paused) — sanity.
+	// Alert 4 is an active BID alert and legitimately fires on this tick;
+	// only alerts 1–3 (paused / not yet valid / expired) must stay silent.
+	e.Match(&Tick{Symbol: "USDTRY", Bid: 100, Present: 1 << uint(PriceBid), TS: 100})
+	for _, tr := range drainTriggers(e) {
+		if tr.ID == (AlertID{1}) || tr.ID == (AlertID{2}) || tr.ID == (AlertID{3}) {
+			t.Fatalf("skip guard fired: %+v", tr)
+		}
+	}
+}
+
+func TestMatchZeroAllocs(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	e := New(DefaultConfig())
+	defer e.Close()
+	for i := byte(0); i < 50; i++ {
+		e.Upsert(testSpec(i+1, fmt.Sprintf("S%d", i%5), PriceType(i%4),
+			Direction(i%2), float64(i)*10))
+	}
+	e.Sync()
+	tick := Tick{Symbol: "S3", Bid: 1e9, Ask: 1e9, Mid: 1e9, Last: 1e9,
+		Present: TickAllPresent(), TS: 1 << 40}
+	allocs := testing.AllocsPerRun(200, func() { e.Match(&tick) })
+	if allocs != 0 {
+		t.Fatalf("Match allocates: %.0f allocs/op, want 0", allocs)
+	}
+}
+
 func TestCancelAndSetStatus(t *testing.T) {
 	defer goleak.VerifyNone(t)
 	e := New(DefaultConfig())
