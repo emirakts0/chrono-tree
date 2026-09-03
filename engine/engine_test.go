@@ -2,6 +2,7 @@ package engine
 
 import (
 	"bytes"
+	"fmt"
 	"runtime"
 	"slices"
 	"sync"
@@ -358,5 +359,131 @@ func TestStateForOverLimitIsStable(t *testing.T) {
 		if _, err := e.stateFor("SX"); err != ErrSymbolLimit {
 			t.Fatalf("call %d: err=%v, want ErrSymbolLimit", i, err)
 		}
+	}
+}
+
+func testSpec(id byte, sym string, pt PriceType, dir Direction, price float64) AlertSpec {
+	return AlertSpec{
+		ID: AlertID{id}, Symbol: sym, PriceType: pt, Direction: dir,
+		TargetPrice: price, ValidFrom: 1, AutoDeactivate: true,
+		Meta: AlertMeta{ID: AlertID{id}, Symbol: sym},
+	}
+}
+
+func TestUpsertInsertAndReplace(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	e := New(DefaultConfig())
+	defer e.Close()
+	if err := e.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, 42.5)); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+	sid, _ := e.syms.Get("USDTRY")
+	if got := e.states[sid].snap.Load().trees[treeIndex(PriceBid, DirGTE)].Len(); got != 1 {
+		t.Fatalf("Len=%d, want 1", got)
+	}
+	if s := e.Stats(); s.Live != 1 {
+		t.Fatalf("Live=%d, want 1", s.Live)
+	}
+	// Replace same ID with a different price: still exactly one live alert.
+	if err := e.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, 43)); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+	if s := e.Stats(); s.Live != 1 {
+		t.Fatalf("after replace Live=%d, want 1", s.Live)
+	}
+	ti := treeIndex(PriceBid, DirGTE)
+	n := 0
+	for en := range e.states[sid].snap.Load().trees[ti].All() {
+		n++
+		if en.price != 43 {
+			t.Fatalf("stale entry price=%v, want 43", en.price)
+		}
+	}
+	if n != 1 {
+		t.Fatalf("entries=%d, want 1", n)
+	}
+}
+
+func TestUpsertValidation(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	e := New(DefaultConfig())
+	defer e.Close()
+	cases := []AlertSpec{
+		{Symbol: "X", PriceType: PriceBid, Direction: DirGTE},                       // zero ID
+		{ID: AlertID{1}, PriceType: PriceBid, Direction: DirGTE},                    // empty symbol
+		{ID: AlertID{1}, Symbol: "X", PriceType: priceTypeCount, Direction: DirGTE}, // bad price type
+		{ID: AlertID{1}, Symbol: "X", PriceType: PriceBid, Direction: 99},           // bad direction
+		{ID: AlertID{1}, Symbol: "X", PriceType: PriceBid, Direction: DirGTE,
+			ValidFrom: 100, Expires: 50}, // expires before valid
+	}
+	for i, c := range cases {
+		if err := e.Upsert(c); err == nil {
+			t.Fatalf("case %d: expected validation error", i)
+		}
+	}
+}
+
+func TestUpsertLimits(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	cfg := DefaultConfig()
+	// MaxAlerts covers the alert-limit probe plus the five live alerts needed
+	// for the symbol-limit section (USDTRY + S0..S2).
+	cfg.MaxAlerts = 5
+	cfg.MaxSymbols = 4
+	e := New(cfg)
+	defer e.Close()
+	for i := byte(0); i < 2; i++ {
+		if err := e.Upsert(testSpec(i+1, "USDTRY", PriceBid, DirGTE, 42.5)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// MaxSymbols=4 with USDTRY already interned: S0..S2 fill the remaining
+	// slots; S3 must be rejected.
+	for i := byte(0); i < 3; i++ {
+		if err := e.Upsert(testSpec(10+i, fmt.Sprintf("S%d", i), PriceBid, DirGTE, 1)); err != nil {
+			t.Fatalf("symbol %d: err=%v, want nil", i, err)
+		}
+	}
+	// live == MaxAlerts now: a fresh insert must be rejected.
+	if err := e.Upsert(testSpec(3, "USDTRY", PriceBid, DirGTE, 42.5)); err != ErrAlertLimit {
+		t.Fatalf("err=%v, want ErrAlertLimit", err)
+	}
+	if err := e.Upsert(testSpec(20, "S3", PriceBid, DirGTE, 1)); err != ErrSymbolLimit {
+		t.Fatalf("err=%v, want ErrSymbolLimit", err)
+	}
+}
+
+func TestCancelAndSetStatus(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	e := New(DefaultConfig())
+	defer e.Close()
+	e.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, 42.5))
+	e.Sync()
+	if err := e.SetStatus(AlertID{1}, StatusPaused); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.SetStatus(AlertID{1}, StatusActive); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.SetStatus(AlertID{1}, StatusActive); err != nil {
+		t.Fatal("idempotent same-state SetStatus should succeed:", err)
+	}
+	if err := e.SetStatus(AlertID{1}, Status(99)); err != ErrInvalidStatus {
+		t.Fatalf("err=%v, want ErrInvalidStatus", err)
+	}
+	if err := e.Cancel(AlertID{1}); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+	if s := e.Stats(); s.Live != 0 {
+		t.Fatalf("Live=%d after cancel, want 0", s.Live)
+	}
+	if err := e.Cancel(AlertID{1}); err != ErrNotFound {
+		t.Fatalf("err=%v, want ErrNotFound", err)
+	}
+	if err := e.SetStatus(AlertID{2}, StatusPaused); err != ErrNotFound {
+		t.Fatalf("err=%v, want ErrNotFound", err)
 	}
 }

@@ -144,3 +144,152 @@ func (e *Engine) applyBatch(batch []mutation) {
 		close(d)
 	}
 }
+
+// Upsert inserts a new alert or atomically replaces the one with the same ID.
+// Blocking on the mutation queue; returns ErrClosed, ErrAlertLimit,
+// ErrSymbolLimit, or a validation error.
+func (e *Engine) Upsert(a AlertSpec) error {
+	if err := a.validate(); err != nil {
+		return err
+	}
+	if e.closed.Load() {
+		return ErrClosed
+	}
+	sid, err := e.stateFor(a.Symbol)
+	if err != nil {
+		return err
+	}
+	var replace mutation
+	hasReplace := false
+	e.mu.Lock()
+	if ref, ok := e.refs[a.ID]; ok {
+		old := e.slots.get(ref.e.idx)
+		old.CompareAndSwap(uint32(StatusActive), uint32(StatusCancelled))
+		old.CompareAndSwap(uint32(StatusPaused), uint32(StatusCancelled))
+		replace = mutation{op: mutRemove, sid: ref.sid, e: ref.e}
+		hasReplace = true
+		delete(e.refs, a.ID)
+		delete(e.meta, a.ID)
+		e.live--
+	} else if e.live >= e.cfg.MaxAlerts {
+		e.mu.Unlock()
+		return ErrAlertLimit
+	}
+	e.mu.Unlock()
+
+	idx := e.slots.alloc()
+	e.slots.get(idx).Store(uint32(StatusActive))
+	ent := entry{
+		price:     a.TargetPrice,
+		id:        a.ID,
+		validFrom: a.ValidFrom,
+		expires:   a.Expires,
+		idx:       idx,
+		flags:     makeFlags(a.PriceType, a.Direction, a.AutoDeactivate),
+	}
+	meta := a.Meta
+	e.mu.Lock()
+	e.refs[a.ID] = &alertRef{sid: sid, e: ent}
+	e.meta[a.ID] = &meta
+	e.live++
+	e.mu.Unlock()
+
+	// Submission order is queue order: removal of the old entry lands before
+	// the new insert. The slot is Active before publication, but the entry is
+	// unreachable to readers until the insert flushes.
+	if hasReplace {
+		if err := e.submit(replace); err != nil {
+			return err
+		}
+	}
+	if err := e.submit(mutation{op: mutInsert, sid: sid, e: ent}); err != nil {
+		return err
+	}
+	if a.Expires != 0 {
+		return e.submitExpiry(expEntry{expires: a.Expires, sid: sid, e: ent})
+	}
+	return nil
+}
+
+// submitExpiry registers an alert with the reaper's expiry table.
+func (e *Engine) submitExpiry(x expEntry) error {
+	select {
+	case e.expQ <- x:
+		return nil
+	case <-e.done:
+		return ErrClosed
+	}
+}
+
+// removeIfLive CASes the alert's slot from ACTIVE/PAUSED to want and returns
+// its removal mutation. refs/meta/live cleanup happens in applyBatch.
+func (e *Engine) removeIfLive(id AlertID, want Status) (mutation, error) {
+	e.mu.Lock()
+	ref, ok := e.refs[id]
+	e.mu.Unlock()
+	if !ok {
+		return mutation{}, ErrNotFound
+	}
+	s := e.slots.get(ref.e.idx)
+	for {
+		cur := Status(s.Load())
+		switch cur {
+		case StatusActive, StatusPaused:
+			if s.CompareAndSwap(uint32(cur), uint32(want)) {
+				return mutation{op: mutRemove, sid: ref.sid, e: ref.e}, nil
+			}
+		default: // TRIGGERED (removal already queued), CANCELLED, EXPIRED
+			return mutation{}, ErrInvalidTransition
+		}
+	}
+}
+
+// Cancel permanently retires an alert.
+func (e *Engine) Cancel(id AlertID) error {
+	m, err := e.removeIfLive(id, StatusCancelled)
+	if err != nil {
+		return err
+	}
+	return e.submit(m)
+}
+
+// SetStatus transitions an alert between ACTIVE and PAUSED, or cancels it.
+// Same-state transitions are idempotent; terminal states reject everything.
+func (e *Engine) SetStatus(id AlertID, target Status) error {
+	switch target {
+	case StatusActive, StatusPaused, StatusCancelled:
+	default:
+		return ErrInvalidStatus
+	}
+	if target == StatusCancelled {
+		m, err := e.removeIfLive(id, StatusCancelled)
+		if err != nil {
+			return err
+		}
+		return e.submit(m)
+	}
+	e.mu.Lock()
+	ref, ok := e.refs[id]
+	e.mu.Unlock()
+	if !ok {
+		return ErrNotFound
+	}
+	from, to := StatusActive, StatusPaused
+	if target == StatusActive {
+		from, to = StatusPaused, StatusActive
+	}
+	s := e.slots.get(ref.e.idx)
+	for {
+		cur := Status(s.Load())
+		switch cur {
+		case from:
+			if s.CompareAndSwap(uint32(cur), uint32(to)) {
+				return nil
+			}
+		case to:
+			return nil // already there; idempotent
+		default:
+			return ErrInvalidTransition
+		}
+	}
+}
