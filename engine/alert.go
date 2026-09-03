@@ -12,6 +12,12 @@ import (
 // AlertID is a 128-bit UUID (v7 expected: time-ordered). Always stored by value.
 type AlertID [16]byte
 
+// Price is a price in base units of the instrument's smallest quoted tick
+// (fixed-point integer). Scale-agnostic: the engine never knows where the
+// decimal point is; conversion between decimal text/floats and base units
+// happens only in the price package, at the ingestion boundary.
+type Price int64
+
 // PriceType selects which quote field of a tick an alert watches.
 type PriceType uint8
 
@@ -47,7 +53,7 @@ const (
 // entry is the hot-path alert record, stored by value inside btype.Table.
 // Field order minimizes padding: 48 bytes on 64-bit (guarded by TestEntrySize).
 type entry struct {
-	price     float64 // target price, primary sort key
+	price     Price   // target price in base units, primary sort key
 	id        AlertID // tie-breaker so equal prices coexist
 	validFrom int64   // unix nanos
 	expires   int64   // unix nanos; 0 = never
@@ -106,12 +112,12 @@ func compareEntry(a, b entry) int {
 
 // entryKey builds a probe entry for keyed Ascend seeks: id AlertID{} sorts
 // first, so Ascend(entryKey(price)) yields every entry with price >= probe.
-func entryKey(price float64) entry { return entry{price: price} }
+func entryKey(price Price) entry { return entry{price: price} }
 
 // entryKeyMax builds a probe entry for keyed Descend seeks: the all-ones id
 // sorts after every real UUID, so Descend(entryKeyMax(price)) yields every
 // entry with price <= probe (including entries exactly at the boundary price).
-func entryKeyMax(price float64) entry {
+func entryKeyMax(price Price) entry {
 	var maxID AlertID
 	for i := range maxID {
 		maxID[i] = 0xff

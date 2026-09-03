@@ -5,7 +5,7 @@ import "sync/atomic"
 // Trigger is the dispatch payload emitted when an alert fires: 32 bytes.
 type Trigger struct {
 	ID    AlertID
-	Price float64
+	Price Price // fired price in base units
 	TS    int64
 }
 

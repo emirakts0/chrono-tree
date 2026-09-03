@@ -55,7 +55,7 @@ type AlertSpec struct {
 	Symbol         string
 	PriceType      PriceType
 	Direction      Direction
-	TargetPrice    float64
+	TargetPrice    Price // base units; scale is the caller's contract
 	ValidFrom      int64 // unix nanos
 	Expires        int64 // unix nanos; 0 = never
 	AutoDeactivate bool
@@ -93,7 +93,7 @@ type AlertMeta struct {
 	CreatedAt   int64 // unix nanos
 	PriceType   PriceType
 	Direction   Direction
-	TargetPrice float64
+	TargetPrice Price
 }
 
 // Stats is a point-in-time engine snapshot for observability.

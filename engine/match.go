@@ -4,10 +4,10 @@ package engine
 // quote fields the feed actually carries; absent fields are not evaluated.
 type Tick struct {
 	Symbol  string
-	Bid     float64
-	Ask     float64
-	Mid     float64
-	Last    float64
+	Bid     Price
+	Ask     Price
+	Mid     Price
+	Last    Price
 	Present uint8
 	TS      int64 // unix nanos
 }
@@ -15,7 +15,7 @@ type Tick struct {
 // TickAllPresent returns a Present mask covering all four price types.
 func TickAllPresent() uint8 { return 1<<priceTypeCount - 1 }
 
-func priceOf(t *Tick, pt PriceType) float64 {
+func priceOf(t *Tick, pt PriceType) Price {
 	switch pt {
 	case PriceBid:
 		return t.Bid
@@ -85,7 +85,7 @@ func (e *Engine) Match(t *Tick) {
 
 // fire performs the exactly-once transition for one candidate entry: lazy
 // validity window, CAS ACTIVE→TRIGGERED, dispatch, deferred removal.
-func (e *Engine) fire(sid SymbolID, en *entry, price float64, ts int64) {
+func (e *Engine) fire(sid SymbolID, en *entry, price Price, ts int64) {
 	if ts < en.validFrom {
 		return
 	}

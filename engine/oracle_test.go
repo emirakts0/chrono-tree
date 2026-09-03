@@ -38,7 +38,7 @@ func TestOracle(t *testing.T) {
 			Symbol:         fmt.Sprintf("S%d", rng.Intn(20)),
 			PriceType:      PriceType(rng.Intn(int(priceTypeCount))),
 			Direction:      Direction(rng.Intn(2)),
-			TargetPrice:    float64(rng.Intn(400)) + float64(rng.Intn(4))/4,
+			TargetPrice:    Price(rng.Intn(1600)),
 			ValidFrom:      validFrom,
 			Expires:        expires,
 			AutoDeactivate: true,
@@ -61,10 +61,10 @@ func TestOracle(t *testing.T) {
 	for k := range ticks {
 		ticks[k] = Tick{
 			Symbol:  fmt.Sprintf("S%d", rng.Intn(20)),
-			Bid:     float64(rng.Intn(400)) + 0.5,
-			Ask:     float64(rng.Intn(400)) + 0.5,
-			Mid:     float64(rng.Intn(400)) + 0.5,
-			Last:    float64(rng.Intn(400)) + 0.5,
+			Bid:     Price(rng.Intn(1600)),
+			Ask:     Price(rng.Intn(1600)),
+			Mid:     Price(rng.Intn(1600)),
+			Last:    Price(rng.Intn(1600)),
 			Present: TickAllPresent(),
 			TS:      base + int64(k)*step,
 		}
@@ -72,7 +72,7 @@ func TestOracle(t *testing.T) {
 
 	// Brute force: per alert, the FIRST tick (in order) satisfying all
 	// conditions, mirroring the spec's filter stages.
-	expected := map[AlertID]float64{}
+	expected := map[AlertID]Price{}
 	for _, r := range recs {
 		for _, tk := range ticks {
 			if tk.Symbol != r.spec.Symbol {
@@ -97,7 +97,7 @@ func TestOracle(t *testing.T) {
 	for k := range ticks {
 		e.Match(&ticks[k])
 	}
-	got := map[AlertID]float64{}
+	got := map[AlertID]Price{}
 	for _, tr := range drainTriggers(e) {
 		if _, dup := got[tr.ID]; dup {
 			t.Fatalf("alert %v fired twice", tr.ID)
@@ -138,7 +138,7 @@ func TestStressRace(t *testing.T) {
 		id := mkID(uint32(i + 1))
 		if err := e.Upsert(AlertSpec{
 			ID: id, Symbol: "HOT", PriceType: PriceType(i % 4),
-			Direction: Direction(i % 2), TargetPrice: float64(100 + i%400),
+			Direction: Direction(i % 2), TargetPrice: Price(100 + i%400),
 			ValidFrom: 1, AutoDeactivate: true,
 		}); err != nil {
 			t.Fatalf("upsert %d: %v", i, err)
@@ -155,14 +155,14 @@ func TestStressRace(t *testing.T) {
 		go func(p int) {
 			defer wg.Done()
 			rng := rand.New(rand.NewSource(int64(p)))
-			price := 300.0
+			price := Price(300)
 			for {
 				select {
 				case <-stop:
 					return
 				default:
 				}
-				price += rng.NormFloat64()
+				price += Price(rng.Intn(21) - 10)
 				if price < 1 {
 					price = 1
 				}
@@ -187,7 +187,7 @@ func TestStressRace(t *testing.T) {
 				case 0:
 					err := e.Upsert(AlertSpec{ID: id, Symbol: "HOT",
 						PriceType: PriceBid, Direction: DirGTE,
-						TargetPrice: float64(100 + rng.Intn(400)),
+						TargetPrice: Price(100 + rng.Intn(400)),
 						ValidFrom:   1, AutoDeactivate: true})
 					if err == nil {
 						armsMu.Lock()

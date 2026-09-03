@@ -41,10 +41,10 @@ func TestFlagRoundTrip(t *testing.T) {
 }
 
 func TestCompareEntry(t *testing.T) {
-	low := entry{price: 1.5}
-	high := entry{price: 2.5}
-	a := entry{price: 2.5, id: AlertID{1}}
-	b := entry{price: 2.5, id: AlertID{2}}
+	low := entry{price: 15}
+	high := entry{price: 25}
+	a := entry{price: 25, id: AlertID{1}}
+	b := entry{price: 25, id: AlertID{2}}
 	if compareEntry(low, high) >= 0 || compareEntry(high, low) <= 0 {
 		t.Fatal("price ordering broken")
 	}
@@ -105,7 +105,7 @@ func TestSlotArena(t *testing.T) {
 func TestTriggerQueueFIFO(t *testing.T) {
 	q := NewTriggerQueue(4)
 	for i := 0; i < 4; i++ {
-		if !q.TryPush(Trigger{Price: float64(i)}) {
+		if !q.TryPush(Trigger{Price: Price(i)}) {
 			t.Fatalf("push %d rejected on non-full queue", i)
 		}
 	}
@@ -115,7 +115,7 @@ func TestTriggerQueueFIFO(t *testing.T) {
 	if q.Dropped() != 1 {
 		t.Fatalf("Dropped = %d, want 1", q.Dropped())
 	}
-	var got []float64
+	var got []Price
 	for {
 		tr, ok := q.Pop()
 		if !ok {
@@ -123,7 +123,7 @@ func TestTriggerQueueFIFO(t *testing.T) {
 		}
 		got = append(got, tr.Price)
 	}
-	if !slices.Equal(got, []float64{0, 1, 2, 3}) {
+	if !slices.Equal(got, []Price{0, 1, 2, 3}) {
 		t.Fatalf("FIFO broken: %v", got)
 	}
 	// Queue is empty again; slot reused after full cycle.
@@ -139,7 +139,7 @@ func TestTriggerQueueFIFO(t *testing.T) {
 func TestTriggerQueuePopBatch(t *testing.T) {
 	q := NewTriggerQueue(8)
 	for i := 0; i < 5; i++ {
-		q.TryPush(Trigger{Price: float64(i)})
+		q.TryPush(Trigger{Price: Price(i)})
 	}
 	dst := make([]Trigger, 3)
 	if n := q.PopBatch(dst); n != 3 {
@@ -164,11 +164,11 @@ func TestTriggerQueueConcurrent(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < each; i++ {
 				// Unique value per push: duplicate delivery is detectable.
-				q.TryPush(Trigger{Price: float64(p*each + i)})
+				q.TryPush(Trigger{Price: Price(p*each + i)})
 			}
 		}(p)
 	}
-	delivered := make(map[float64]bool)
+	delivered := make(map[Price]bool)
 	consumerDone := make(chan struct{})
 	go func() {
 		defer close(consumerDone)
@@ -246,9 +246,9 @@ func TestTreeIndexDistinct(t *testing.T) {
 func TestSnapshotCopyIsolation(t *testing.T) {
 	s := newSnapshot()
 	ti := treeIndex(PriceBid, DirGTE)
-	s.trees[ti].Insert(entry{price: 42.5, id: AlertID{1}, idx: 1, flags: makeFlags(PriceBid, DirGTE, true)})
+	s.trees[ti].Insert(entry{price: 425, id: AlertID{1}, idx: 1, flags: makeFlags(PriceBid, DirGTE, true)})
 	cp := s.copy()
-	cp.trees[ti].Insert(entry{price: 10, id: AlertID{2}, idx: 2, flags: makeFlags(PriceBid, DirGTE, true)})
+	cp.trees[ti].Insert(entry{price: 100, id: AlertID{2}, idx: 2, flags: makeFlags(PriceBid, DirGTE, true)})
 	if s.trees[ti].Len() != 1 || cp.trees[ti].Len() != 2 {
 		t.Fatalf("COW isolation broken: orig=%d copy=%d, want 1 and 2", s.trees[ti].Len(), cp.trees[ti].Len())
 	}
@@ -280,7 +280,7 @@ func TestFlusherAppliesMutations(t *testing.T) {
 	if e.states[sid].snap.Load() == nil {
 		t.Fatal("stateFor did not publish an initial snapshot")
 	}
-	ent := entry{price: 42.5, id: AlertID{1}, idx: e.slots.alloc(),
+	ent := entry{price: 425, id: AlertID{1}, idx: e.slots.alloc(),
 		validFrom: 1, flags: makeFlags(PriceBid, DirGTE, true)}
 	e.slots.setStatus(ent.idx, StatusActive)
 	entGen := e.slots.gen(ent.idx)
@@ -313,12 +313,12 @@ func TestSyncBarrier(t *testing.T) {
 		e.slots.setStatus(idx, StatusActive)
 		e.mu.Lock()
 		e.refs[AlertID{byte(i + 1)}] = &alertRef{sid: sid, e: entry{
-			price: float64(i), id: AlertID{byte(i + 1)}, idx: idx,
+			price: Price(i), id: AlertID{byte(i + 1)}, idx: idx,
 			flags: makeFlags(PriceLast, DirLTE, false)}}
 		e.live++
 		e.mu.Unlock()
 		e.submit(mutation{op: mutInsert, sid: sid,
-			e: entry{price: float64(i), id: AlertID{byte(i + 1)}, idx: idx,
+			e: entry{price: Price(i), id: AlertID{byte(i + 1)}, idx: idx,
 				validFrom: 1, flags: makeFlags(PriceLast, DirLTE, false)}})
 	}
 	e.Sync()
@@ -365,7 +365,7 @@ func TestStateForOverLimitIsStable(t *testing.T) {
 	}
 }
 
-func testSpec(id byte, sym string, pt PriceType, dir Direction, price float64) AlertSpec {
+func testSpec(id byte, sym string, pt PriceType, dir Direction, price Price) AlertSpec {
 	return AlertSpec{
 		ID: AlertID{id}, Symbol: sym, PriceType: pt, Direction: dir,
 		TargetPrice: price, ValidFrom: 1, AutoDeactivate: true,
@@ -377,7 +377,7 @@ func TestUpsertInsertAndReplace(t *testing.T) {
 	defer goleak.VerifyNone(t)
 	e := New(DefaultConfig())
 	defer e.Close()
-	if err := e.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, 42.5)); err != nil {
+	if err := e.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, 425)); err != nil {
 		t.Fatal(err)
 	}
 	e.Sync()
@@ -389,7 +389,7 @@ func TestUpsertInsertAndReplace(t *testing.T) {
 		t.Fatalf("Live=%d, want 1", s.Live)
 	}
 	// Replace same ID with a different price: still exactly one live alert.
-	if err := e.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, 43)); err != nil {
+	if err := e.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, 430)); err != nil {
 		t.Fatal(err)
 	}
 	e.Sync()
@@ -400,7 +400,7 @@ func TestUpsertInsertAndReplace(t *testing.T) {
 	n := 0
 	for en := range e.states[sid].snap.Load().trees[ti].All() {
 		n++
-		if en.price != 43 {
+		if en.price != 430 {
 			t.Fatalf("stale entry price=%v, want 43", en.price)
 		}
 	}
@@ -438,7 +438,7 @@ func TestUpsertLimits(t *testing.T) {
 	e := New(cfg)
 	defer e.Close()
 	for i := byte(0); i < 2; i++ {
-		if err := e.Upsert(testSpec(i+1, "USDTRY", PriceBid, DirGTE, 42.5)); err != nil {
+		if err := e.Upsert(testSpec(i+1, "USDTRY", PriceBid, DirGTE, 425)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -450,7 +450,7 @@ func TestUpsertLimits(t *testing.T) {
 		}
 	}
 	// live == MaxAlerts now: a fresh insert must be rejected.
-	if err := e.Upsert(testSpec(3, "USDTRY", PriceBid, DirGTE, 42.5)); err != ErrAlertLimit {
+	if err := e.Upsert(testSpec(3, "USDTRY", PriceBid, DirGTE, 425)); err != ErrAlertLimit {
 		t.Fatalf("err=%v, want ErrAlertLimit", err)
 	}
 	if err := e.Upsert(testSpec(20, "S3", PriceBid, DirGTE, 1)); err != ErrSymbolLimit {
@@ -474,14 +474,14 @@ func TestMatchGTEFiresOnce(t *testing.T) {
 	defer goleak.VerifyNone(t)
 	e := New(DefaultConfig())
 	defer e.Close()
-	e.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, 42.5))
+	e.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, 425))
 	e.Sync()
-	tick := Tick{Symbol: "USDTRY", Bid: 43, Present: TickAllPresent(), TS: 100}
+	tick := Tick{Symbol: "USDTRY", Bid: 430, Present: TickAllPresent(), TS: 100}
 	e.Match(&tick)
 	e.Match(&tick) // duplicate delivery of the same tick must not re-fire
 	got := drainTriggers(e)
-	if len(got) != 1 || got[0].ID != (AlertID{1}) || got[0].Price != 43 {
-		t.Fatalf("triggers=%+v, want one fire of alert 1 at 43", got)
+	if len(got) != 1 || got[0].ID != (AlertID{1}) || got[0].Price != 430 {
+		t.Fatalf("triggers=%+v, want one fire of alert 1 at 430", got)
 	}
 	e.Sync()
 	sid, _ := e.syms.Get("USDTRY")
@@ -495,9 +495,9 @@ func TestMatchLTEAndBoundary(t *testing.T) {
 	e := New(DefaultConfig())
 	defer e.Close()
 	// LTE at exactly the market price must fire (<=).
-	e.Upsert(testSpec(2, "USDTRY", PriceAsk, DirLTE, 50))
+	e.Upsert(testSpec(2, "USDTRY", PriceAsk, DirLTE, 500))
 	e.Sync()
-	e.Match(&Tick{Symbol: "USDTRY", Ask: 50, Present: TickAllPresent(), TS: 100})
+	e.Match(&Tick{Symbol: "USDTRY", Ask: 500, Present: TickAllPresent(), TS: 100})
 	got := drainTriggers(e)
 	if len(got) != 1 || got[0].ID != (AlertID{2}) {
 		t.Fatalf("triggers=%+v, want one fire of alert 2", got)
@@ -509,27 +509,27 @@ func TestMatchSkips(t *testing.T) {
 	e := New(DefaultConfig())
 	defer e.Close()
 	// Paused.
-	e.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, 42.5))
+	e.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, 425))
 	e.SetStatus(AlertID{1}, StatusPaused)
 	// Not yet valid.
 	e.Upsert(AlertSpec{ID: AlertID{2}, Symbol: "USDTRY", PriceType: PriceBid,
-		Direction: DirGTE, TargetPrice: 42.5, ValidFrom: 200, AutoDeactivate: true})
+		Direction: DirGTE, TargetPrice: 425, ValidFrom: 200, AutoDeactivate: true})
 	// Expired (lazy inline check; reaper runs on 1s cadence, don't wait).
 	e.Upsert(AlertSpec{ID: AlertID{3}, Symbol: "USDTRY", PriceType: PriceBid,
-		Direction: DirGTE, TargetPrice: 42.5, ValidFrom: 1, Expires: 50, AutoDeactivate: true})
+		Direction: DirGTE, TargetPrice: 425, ValidFrom: 1, Expires: 50, AutoDeactivate: true})
 	// Wrong price type: alert on BID, tick carries only ASK.
-	e.Upsert(testSpec(4, "USDTRY", PriceBid, DirGTE, 42.5))
+	e.Upsert(testSpec(4, "USDTRY", PriceBid, DirGTE, 425))
 	e.Sync()
-	e.Match(&Tick{Symbol: "USDTRY", Ask: 100, Present: 1 << uint(PriceAsk), TS: 100})
+	e.Match(&Tick{Symbol: "USDTRY", Ask: 1000, Present: 1 << uint(PriceAsk), TS: 100})
 	if got := drainTriggers(e); len(got) != 0 {
 		t.Fatalf("skips failed, triggers=%+v", got)
 	}
 	// Unknown symbol: no-op.
-	e.Match(&Tick{Symbol: "NOPE", Bid: 100, Present: TickAllPresent(), TS: 100})
+	e.Match(&Tick{Symbol: "NOPE", Bid: 1000, Present: TickAllPresent(), TS: 100})
 	// Not triggered by later valid tick for alert 1 (still paused) — sanity.
 	// Alert 4 is an active BID alert and legitimately fires on this tick;
 	// only alerts 1–3 (paused / not yet valid / expired) must stay silent.
-	e.Match(&Tick{Symbol: "USDTRY", Bid: 100, Present: 1 << uint(PriceBid), TS: 100})
+	e.Match(&Tick{Symbol: "USDTRY", Bid: 1000, Present: 1 << uint(PriceBid), TS: 100})
 	for _, tr := range drainTriggers(e) {
 		if tr.ID == (AlertID{1}) || tr.ID == (AlertID{2}) || tr.ID == (AlertID{3}) {
 			t.Fatalf("skip guard fired: %+v", tr)
@@ -543,7 +543,7 @@ func TestMatchZeroAllocs(t *testing.T) {
 	defer e.Close()
 	for i := byte(0); i < 50; i++ {
 		e.Upsert(testSpec(i+1, fmt.Sprintf("S%d", i%5), PriceType(i%4),
-			Direction(i%2), float64(i)*10))
+			Direction(i%2), Price(i)*10))
 	}
 	e.Sync()
 	tick := Tick{Symbol: "S3", Bid: 1e9, Ask: 1e9, Mid: 1e9, Last: 1e9,
@@ -558,7 +558,7 @@ func TestCancelAndSetStatus(t *testing.T) {
 	defer goleak.VerifyNone(t)
 	e := New(DefaultConfig())
 	defer e.Close()
-	e.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, 42.5))
+	e.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, 425))
 	e.Sync()
 	if err := e.SetStatus(AlertID{1}, StatusPaused); err != nil {
 		t.Fatal(err)
@@ -595,7 +595,7 @@ func TestReaperExpires(t *testing.T) {
 	defer e.Close()
 	expiry := time.Now().Add(40 * time.Millisecond).UnixNano()
 	e.Upsert(AlertSpec{ID: AlertID{9}, Symbol: "USDTRY", PriceType: PriceBid,
-		Direction: DirGTE, TargetPrice: 42.5, ValidFrom: 1, Expires: expiry,
+		Direction: DirGTE, TargetPrice: 425, ValidFrom: 1, Expires: expiry,
 		AutoDeactivate: true})
 	e.Sync()
 	if s := e.Stats(); s.Live != 1 {
@@ -625,7 +625,7 @@ func TestStaleExpiryDoesNotKillReusedSlot(t *testing.T) {
 	expiry := time.Now().Add(250 * time.Millisecond).UnixNano()
 	// A: expiring alert, cancelled immediately; slot retired then recycled.
 	e.Upsert(AlertSpec{ID: AlertID{1}, Symbol: "USDTRY", PriceType: PriceBid,
-		Direction: DirGTE, TargetPrice: 42.5, ValidFrom: 1, Expires: expiry,
+		Direction: DirGTE, TargetPrice: 425, ValidFrom: 1, Expires: expiry,
 		AutoDeactivate: true})
 	e.mu.Lock()
 	aIdx := e.refs[AlertID{1}].e.idx
@@ -638,7 +638,7 @@ func TestStaleExpiryDoesNotKillReusedSlot(t *testing.T) {
 	time.Sleep(80 * time.Millisecond)
 	// B: never-expiring alert; must recycle A's slot.
 	if err := e.Upsert(AlertSpec{ID: AlertID{2}, Symbol: "EURTRY", PriceType: PriceAsk,
-		Direction: DirLTE, TargetPrice: 50, ValidFrom: 1, AutoDeactivate: true}); err != nil {
+		Direction: DirLTE, TargetPrice: 500, ValidFrom: 1, AutoDeactivate: true}); err != nil {
 		t.Fatal(err)
 	}
 	e.Sync()
@@ -655,7 +655,7 @@ func TestStaleExpiryDoesNotKillReusedSlot(t *testing.T) {
 	if s := e.slots.status(bIdx); s != StatusActive {
 		t.Fatalf("B's slot status = %v, want StatusActive (stale expiry killed it)", s)
 	}
-	e.Match(&Tick{Symbol: "EURTRY", Ask: 49, Present: 1 << uint(PriceAsk), TS: time.Now().UnixNano()})
+	e.Match(&Tick{Symbol: "EURTRY", Ask: 490, Present: 1 << uint(PriceAsk), TS: time.Now().UnixNano()})
 	fired := false
 	for _, tr := range drainTriggers(e) {
 		if tr.ID == (AlertID{2}) {
@@ -683,7 +683,7 @@ func TestDuplicateRemovalDoesNotAliasSlots(t *testing.T) {
 	idx := e.slots.alloc()
 	e.slots.setStatus(idx, StatusActive)
 	gen := e.slots.gen(idx)
-	ent := entry{price: 42.5, id: AlertID{1}, idx: idx, validFrom: 1,
+	ent := entry{price: 425, id: AlertID{1}, idx: idx, validFrom: 1,
 		flags: makeFlags(PriceBid, DirGTE, true)}
 	e.submit(mutation{op: mutInsert, sid: sid, e: ent})
 	e.Sync()
@@ -714,19 +714,19 @@ func TestDuplicateRemovalDoesNotAliasSlots(t *testing.T) {
 	// slot whose removal fire already owns.
 	e2 := New(DefaultConfig())
 	defer e2.Close()
-	if err := e2.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, 42.5)); err != nil {
+	if err := e2.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, 425)); err != nil {
 		t.Fatal(err)
 	}
 	e2.Sync()
 	e2.mu.Lock()
 	oldIdx := e2.refs[AlertID{1}].e.idx
 	e2.mu.Unlock()
-	e2.Match(&Tick{Symbol: "USDTRY", Bid: 43, Present: TickAllPresent(), TS: 100})
+	e2.Match(&Tick{Symbol: "USDTRY", Bid: 430, Present: TickAllPresent(), TS: 100})
 	if got := drainTriggers(e2); len(got) != 1 || got[0].ID != (AlertID{1}) {
 		t.Fatalf("triggers=%+v, want one fire of alert 1", got)
 	}
 	// Replace while TRIGGERED (fire's removal queued, not yet landed).
-	if err := e2.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, 99)); err != nil {
+	if err := e2.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, 990)); err != nil {
 		t.Fatal(err)
 	}
 	e2.Sync()
@@ -799,7 +799,7 @@ func TestIntegritySweepCleansLeakedTriggered(t *testing.T) {
 	cfg.IntegrityEvery = 2 // integrity every 10ms
 	e := New(cfg)
 	defer e.Close()
-	if err := e.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, 42.5)); err != nil {
+	if err := e.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, 425)); err != nil {
 		t.Fatal(err) // Expires 0 → sentinel registration
 	}
 	e.Sync()
@@ -874,7 +874,7 @@ func TestExpiryRegistrySlotReuse(t *testing.T) {
 	cfg.ReaperInterval = 200 * time.Millisecond
 	e := New(cfg)
 	// A: never-expiring; gets slot X plus a sentinel registration.
-	if err := e.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, 42.5)); err != nil {
+	if err := e.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, 425)); err != nil {
 		t.Fatal(err)
 	}
 	e.Sync()
@@ -888,7 +888,7 @@ func TestExpiryRegistrySlotReuse(t *testing.T) {
 	// Wait past the recycle grace so slot X returns to the free list.
 	time.Sleep(600 * time.Millisecond)
 	// B: never-expiring; must recycle slot X and register with a NEW gen.
-	if err := e.Upsert(testSpec(2, "USDTRY", PriceBid, DirGTE, 43)); err != nil {
+	if err := e.Upsert(testSpec(2, "USDTRY", PriceBid, DirGTE, 430)); err != nil {
 		t.Fatal(err)
 	}
 	e.Sync()

@@ -20,14 +20,14 @@ func benchSparse(b *testing.B, alerts int) {
 			// GTE targets far above the tick price; LTE targets far below.
 			e.Upsert(AlertSpec{ID: mkID(uint32(s*perSym*2 + i*2)), Symbol: sym,
 				PriceType: PriceType(i % 4), Direction: DirGTE,
-				TargetPrice: 1000 + float64(i)*0.01, ValidFrom: 1, AutoDeactivate: true})
+				TargetPrice: Price(1_000_000 + i), ValidFrom: 1, AutoDeactivate: true})
 			e.Upsert(AlertSpec{ID: mkID(uint32(s*perSym*2 + i*2 + 1)), Symbol: sym,
 				PriceType: PriceType(i % 4), Direction: DirLTE,
-				TargetPrice: 100 - float64(i)*0.01, ValidFrom: 1, AutoDeactivate: true})
+				TargetPrice: Price(100_000 - i), ValidFrom: 1, AutoDeactivate: true})
 		}
 	}
 	e.Sync()
-	tick := Tick{Symbol: "SYM0500", Bid: 500, Ask: 500, Mid: 500, Last: 500,
+	tick := Tick{Symbol: "SYM0500", Bid: 500_000, Ask: 500_000, Mid: 500_000, Last: 500_000,
 		Present: TickAllPresent(), TS: 1 << 40}
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -55,13 +55,13 @@ func BenchmarkMatchDenseSkip(b *testing.B) {
 	for i := 0; i < perTree; i++ {
 		e.Upsert(AlertSpec{ID: mkID(uint32(i * 2)), Symbol: "SYM0500",
 			PriceType: PriceType(i % 4), Direction: DirGTE,
-			TargetPrice: 100 + float64(i)*0.01, ValidFrom: 1, AutoDeactivate: true})
+			TargetPrice: Price(100_000 + i), ValidFrom: 1, AutoDeactivate: true})
 		e.Upsert(AlertSpec{ID: mkID(uint32(i*2 + 1)), Symbol: "SYM0500",
 			PriceType: PriceType(i % 4), Direction: DirLTE,
-			TargetPrice: 900 - float64(i)*0.01, ValidFrom: 1, AutoDeactivate: true})
+			TargetPrice: Price(900_000 - i), ValidFrom: 1, AutoDeactivate: true})
 	}
 	e.Sync()
-	tick := Tick{Symbol: "SYM0500", Bid: 500, Ask: 500, Mid: 500, Last: 500,
+	tick := Tick{Symbol: "SYM0500", Bid: 500_000, Ask: 500_000, Mid: 500_000, Last: 500_000,
 		Present: TickAllPresent(), TS: 1 << 40}
 	e.Match(&tick) // fire everything once; removals flush out
 	e.Sync()
