@@ -161,6 +161,8 @@ func New(cfg Config) *Engine {
 	}
 	e.flushWG.Add(1)
 	go e.runFlusher()
+	e.reapWG.Add(1)
+	go e.runReaper()
 	return e
 }
 

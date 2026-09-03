@@ -583,3 +583,32 @@ func TestCancelAndSetStatus(t *testing.T) {
 		t.Fatalf("err=%v, want ErrNotFound", err)
 	}
 }
+
+func TestReaperExpires(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	cfg := DefaultConfig()
+	cfg.ReaperInterval = 20 * time.Millisecond
+	e := New(cfg)
+	defer e.Close()
+	expiry := time.Now().Add(40 * time.Millisecond).UnixNano()
+	e.Upsert(AlertSpec{ID: AlertID{9}, Symbol: "USDTRY", PriceType: PriceBid,
+		Direction: DirGTE, TargetPrice: 42.5, ValidFrom: 1, Expires: expiry,
+		AutoDeactivate: true})
+	e.Sync()
+	if s := e.Stats(); s.Live != 1 {
+		t.Fatalf("Live=%d, want 1", s.Live)
+	}
+	// Wait long enough for expiry + one sweep + one flush.
+	deadline := time.Now().Add(2 * time.Second)
+	for e.Stats().Live != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("alert never expired")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	e.Sync()
+	sid, _ := e.syms.Get("USDTRY")
+	if n := e.states[sid].snap.Load().trees[treeIndex(PriceBid, DirGTE)].Len(); n != 0 {
+		t.Fatalf("expired entry still indexed: %d", n)
+	}
+}
