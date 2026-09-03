@@ -70,10 +70,10 @@ func TestSlotArena(t *testing.T) {
 			t.Fatalf("idx %d handed out twice", idx)
 		}
 		seen[idx] = true
-		if s := Status(a.get(idx).Load()); s != StatusZero {
+		if s := a.status(idx); s != StatusZero {
 			t.Fatalf("fresh slot status = %v, want StatusZero", s)
 		}
-		a.get(idx).Store(uint32(StatusActive))
+		a.setStatus(idx, StatusActive)
 	}
 	// Retire two slots; they must not be reusable until recycle's grace passes.
 	a.retire(7)
@@ -90,7 +90,9 @@ func TestSlotArena(t *testing.T) {
 		idx := a.alloc()
 		if idx == 7 || idx == 8 {
 			reused++
-			if s := Status(a.get(idx).Load()); s != StatusZero {
+			// The word differs from its previous era (generation bumped at
+			// handout) but the status is a clean StatusZero.
+			if s := a.status(idx); s != StatusZero {
 				t.Fatal("recycled slot not reset to StatusZero")
 			}
 		}
@@ -280,7 +282,7 @@ func TestFlusherAppliesMutations(t *testing.T) {
 	}
 	ent := entry{price: 42.5, id: AlertID{1}, idx: e.slots.alloc(),
 		validFrom: 1, flags: makeFlags(PriceBid, DirGTE, true)}
-	e.slots.get(ent.idx).Store(uint32(StatusActive))
+	e.slots.setStatus(ent.idx, StatusActive)
 
 	e.submit(mutation{op: mutInsert, sid: sid, e: ent})
 	e.Sync()
@@ -307,7 +309,7 @@ func TestSyncBarrier(t *testing.T) {
 	sid, _ := e.stateFor("EURTRY")
 	for i := 0; i < 100; i++ {
 		idx := e.slots.alloc()
-		e.slots.get(idx).Store(uint32(StatusActive))
+		e.slots.setStatus(idx, StatusActive)
 		e.mu.Lock()
 		e.refs[AlertID{byte(i + 1)}] = &alertRef{sid: sid, e: entry{
 			price: float64(i), id: AlertID{byte(i + 1)}, idx: idx,
@@ -610,5 +612,56 @@ func TestReaperExpires(t *testing.T) {
 	sid, _ := e.syms.Get("USDTRY")
 	if n := e.states[sid].snap.Load().trees[treeIndex(PriceBid, DirGTE)].Len(); n != 0 {
 		t.Fatalf("expired entry still indexed: %d", n)
+	}
+}
+
+func TestStaleExpiryDoesNotKillReusedSlot(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	cfg := DefaultConfig()
+	cfg.ReaperInterval = 20 * time.Millisecond // recycle grace = 40ms
+	e := New(cfg)
+	defer e.Close()
+	expiry := time.Now().Add(250 * time.Millisecond).UnixNano()
+	// A: expiring alert, cancelled immediately; slot retired then recycled.
+	e.Upsert(AlertSpec{ID: AlertID{1}, Symbol: "USDTRY", PriceType: PriceBid,
+		Direction: DirGTE, TargetPrice: 42.5, ValidFrom: 1, Expires: expiry,
+		AutoDeactivate: true})
+	e.mu.Lock()
+	aIdx := e.refs[AlertID{1}].e.idx
+	e.mu.Unlock()
+	if err := e.Cancel(AlertID{1}); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+	// Wait past the recycle grace so A's slot is back on the free list.
+	time.Sleep(80 * time.Millisecond)
+	// B: never-expiring alert; must recycle A's slot.
+	if err := e.Upsert(AlertSpec{ID: AlertID{2}, Symbol: "EURTRY", PriceType: PriceAsk,
+		Direction: DirLTE, TargetPrice: 50, ValidFrom: 1, AutoDeactivate: true}); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+	e.mu.Lock()
+	bIdx := e.refs[AlertID{2}].e.idx
+	e.mu.Unlock()
+	if aIdx != bIdx {
+		t.Fatalf("test setup failed: B got slot %d, wanted recycled %d", bIdx, aIdx)
+	}
+	// Wait well past A's expiry and several sweeps.
+	time.Sleep(350 * time.Millisecond)
+	e.Sync()
+	// B must still be ACTIVE and must still fire.
+	if s := e.slots.status(bIdx); s != StatusActive {
+		t.Fatalf("B's slot status = %v, want StatusActive (stale expiry killed it)", s)
+	}
+	e.Match(&Tick{Symbol: "EURTRY", Ask: 49, Present: 1 << uint(PriceAsk), TS: time.Now().UnixNano()})
+	fired := false
+	for _, tr := range drainTriggers(e) {
+		if tr.ID == (AlertID{2}) {
+			fired = true
+		}
+	}
+	if !fired {
+		t.Fatal("B failed to fire after A's stale expiry entry was swept")
 	}
 }

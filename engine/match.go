@@ -86,10 +86,12 @@ func (e *Engine) fire(sid SymbolID, en *entry, price float64, ts int64) {
 	s := e.slots.get(en.idx)
 	for {
 		cur := s.Load()
-		if Status(cur) != StatusActive {
+		if slotStatus(cur) != StatusActive {
 			return // paused, or already fired/retired by another path
 		}
-		if s.CompareAndSwap(cur, uint32(StatusTriggered)) {
+		// CAS on the full word preserves the generation bits; a stale entry
+		// from an older generation can never win this CAS.
+		if s.CompareAndSwap(cur, cur&^0xff|uint32(StatusTriggered)) {
 			break
 		}
 	}

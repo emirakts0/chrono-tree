@@ -66,9 +66,11 @@ func (e *Engine) sweep(now int64) int {
 	}
 	for _, x := range due {
 		e.expiry.Delete(x) // after iteration completes; safe
-		s := e.slots.get(x.e.idx)
-		if s.CompareAndSwap(uint32(StatusActive), uint32(StatusExpired)) ||
-			s.CompareAndSwap(uint32(StatusPaused), uint32(StatusExpired)) {
+		// Generation-checked CAS: expiry entries outlive the recycle grace,
+		// so the slot may have been retired, recycled, and reused since this
+		// entry was registered. If the generation moved, both attempts fail —
+		// a stale expiry entry must not kill the slot's new occupant.
+		if e.slots.casGenAny(x.e.idx, x.gen, StatusExpired, StatusActive, StatusPaused) {
 			e.submit(mutation{op: mutRemove, sid: x.sid, e: x.e})
 		}
 	}

@@ -116,10 +116,15 @@ const (
 )
 
 // expEntry registers an alert with the reaper's expiry table (Task 11).
+// gen is the slot generation at handout: expiry entries outlive the recycle
+// grace, so sweep must reject entries whose slot has since been recycled and
+// reused (its generation moved) — a fresh word alone can't tell stale from
+// current, the generation captured here can.
 type expEntry struct {
 	expires int64
 	sid     SymbolID
 	e       entry
+	gen     uint32
 }
 
 // Engine is the alert evaluation engine. Zero network, zero I/O.

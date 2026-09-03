@@ -176,9 +176,7 @@ func (e *Engine) Upsert(a AlertSpec) error {
 	hasReplace := false
 	e.mu.Lock()
 	if ref, ok := e.refs[a.ID]; ok {
-		old := e.slots.get(ref.e.idx)
-		old.CompareAndSwap(uint32(StatusActive), uint32(StatusCancelled))
-		old.CompareAndSwap(uint32(StatusPaused), uint32(StatusCancelled))
+		e.slots.casAny(ref.e.idx, StatusCancelled, StatusActive, StatusPaused)
 		replace = mutation{op: mutRemove, sid: ref.sid, e: ref.e}
 		hasReplace = true
 		delete(e.refs, a.ID)
@@ -191,7 +189,7 @@ func (e *Engine) Upsert(a AlertSpec) error {
 	e.mu.Unlock()
 
 	idx := e.slots.alloc()
-	e.slots.get(idx).Store(uint32(StatusActive))
+	e.slots.setStatus(idx, StatusActive)
 	ent := entry{
 		price:     a.TargetPrice,
 		id:        a.ID,
@@ -219,7 +217,8 @@ func (e *Engine) Upsert(a AlertSpec) error {
 		return err
 	}
 	if a.Expires != 0 {
-		return e.submitExpiry(expEntry{expires: a.Expires, sid: sid, e: ent})
+		return e.submitExpiry(expEntry{expires: a.Expires, sid: sid, e: ent,
+			gen: e.slots.gen(idx)})
 	}
 	return nil
 }
@@ -243,18 +242,11 @@ func (e *Engine) removeIfLive(id AlertID, want Status) (mutation, error) {
 	if !ok {
 		return mutation{}, ErrNotFound
 	}
-	s := e.slots.get(ref.e.idx)
-	for {
-		cur := Status(s.Load())
-		switch cur {
-		case StatusActive, StatusPaused:
-			if s.CompareAndSwap(uint32(cur), uint32(want)) {
-				return mutation{op: mutRemove, sid: ref.sid, e: ref.e}, nil
-			}
-		default: // TRIGGERED (removal already queued), CANCELLED, EXPIRED
-			return mutation{}, ErrInvalidTransition
-		}
+	if !e.slots.casAny(ref.e.idx, want, StatusActive, StatusPaused) {
+		// TRIGGERED (removal already queued), CANCELLED, EXPIRED
+		return mutation{}, ErrInvalidTransition
 	}
+	return mutation{op: mutRemove, sid: ref.sid, e: ref.e}, nil
 }
 
 // Cancel permanently retires an alert.
@@ -293,10 +285,10 @@ func (e *Engine) SetStatus(id AlertID, target Status) error {
 	}
 	s := e.slots.get(ref.e.idx)
 	for {
-		cur := Status(s.Load())
-		switch cur {
+		w := s.Load()
+		switch slotStatus(w) {
 		case from:
-			if s.CompareAndSwap(uint32(cur), uint32(to)) {
+			if s.CompareAndSwap(w, w&^0xff|uint32(to)) {
 				return nil
 			}
 		case to:

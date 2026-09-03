@@ -130,6 +130,20 @@ func entryKeyMax(price float64) entry {
 // Freed slots are retired, not immediately reused: a reader holding an old
 // snapshot may still see the dead entry and touch its slot, so reuse waits
 // for a grace period (2× reaper interval) driven by recycle().
+//
+// Every slot word packs a generation counter: word = gen<<8 | status (Status
+// values fit in 8 bits). alloc() bumps the generation on every handout, so
+// any stale reference to the slot built against an older generation — above
+// all the reaper's expiry-table entries, which linger until their expires
+// passes and are NOT covered by the recycle grace (tree-entry staleness is:
+// the flusher removes those within flush lag, well inside the grace) — can
+// never transition the word: the full-word CAS fails. A stale expiry sweep
+// hitting a recycled slot would otherwise silently kill the slot's new
+// occupant (Active→Expired) and park its live slot forever. Full-word CASes
+// make every transition fail against a word from another generation, which
+// kills in-flight stale CAS attempts; for freshly-loaded checks (the reaper's
+// expiry sweep) the generation captured at registration time must be
+// validated explicitly — see casGen.
 type slotArena struct {
 	mu      sync.Mutex
 	chunks  []*slotChunk // fixed length, indexed idx>>slotChunkBits
@@ -171,13 +185,87 @@ func (a *slotArena) alloc() uint32 {
 	if a.chunks[ci] == nil {
 		a.chunks[ci] = new(slotChunk)
 	}
-	a.chunks[ci][idx&(slotChunkSize-1)].Store(uint32(StatusZero))
+	s := &a.chunks[ci][idx&(slotChunkSize-1)]
+	w := s.Load() // 0 for a never-touched slot: generation 0
+	s.Store((w>>8+1)<<8 | uint32(StatusZero))
 	return idx
 }
 
 // get returns the atomic status word for idx. Lock-free; hot-path safe.
 func (a *slotArena) get(idx uint32) *atomic.Uint32 {
 	return &a.chunks[idx>>slotChunkBits][idx&(slotChunkSize-1)]
+}
+
+// slotStatus extracts the status byte from a packed slot word.
+func slotStatus(w uint32) Status { return Status(w & 0xff) }
+
+// status reads the current status of idx, ignoring generation bits.
+func (a *slotArena) status(idx uint32) Status {
+	return slotStatus(a.get(idx).Load())
+}
+
+// setStatus transitions idx to to in a CAS loop, preserving generation bits.
+func (a *slotArena) setStatus(idx uint32, to Status) {
+	s := a.get(idx)
+	for {
+		w := s.Load()
+		if s.CompareAndSwap(w, w&^0xff|uint32(to)) {
+			return
+		}
+	}
+}
+
+// cas attempts one transition from→to. The CAS is on the full observed word,
+// so it fails if the status is not from OR the generation moved (stale
+// reference) — which is exactly the protection we want.
+func (a *slotArena) cas(idx uint32, from, to Status) bool {
+	s := a.get(idx)
+	w := s.Load()
+	if slotStatus(w) != from {
+		return false
+	}
+	return s.CompareAndSwap(w, w&^0xff|uint32(to))
+}
+
+// casAny attempts the transition to from each of froms once.
+func (a *slotArena) casAny(idx uint32, to Status, froms ...Status) bool {
+	for _, from := range froms {
+		if a.cas(idx, from, to) {
+			return true
+		}
+	}
+	return false
+}
+
+// gen reads the slot's current generation. Valid while the caller holds the
+// slot: the generation moves only at handout (alloc).
+func (a *slotArena) gen(idx uint32) uint32 {
+	return a.get(idx).Load() >> 8
+}
+
+// casGen is cas restricted to a specific generation. A caller holding a
+// reference from an older generation (e.g. a reaper expiry entry created
+// before the slot was retired, recycled, and reused) is rejected here even
+// though the CURRENT status may match from: cas/casAny alone cannot detect
+// staleness, because they load the live word.
+func (a *slotArena) casGen(idx uint32, gen uint32, from, to Status) bool {
+	s := a.get(idx)
+	w := s.Load()
+	if w>>8 != gen || slotStatus(w) != from {
+		return false
+	}
+	return s.CompareAndSwap(w, w&^0xff|uint32(to))
+}
+
+// casGenAny attempts the generation-checked transition to from each of
+// froms once.
+func (a *slotArena) casGenAny(idx uint32, gen uint32, to Status, froms ...Status) bool {
+	for _, from := range froms {
+		if a.casGen(idx, gen, from, to) {
+			return true
+		}
+	}
+	return false
 }
 
 // retire parks a freed slot until recycle moves it past its grace period.
