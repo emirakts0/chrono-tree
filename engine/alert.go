@@ -98,28 +98,34 @@ func makeFlags(pt PriceType, dir Direction, autoDeactivate bool) uint8 {
 	return f
 }
 
-// compareEntry orders entries by (dims, price, id): the dim prefix scopes a
-// scan to one combination, price orders within it, UUIDs break ties. btype
-// pivots are compared with the FULL comparator, so boundary probes must be
-// dims- and id-aware: probes carry the tick's normalized dims; AlertID{}
-// sorts before any real UUID (correct for Ascend); a Descend probe needs an
-// id that sorts after every real UUID or same-key entries are skipped.
-func compareEntry(a, b entry) int {
-	for i := range a.dims {
-		if a.dims[i] != b.dims[i] {
-			if a.dims[i] < b.dims[i] {
-				return -1
+// makeEntryCompare returns the entry comparator specialized to the engine's
+// dim width: the dim-prefix loop runs only over configured slots, so a
+// width-0 engine compares (price, id) exactly like the pre-dims comparator
+// (pinned by the Sparse1M gate). The closure is captured per engine at
+// table construction — a package-level width would break processes running
+// engines with different configs. btype pivots are compared with the FULL
+// comparator, so boundary probes must be dims- and id-aware: probes carry
+// the tick's normalized dims; AlertID{} sorts before any real UUID (correct
+// for Ascend); a Descend probe needs an id that sorts after every real UUID
+// or same-key entries are skipped.
+func makeEntryCompare(width uint8) func(a, b entry) int {
+	return func(a, b entry) int {
+		for i := 0; i < int(width); i++ {
+			if a.dims[i] != b.dims[i] {
+				if a.dims[i] < b.dims[i] {
+					return -1
+				}
+				return 1
 			}
+		}
+		if a.price < b.price {
+			return -1
+		}
+		if a.price > b.price {
 			return 1
 		}
+		return bytes.Compare(a.id[:], b.id[:])
 	}
-	if a.price < b.price {
-		return -1
-	}
-	if a.price > b.price {
-		return 1
-	}
-	return bytes.Compare(a.id[:], b.id[:])
 }
 
 // entryKey builds a probe entry for keyed Ascend seeks: id AlertID{} sorts

@@ -25,10 +25,11 @@ type snapshot struct {
 	retired atomic.Bool  // set by the flusher before a replacement publishes
 }
 
-func newSnapshot() *snapshot {
+func newSnapshot(width uint8) *snapshot {
 	s := &snapshot{}
+	cmp := makeEntryCompare(width)
 	for i := range s.trees {
-		s.trees[i] = *btype.NewTableOptions(btype.TableOptions[entry]{Compare: compareEntry})
+		s.trees[i] = *btype.NewTableOptions(btype.TableOptions[entry]{Compare: cmp})
 	}
 	return s
 }

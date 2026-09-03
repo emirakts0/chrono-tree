@@ -41,17 +41,18 @@ func TestFlagRoundTrip(t *testing.T) {
 }
 
 func TestCompareEntry(t *testing.T) {
+	cmp := makeEntryCompare(0)
 	low := entry{price: 15}
 	high := entry{price: 25}
 	a := entry{price: 25, id: AlertID{1}}
 	b := entry{price: 25, id: AlertID{2}}
-	if compareEntry(low, high) >= 0 || compareEntry(high, low) <= 0 {
+	if cmp(low, high) >= 0 || cmp(high, low) <= 0 {
 		t.Fatal("price ordering broken")
 	}
-	if compareEntry(a, b) >= 0 || compareEntry(b, a) <= 0 {
+	if cmp(a, b) >= 0 || cmp(b, a) <= 0 {
 		t.Fatal("id tie-break broken")
 	}
-	if compareEntry(a, a) != 0 {
+	if cmp(a, a) != 0 {
 		t.Fatal("equality broken")
 	}
 	var zero AlertID
@@ -59,13 +60,15 @@ func TestCompareEntry(t *testing.T) {
 	if bytes.Compare(zero[:], one[:]) >= 0 {
 		t.Fatal("zero AlertID must sort first (entryKey relies on it)")
 	}
-	// dims sort before price, slot 0 most significant.
+	// dims sort before price, slot 0 most significant (needs a width > 0
+	// comparator; the width-0 cmp above ignores dims by construction).
+	wide := makeEntryCompare(dimMax)
 	x := entry{dims: Dims(1, 2), price: 100}
 	y := entry{dims: Dims(1, 3), price: 0}
-	if compareEntry(x, y) >= 0 || compareEntry(y, x) <= 0 {
+	if wide(x, y) >= 0 || wide(y, x) <= 0 {
 		t.Fatal("dims ordering broken: slot 1 must outrank price")
 	}
-	if compareEntry(entry{dims: Dims(1)}, entry{dims: Dims(2)}) >= 0 {
+	if wide(entry{dims: Dims(1)}, entry{dims: Dims(2)}) >= 0 {
 		t.Fatal("dims ordering broken: slot 0")
 	}
 }
@@ -253,7 +256,7 @@ func TestTreeIndexDistinct(t *testing.T) {
 }
 
 func TestSnapshotCopyIsolation(t *testing.T) {
-	s := newSnapshot()
+	s := newSnapshot(0)
 	ti := treeIndex(PriceBid, DirGTE)
 	s.trees[ti].Insert(entry{price: 425, id: AlertID{1}, idx: 1, flags: makeFlags(PriceBid, DirGTE, true)})
 	cp := s.copy()

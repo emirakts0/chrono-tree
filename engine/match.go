@@ -84,7 +84,7 @@ func (e *Engine) Match(t *Tick) {
 		// arrive in descending (dims, price, id) order, and once dims differ
 		// every remaining entry belongs to a smaller dim combination.
 		for en := range snap.trees[treeIndex(pt, DirGTE)].Descend(entryKeyMax(dims, price)) {
-			if en.dims != dims {
+			if e.dimWidth > 0 && en.dims != dims {
 				break
 			}
 			e.fire(sid, &en, price, t.TS)
@@ -93,7 +93,7 @@ func (e *Engine) Match(t *Tick) {
 		// Ascend from the tick price upward — all entries qualify. Same
 		// dim-block stop, mirrored for ascending order.
 		for en := range snap.trees[treeIndex(pt, DirLTE)].Ascend(entryKey(dims, price)) {
-			if en.dims != dims {
+			if e.dimWidth > 0 && en.dims != dims {
 				break
 			}
 			e.fire(sid, &en, price, t.TS)

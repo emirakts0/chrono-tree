@@ -14,7 +14,7 @@ func (e *Engine) stateFor(sym string) (SymbolID, error) {
 	}
 	st := &e.states[sid]
 	if st.snap.Load() == nil {
-		st.snap.CompareAndSwap(nil, newSnapshot())
+		st.snap.CompareAndSwap(nil, newSnapshot(e.dimWidth))
 	}
 	return sid, nil
 }
