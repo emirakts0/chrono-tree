@@ -84,3 +84,72 @@ func TestNewDimsConfig(t *testing.T) {
 	empty.Dims = []string{"ok", ""}
 	mustPanic("empty name", empty)
 }
+
+func TestDimsMatching(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Dims = []string{"segment", "tier"}
+	e := New(cfg)
+	defer e.Close()
+	up := func(v uint32, seg, tier uint16, target Price) {
+		t.Helper()
+		if err := e.Upsert(AlertSpec{ID: mkID(v), Symbol: "S", PriceType: PriceAsk,
+			Direction: DirGTE, TargetPrice: target, ValidFrom: 1, AutoDeactivate: true,
+			Dims: Dims(seg, tier)}); err != nil {
+			t.Fatalf("upsert %d: %v", v, err)
+		}
+	}
+	up(1, 10, 20, 100) // exact match, well below tick
+	up(2, 10, 21, 100) // tier differs
+	up(3, 11, 20, 100) // segment differs
+	up(4, 12, 22, 100) // both differ
+	up(5, 10, 20, 150) // exact match at the boundary price (max-id probe)
+	e.Sync()
+
+	tick := func(seg, tier uint16, price Price) {
+		e.Match(&Tick{Symbol: "S", Ask: price, Present: 1 << uint(PriceAsk),
+			TS: 1 << 40, Dims: Dims(seg, tier)})
+	}
+	tick(10, 20, 150)
+
+	fired := map[AlertID]bool{}
+	for _, tr := range drainTriggers(e) {
+		fired[tr.ID] = true
+	}
+	if !fired[mkID(1)] || !fired[mkID(5)] {
+		t.Fatal("exact-dim alerts (incl. boundary price) must fire")
+	}
+	for _, v := range []uint32{2, 3, 4} {
+		if fired[mkID(v)] {
+			t.Fatalf("alert %d fired despite dim mismatch", v)
+		}
+	}
+
+	// Fan-out shape: a second tick matching only alert 3's dims fires it.
+	tick(11, 20, 150)
+	for _, tr := range drainTriggers(e) {
+		if tr.ID != mkID(3) {
+			t.Fatalf("unexpected fire %v", tr.ID)
+		}
+	}
+}
+
+func TestMatchDimsZeroAllocs(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Dims = []string{"segment", "tier"}
+	e := New(cfg)
+	defer e.Close()
+	for i := 0; i < 50; i++ {
+		if err := e.Upsert(AlertSpec{ID: mkID(uint32(i + 1)), Symbol: "S",
+			PriceType: PriceAsk, Direction: DirGTE,
+			TargetPrice: Price(1000 + i*10), ValidFrom: 1, AutoDeactivate: true,
+			Dims: Dims(uint16(i%3), uint16(i%5))}); err != nil {
+			t.Fatalf("upsert %d: %v", i, err)
+		}
+	}
+	e.Sync()
+	tick := Tick{Symbol: "S", Ask: 500, Present: 1 << uint(PriceAsk),
+		TS: 1 << 40, Dims: Dims(1, 2)}
+	if allocs := testing.AllocsPerRun(200, func() { e.Match(&tick) }); allocs != 0 {
+		t.Fatalf("Match allocates: %.0f allocs/op, want 0", allocs)
+	}
+}

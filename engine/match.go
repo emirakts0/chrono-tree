@@ -39,6 +39,13 @@ func (e *Engine) Match(t *Tick) {
 	if t.Present == 0 {
 		return
 	}
+	// Trailing dim slots are normalized so zero-value ticks work at any
+	// width; a sentinel inside width is a malformed tick — dropped like
+	// Present == 0 (Match is fire-and-forget, it cannot return errors).
+	dims, ok := normalizeDims(t.Dims, e.dimWidth)
+	if !ok {
+		return
+	}
 	sid, ok := e.syms.Get(t.Symbol)
 	if !ok {
 		return
@@ -71,14 +78,24 @@ func (e *Engine) Match(t *Tick) {
 		price := priceOf(t, pt)
 		// GTE fires when market >= target ⇔ every target <= price:
 		// Descend from the tick price downward — all entries qualify. The
-		// probe carries the max id so entries exactly at the tick price are
-		// not skipped by the id tie-break.
-		for en := range snap.trees[treeIndex(pt, DirGTE)].Descend(entryKeyMax(price)) {
+		// probe carries the tick's dims and the max id so entries exactly at
+		// the tick price are not skipped by the id tie-break. The scan is
+		// unbounded below, so it stops the moment the dim block ends: entries
+		// arrive in descending (dims, price, id) order, and once dims differ
+		// every remaining entry belongs to a smaller dim combination.
+		for en := range snap.trees[treeIndex(pt, DirGTE)].Descend(entryKeyMax(dims, price)) {
+			if en.dims != dims {
+				break
+			}
 			e.fire(sid, &en, price, t.TS)
 		}
 		// LTE fires when market <= target ⇔ every target >= price:
-		// Ascend from the tick price upward — all entries qualify.
-		for en := range snap.trees[treeIndex(pt, DirLTE)].Ascend(entryKey(price)) {
+		// Ascend from the tick price upward — all entries qualify. Same
+		// dim-block stop, mirrored for ascending order.
+		for en := range snap.trees[treeIndex(pt, DirLTE)].Ascend(entryKey(dims, price)) {
+			if en.dims != dims {
+				break
+			}
 			e.fire(sid, &en, price, t.TS)
 		}
 	}

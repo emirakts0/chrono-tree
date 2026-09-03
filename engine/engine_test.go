@@ -59,6 +59,15 @@ func TestCompareEntry(t *testing.T) {
 	if bytes.Compare(zero[:], one[:]) >= 0 {
 		t.Fatal("zero AlertID must sort first (entryKey relies on it)")
 	}
+	// dims sort before price, slot 0 most significant.
+	x := entry{dims: Dims(1, 2), price: 100}
+	y := entry{dims: Dims(1, 3), price: 0}
+	if compareEntry(x, y) >= 0 || compareEntry(y, x) <= 0 {
+		t.Fatal("dims ordering broken: slot 1 must outrank price")
+	}
+	if compareEntry(entry{dims: Dims(1)}, entry{dims: Dims(2)}) >= 0 {
+		t.Fatal("dims ordering broken: slot 0")
+	}
 }
 
 func TestSlotArena(t *testing.T) {

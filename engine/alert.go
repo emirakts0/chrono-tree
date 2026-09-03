@@ -98,12 +98,21 @@ func makeFlags(pt PriceType, dir Direction, autoDeactivate bool) uint8 {
 	return f
 }
 
-// compareEntry orders entries by (price, id): price-ordered iteration with
-// UUIDs breaking ties. btype pivots are compared with the FULL comparator, so
-// boundary probes must be id-aware: AlertID{} sorts before any real UUID
-// (correct for Ascend); a Descend probe needs an id that sorts after every
-// real UUID or same-price entries are skipped (pinned by Task 1's test).
+// compareEntry orders entries by (dims, price, id): the dim prefix scopes a
+// scan to one combination, price orders within it, UUIDs break ties. btype
+// pivots are compared with the FULL comparator, so boundary probes must be
+// dims- and id-aware: probes carry the tick's normalized dims; AlertID{}
+// sorts before any real UUID (correct for Ascend); a Descend probe needs an
+// id that sorts after every real UUID or same-key entries are skipped.
 func compareEntry(a, b entry) int {
+	for i := range a.dims {
+		if a.dims[i] != b.dims[i] {
+			if a.dims[i] < b.dims[i] {
+				return -1
+			}
+			return 1
+		}
+	}
 	if a.price < b.price {
 		return -1
 	}
@@ -114,18 +123,22 @@ func compareEntry(a, b entry) int {
 }
 
 // entryKey builds a probe entry for keyed Ascend seeks: id AlertID{} sorts
-// first, so Ascend(entryKey(price)) yields every entry with price >= probe.
-func entryKey(price Price) entry { return entry{price: price} }
+// first, so Ascend(entryKey(dims, price)) yields every entry with the probe's
+// dims and price >= probe.
+func entryKey(dims [dimMax]uint16, price Price) entry {
+	return entry{dims: dims, price: price}
+}
 
 // entryKeyMax builds a probe entry for keyed Descend seeks: the all-ones id
-// sorts after every real UUID, so Descend(entryKeyMax(price)) yields every
-// entry with price <= probe (including entries exactly at the boundary price).
-func entryKeyMax(price Price) entry {
+// sorts after every real UUID, so Descend(entryKeyMax(dims, price)) yields
+// every entry with the probe's dims and price <= probe (including entries
+// exactly at the boundary price).
+func entryKeyMax(dims [dimMax]uint16, price Price) entry {
 	var maxID AlertID
 	for i := range maxID {
 		maxID[i] = 0xff
 	}
-	return entry{price: price, id: maxID}
+	return entry{dims: dims, price: price, id: maxID}
 }
 
 // slotArena hands out dense uint32 indices into fixed-size chunks of atomic
