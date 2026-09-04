@@ -113,7 +113,7 @@ type watcher struct {
 func newWatcher() *watcher { return &watcher{ch: make(chan *chronov1.Trigger, 256)} }
 
 // NewCore builds the engine with the catalog's dim vocabulary.
-func NewCore(cfg engine.Config, cat *catalog.Catalog, m Metrics, st *stats.Stats, now time.Time) *Core {
+func NewCore(cfg engine.Config, cat *catalog.Catalog, m Metrics, st *stats.Stats) *Core {
 	cfg.Dims = cat.Dims() // the catalog owns the vocabulary
 	c := &Core{
 		Cat:     cat,
@@ -324,7 +324,6 @@ func (c *Core) ingestTick(t *chronov1.Tick, now time.Time) error {
 	if !ok {
 		return fmt.Errorf("venue %q: %w", t.GetVenue(), errUnknownRefdata)
 	}
-	c.venueTicks[t.GetVenue()].Add(1)
 	tv, ok := c.Cat.Value(catalog.DimTier, t.GetTier())
 	if !ok {
 		return fmt.Errorf("tier %q: %w", t.GetTier(), errUnknownRefdata)
@@ -353,6 +352,7 @@ func (c *Core) ingestTick(t *chronov1.Tick, now time.Time) error {
 	if ts > 0 {
 		c.metrics.TickLatency(now.Sub(time.Unix(0, ts)))
 	}
+	c.venueTicks[t.GetVenue()].Add(1)
 	return nil
 }
 
@@ -472,6 +472,10 @@ func (c *Core) deliver(tr *engine.Trigger, now time.Time) {
 		return
 	}
 	c.mu.Lock()
+	if a.State != StateActive {
+		c.mu.Unlock()
+		return // cancelled/replaced between the read above and here
+	}
 	a.State = StateTriggered
 	c.mu.Unlock()
 	out := &chronov1.Trigger{

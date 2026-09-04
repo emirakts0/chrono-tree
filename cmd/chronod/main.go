@@ -52,7 +52,7 @@ func run(ctx context.Context, grpcAddr, httpAddr string) error {
 	reg := prometheus.NewRegistry()
 	pm := server.NewPromMetrics(reg)
 	st := stats.New(now)
-	core := service.NewCore(engine.DefaultConfig(), catalog.Default(), pm, st, now)
+	core := service.NewCore(engine.DefaultConfig(), catalog.Default(), pm, st)
 	defer core.Close()
 
 	statusSrv := server.New(core, st, reg)

@@ -1,11 +1,8 @@
 version: v2
-# The second input generates api/gen/buf/validate/validate.pb.go from the
-# protovalidate module; buf v2 only generates workspace files by default.
+# The buf.validate descriptor comes from the buf.build/gen/go/bufbuild/protovalidate
+# module dependency — do not generate a local copy (double registration panics at init).
 inputs:
   - directory: .
-  - module: buf.build/bufbuild/protovalidate
-    paths:
-      - buf/validate
 plugins:
   - local: protoc-gen-go
     out: api/gen

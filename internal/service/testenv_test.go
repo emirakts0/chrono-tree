@@ -25,7 +25,7 @@ type testEnv struct {
 func newEnv(t *testing.T) *testEnv {
 	t.Helper()
 	cat := catalog.Default()
-	core := NewCore(engine.DefaultConfig(), cat, NoopMetrics{}, stats.New(time.Now()), time.Now())
+	core := NewCore(engine.DefaultConfig(), cat, NoopMetrics{}, stats.New(time.Now()))
 	lis := bufconn.Listen(1 << 20)
 	srv := grpc.NewServer(grpc.ChainUnaryInterceptor(NewValidateInterceptor()))
 	chronov1.RegisterAlertServiceServer(srv, core)

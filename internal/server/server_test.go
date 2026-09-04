@@ -40,7 +40,7 @@ func newServer(t *testing.T) (*Server, *service.Core) {
 	t.Helper()
 	now := time.Now()
 	reg := prometheus.NewRegistry()
-	core := service.NewCore(engine.DefaultConfig(), catalog.Default(), service.NoopMetrics{}, stats.New(now), now)
+	core := service.NewCore(engine.DefaultConfig(), catalog.Default(), service.NoopMetrics{}, stats.New(now))
 	t.Cleanup(core.Close)
 	return New(core, stats.New(now), reg), core
 }
@@ -99,7 +99,7 @@ func TestReadyzStaleUnderSynctest(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		now := time.Now()
 		reg := prometheus.NewRegistry()
-		core := service.NewCore(engine.DefaultConfig(), catalog.Default(), service.NoopMetrics{}, stats.New(now), now)
+		core := service.NewCore(engine.DefaultConfig(), catalog.Default(), service.NoopMetrics{}, stats.New(now))
 		defer core.Close()
 		s := New(core, stats.New(now), reg)
 		ts := httptest.NewTestServer(t, s.Handler())
@@ -153,7 +153,7 @@ func TestMetricsEndpoint(t *testing.T) {
 	now := time.Now()
 	reg := prometheus.NewRegistry()
 	pm := NewPromMetrics(reg)
-	core := service.NewCore(engine.DefaultConfig(), catalog.Default(), pm, stats.New(now), now)
+	core := service.NewCore(engine.DefaultConfig(), catalog.Default(), pm, stats.New(now))
 	t.Cleanup(core.Close)
 	s := New(core, stats.New(now), reg)
 	ts := httptest.NewServer(s.Handler())

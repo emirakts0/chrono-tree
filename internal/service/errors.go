@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"log/slog"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -32,6 +33,7 @@ func mapEngineErr(err error) error {
 	case errors.Is(err, engine.ErrDims):
 		return status.Error(codes.InvalidArgument, "invalid dimension combination")
 	default:
-		return status.Error(codes.Internal, err.Error())
+		slog.Error("unmapped engine error", "err", err)
+		return status.Error(codes.Internal, "internal error")
 	}
 }

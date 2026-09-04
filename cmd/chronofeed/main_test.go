@@ -23,7 +23,7 @@ func TestMain(m *testing.M) { goleak.VerifyTestMain(m) }
 func newCore(t *testing.T) (*service.Core, *grpc.ClientConn) {
 	t.Helper()
 	now := time.Now()
-	core := service.NewCore(engine.DefaultConfig(), catalog.Default(), service.NoopMetrics{}, stats.New(now), now)
+	core := service.NewCore(engine.DefaultConfig(), catalog.Default(), service.NoopMetrics{}, stats.New(now))
 	t.Cleanup(core.Close)
 	lis := bufconn.Listen(1 << 20)
 	srv := grpc.NewServer()
