@@ -141,7 +141,7 @@ func synthAnchor(name string) string {
 	h := fnv.New64a()
 	_, _ = h.Write([]byte(name))
 	u := h.Sum64()
-	x := math.Exp(float64(u%10_000) / 10_000 * (math.Log(100) - math.Log(0.00001)) + math.Log(0.00001))
+	x := math.Exp(float64(u%10_000)/10_000*(math.Log(100)-math.Log(0.00001)) + math.Log(0.00001))
 	dec := decimalsFor(x)
 	base := int64(math.Round(x * math.Pow10(int(dec))))
 	return price.Format(base, dec)

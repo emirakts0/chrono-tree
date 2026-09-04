@@ -104,9 +104,12 @@ type Core struct {
 }
 
 // NewCore builds the engine with the catalog's dim vocabulary. The
-// publisher receives every enriched trigger; nil is not allowed — pass
-// pub.Noop{} when there is nothing to publish to.
+// publisher receives every enriched trigger; nil falls back to pub.Noop
+// (a nil would otherwise panic at the first deliver, far from the cause).
 func NewCore(cfg engine.Config, cat *catalog.Catalog, m Metrics, st *stats.Stats, p pub.Publisher) *Core {
+	if p == nil {
+		p = pub.Noop{}
+	}
 	cfg.Dims = cat.Dims() // the catalog owns the vocabulary
 	c := &Core{
 		Cat:     cat,

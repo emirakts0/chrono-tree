@@ -106,8 +106,9 @@ func run(ctx context.Context, grpcAddr, httpAddr, natsURL string) error {
 	slog.Info("shutting down")
 	statusSrv.SetShuttingDown()
 
-	// Bound GracefulStop: watchers get their in-flight triggers, then we
-	// stop accepting; stuck connections are cut at shutdownGrace.
+	// Bound GracefulStop: in-flight RPCs complete, then we stop accepting;
+	// stuck connections are cut at shutdownGrace. The publisher drain below
+	// flushes any triggers still pending on the NATS connection.
 	stopped := make(chan struct{})
 	go func() { gs.GracefulStop(); close(stopped) }()
 	select {

@@ -150,7 +150,7 @@ func runSeed(ctx context.Context, c Clients, out io.Writer, seed uint64, nAlerts
 		target := int64(float64(ref)*f + 0.5)
 		_, err = c.Alerts.UpsertAlert(ctx, &chronov1.UpsertAlertRequest{
 			Symbol: sym.Name, PriceType: chronov1.PriceType_PRICE_TYPE_ASK,
-			Direction: chronov1.Direction_DIRECTION_ABOVE,
+			Direction:   chronov1.Direction_DIRECTION_ABOVE,
 			TargetPrice: price.Format(target, sym.Decimals),
 			Venue:       venue, Tier: tier,
 		})
