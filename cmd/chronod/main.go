@@ -66,6 +66,13 @@ func run(ctx context.Context, grpcAddr, httpAddr, natsURL string) error {
 	defer core.Close()
 
 	statusSrv := server.New(core, st, reg)
+
+	// Dashboard live feed: re-consume our own published triggers. The
+	// handler fans out to browsers over SSE; it never blocks us.
+	if err := publisher.SubscribeTriggers(statusSrv.HandleTrigger); err != nil {
+		return fmt.Errorf("subscribe triggers: %w", err)
+	}
+
 	httpServer := &http.Server{Addr: httpAddr, Handler: statusSrv.Handler()}
 	httpLn, err := net.Listen("tcp", httpAddr)
 	if err != nil {

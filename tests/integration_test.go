@@ -5,6 +5,7 @@
 package tests
 
 import (
+	"bufio"
 	"context"
 	"encoding/json/v2"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -118,13 +120,15 @@ func TestIntegrationEndToEnd(t *testing.T) {
 	}
 	defer func() { _ = conn.Close() }()
 	alerts := chronov1.NewAlertServiceClient(conn)
-	if _, err := alerts.UpsertAlert(ctx, &chronov1.UpsertAlertRequest{
+	resp, err := alerts.UpsertAlert(ctx, &chronov1.UpsertAlertRequest{
 		Symbol: "BTCUSDT", PriceType: chronov1.PriceType_PRICE_TYPE_ASK,
 		Direction:   chronov1.Direction_DIRECTION_BELOW,
 		TargetPrice: "65100.00", Venue: "ATLAS", Tier: "TOP",
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
+	alertID := resp.GetAlertId()
 
 	msg, err := sub.NextMsg(25 * time.Second)
 	if err != nil {
@@ -160,6 +164,7 @@ func TestIntegrationEndToEnd(t *testing.T) {
 	// seconds since the first tick, so the daemon's ramp-up second dilutes
 	// it; poll until the gate is met or we run out of time.
 	var rate float64
+	gateMet := false
 	rateDeadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(rateDeadline) {
 		sresp, err := http.Get("http://" + httpAddr + "/stats")
@@ -174,9 +179,75 @@ func TestIntegrationEndToEnd(t *testing.T) {
 		sresp.Body.Close()
 		rate, _ = body["ticks_per_sec"].(float64)
 		if rate >= 19500 {
-			return // gate met
+			gateMet = true
+			break
 		}
 		time.Sleep(1 * time.Second)
 	}
-	t.Fatalf("ticks_per_sec = %v, want >= 19500 (spec gate)", rate)
+	if !gateMet {
+		t.Fatalf("ticks_per_sec = %v, want >= 19500 (spec gate)", rate)
+	}
+	t.Logf("ticks_per_sec = %.0f", rate)
+
+	// Dashboard: the SPA is served and the inquiry API resolves the alert.
+	// The state is "triggered" because the trigger assertion above already
+	// proved the alert fired exactly once.
+	ui, err := http.Get("http://" + httpAddr + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	uiBody, err := io.ReadAll(ui.Body)
+	ui.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ui.StatusCode != 200 || !strings.Contains(string(uiBody), "app.js") {
+		t.Fatalf("ui index: status=%d", ui.StatusCode)
+	}
+
+	inq, err := http.Get("http://" + httpAddr + "/api/alerts/" + alertID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var detail struct {
+		Symbol string `json:"symbol"`
+		State  string `json:"state"`
+	}
+	if err := json.UnmarshalRead(inq.Body, &detail); err != nil {
+		inq.Body.Close()
+		t.Fatal(err)
+	}
+	inq.Body.Close()
+	if detail.Symbol != "BTCUSDT" || detail.State != "triggered" {
+		t.Fatalf("inquiry detail = %+v", detail)
+	}
+
+	// One SSE frame check: hello + at least one snapshot, bounded by a 5s
+	// request deadline so a broken stream cannot hang the test.
+	sseCtx, sseCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer sseCancel()
+	sseReq, err := http.NewRequestWithContext(sseCtx, http.MethodGet,
+		"http://"+httpAddr+"/api/stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sse, err := http.DefaultClient.Do(sseReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sse.Body.Close()
+	sc := bufio.NewScanner(sse.Body)
+	sawHello, sawSnap := false, false
+	for sc.Scan() && !(sawHello && sawSnap) {
+		line := sc.Text()
+		if strings.Contains(line, `"type":"hello"`) {
+			sawHello = true
+		}
+		if strings.Contains(line, `"type":"snapshot"`) {
+			sawSnap = true
+		}
+	}
+	if !sawHello || !sawSnap {
+		t.Fatalf("sse: hello=%v snapshot=%v (err=%v)", sawHello, sawSnap, sc.Err())
+	}
 }

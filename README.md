@@ -69,7 +69,9 @@ NATS publisher: subject mapping, JSON payload, headers (`Noop` for tests).
 ### `internal/server`
 
 chronod's HTTP status surface: `/healthz`, `/readyz`, `/stats` (encoding/json/v2),
-`/metrics` (Prometheus) and `/debug/pprof/`.
+`/metrics` (Prometheus), `/debug/pprof/` — plus the live monitoring dashboard:
+`/` (embedded bento-grid SPA), `/api/stream` (SSE: 1s snapshots + live triggers
+via NATS loopback), `/api/alerts` (read-only inquiry).
 
 ### `internal/feed`
 
@@ -185,8 +187,14 @@ go run ./cmd/chronod &
 go run ./cmd/chronofeed -rate 20000 &
 go run ./cmd/chronoctl seed -n 1000
 nats sub 'chrono.triggers.>'     # watch triggers fire
+xdg-open http://localhost:8080/  # live bento dashboard
 curl -s localhost:8080/stats | jq
 ```
+
+The dashboard is embedded in the binary — no extra process. Its TypeScript
+source lives in `internal/server/web/src`; the committed bundle (`dist/app.js`)
+is rebuilt with `internal/server/web/build.sh` (standalone `esbuild` + `tsc`;
+`go build` never needs it).
 
 Prices are decimal strings end to end (`"65000.12"`), converted exactly
 through the `price` package at the gRPC boundary. Triggers are delivered
