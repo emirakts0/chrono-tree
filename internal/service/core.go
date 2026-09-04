@@ -5,8 +5,15 @@ package service
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	chronov1 "github.com/emir/chrono-tree/api/gen/chrono/v1"
 	"github.com/emir/chrono-tree/engine"
@@ -82,6 +89,9 @@ type Core struct {
 
 	mu     sync.RWMutex
 	alerts map[engine.AlertID]*Alert
+
+	feedEver     atomic.Bool
+	feedLastSeen atomic.Int64 // unix nanos
 }
 
 // NewCore builds the engine with the catalog's dim vocabulary.
@@ -258,4 +268,118 @@ func (c *Core) CancelAlert(ctx context.Context, req *chronov1.CancelAlertRequest
 	c.mu.Unlock()
 	c.metrics.AlertsActive(c.countState(StateActive))
 	return &chronov1.CancelAlertResponse{}, nil
+}
+
+// errUnknownRefdata marks the batch-reject class (spec §8): a tick naming
+// a symbol/venue/tier outside the catalog means the feed is buggy — the
+// whole batch is rejected loudly.
+var errUnknownRefdata = errors.New("unknown reference data")
+
+// presentBidAskMid is the Present mask for ticks carrying bid, ask and a
+// derived mid.
+func presentBidAskMid() uint8 {
+	return uint8(1)<<uint(engine.PriceBid) | uint8(1)<<uint(engine.PriceAsk) | uint8(1)<<uint(engine.PriceMid)
+}
+
+// ingestTick converts one wire tick to an engine tick and Matches it.
+// Errors: wrapped errUnknownRefdata (batch reject) or a price.Parse error
+// (drop this tick only).
+func (c *Core) ingestTick(t *chronov1.Tick, now time.Time) error {
+	sym, ok := c.Cat.Symbol(t.GetSymbol())
+	if !ok {
+		return fmt.Errorf("%q: %w", t.GetSymbol(), errUnknownRefdata)
+	}
+	vv, ok := c.Cat.Value(catalog.DimVenue, t.GetVenue())
+	if !ok {
+		return fmt.Errorf("venue %q: %w", t.GetVenue(), errUnknownRefdata)
+	}
+	tv, ok := c.Cat.Value(catalog.DimTier, t.GetTier())
+	if !ok {
+		return fmt.Errorf("tier %q: %w", t.GetTier(), errUnknownRefdata)
+	}
+	bid, err := price.Parse(t.GetBid(), sym.Decimals)
+	if err != nil {
+		return fmt.Errorf("bid %q: %v", t.GetBid(), err)
+	}
+	ask, err := price.Parse(t.GetAsk(), sym.Decimals)
+	if err != nil {
+		return fmt.Errorf("ask %q: %v", t.GetAsk(), err)
+	}
+	ts := t.GetTsUnixNanos()
+	c.eng.Match(&engine.Tick{
+		Symbol:  sym.Name,
+		Bid:     engine.Price(bid),
+		Ask:     engine.Price(ask),
+		Mid:     engine.Price((bid + ask) / 2),
+		Present: presentBidAskMid(),
+		TS:      ts,
+		Dims:    engine.Dims(vv, tv),
+	})
+	c.stats.Ticks.Add(1)
+	c.stats.TickRate.Add(1, now)
+	c.metrics.Tick(t.GetVenue(), t.GetTier())
+	if ts > 0 {
+		c.metrics.TickLatency(now.Sub(time.Unix(0, ts)))
+	}
+	return nil
+}
+
+// StreamTicks ingests a client-stream of tick batches until EOF, then
+// reports per-stream totals.
+func (c *Core) StreamTicks(ss chronov1.FeedService_StreamTicksServer) error {
+	var accepted, dropped uint64
+	first := true
+	for {
+		batch, err := ss.Recv()
+		if err == io.EOF {
+			return ss.SendAndClose(&chronov1.FeedStatus{Accepted: accepted, Dropped: dropped})
+		}
+		if err != nil {
+			return err
+		}
+		now := c.now()
+		if first {
+			c.feedEver.Store(true)
+			c.metrics.FeedConnected(true)
+			first = false
+		}
+		c.feedLastSeen.Store(now.UnixNano())
+		c.metrics.TickBatch(len(batch.GetTicks()))
+		for _, tk := range batch.GetTicks() {
+			if err := c.ingestTick(tk, now); err != nil {
+				if errors.Is(err, errUnknownRefdata) {
+					return status.Errorf(codes.InvalidArgument, "batch rejected: %v", err)
+				}
+				dropped++
+				c.stats.TicksDropped.Add(1)
+				c.metrics.TickDropped()
+				continue
+			}
+			accepted++
+		}
+	}
+}
+
+// FeedLastSeen reports the last accepted-batch time (zero before any).
+func (c *Core) FeedLastSeen() time.Time {
+	ns := c.feedLastSeen.Load()
+	if ns == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, ns)
+}
+
+func (c *Core) FeedEverConnected() bool { return c.feedEver.Load() }
+
+// GetCatalog serves the reference data.
+func (c *Core) GetCatalog(ctx context.Context, _ *chronov1.CatalogRequest) (*chronov1.CatalogReply, error) {
+	syms := make([]*chronov1.SymbolInfo, 0, len(c.Cat.Symbols()))
+	for _, s := range c.Cat.Symbols() {
+		syms = append(syms, &chronov1.SymbolInfo{Symbol: s.Name, Decimals: uint32(s.Decimals), ReferencePrice: s.Reference})
+	}
+	dims := make([]*chronov1.DimInfo, 0, len(c.Cat.Dims()))
+	for _, d := range c.Cat.Dims() {
+		dims = append(dims, &chronov1.DimInfo{Name: d, Values: c.Cat.DimValues(d)})
+	}
+	return &chronov1.CatalogReply{Symbols: syms, Dims: dims}, nil
 }
