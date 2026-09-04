@@ -119,8 +119,8 @@ Second listener, plain `net/http` with method-pattern `ServeMux`:
   least once and seen within 30s (readiness visibly flips in the demo).
 - `GET /stats` — `encoding/json/v2` snapshot: uptime, alerts by state,
   triggers fired total + 1-min rate, ticks received total + rate, per-venue
-  tick counts, watcher count, engine queue depths (mutation backlog, trigger
-  drops).
+  tick counts, watcher count, engine stats (live alerts, dropped triggers —
+  the engine exposes no queue-depth accessor and stays frozen).
 - `GET /metrics` — Prometheus via `client_golang`: counters
   `chrono_ticks_total{venue,tier}`, `chrono_triggers_fired_total{symbol,venue,tier}`,
   `chrono_triggers_delivered_total`, `chrono_trigger_drops_total`,
@@ -163,7 +163,7 @@ The first four are Go 1.27 additions; the last two are the modern baseline.
 |---|---|
 | stdlib `uuid` | Alert IDs (UUIDv7 → `AlertID[16]byte`, time-ordered) |
 | `encoding/json/v2` | `/stats` marshaling |
-| `testing/synctest` + `httptest.NewTestServer` | Deterministic readiness/backoff tests, no wall-clock sleeps |
+| `testing/synctest` + `httptest.NewTestServer` | Deterministic readiness flip and staleness-window tests, no wall-clock sleeps |
 | `math/rand/v2` (`ChaCha8`) | Simulator RNG, seedable |
 | `net/http` method patterns | Status mux |
 | `log/slog` | Structured logging |
