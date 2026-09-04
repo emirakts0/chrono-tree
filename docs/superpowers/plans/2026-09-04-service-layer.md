@@ -3202,6 +3202,9 @@ func (m *Market) Tick(ts time.Time) TickMsg {
 	m.ti++
 
 	half := int64(math.Round(float64(p.base) * halfSpreadFrac(tier)))
+	if half < 1 {
+		half = 1 // sub-cent symbols: a fraction-of-a-base-unit spread rounds to zero
+	}
 	if half >= p.base {
 		half = p.base / 2
 	}
