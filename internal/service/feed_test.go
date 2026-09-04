@@ -10,7 +10,6 @@ import (
 	"google.golang.org/grpc/status"
 
 	chronov1 "github.com/emir/chrono-tree/api/gen/chrono/v1"
-	"github.com/emir/chrono-tree/engine"
 )
 
 type tickStream struct {
@@ -52,6 +51,20 @@ func runTicks(t *testing.T, e *testEnv, batches ...*chronov1.TickBatch) (*chrono
 
 func tick(symbol, bid, ask, venue, tier string) *chronov1.Tick {
 	return &chronov1.Tick{Symbol: symbol, Bid: bid, Ask: ask, Venue: venue, Tier: tier, TsUnixNanos: time.Now().UnixNano()}
+}
+
+// waitTriggers waits until the trigger pump (the sole engine-ring consumer)
+// has fired exactly n triggers.
+func waitTriggers(t *testing.T, e *testEnv, n uint64) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for e.core.stats.TriggersFired.Load() < n && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(25 * time.Millisecond) // let a buggy extra fire land
+	if got := e.core.stats.TriggersFired.Load(); got != n {
+		t.Fatalf("triggers fired = %d, want %d", got, n)
+	}
 }
 
 func TestStreamTicksAccepts(t *testing.T) {
@@ -123,14 +136,11 @@ func TestIngestFiresAlert(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	// Pump runs asynchronously (Task 6 drains the ring); for this test,
-	// drain the engine ring directly.
-	tr, ok := e.core.Engine().Triggers().Pop()
-	if !ok {
-		t.Fatal("alert did not fire")
-	}
-	if tr.Price != engine.Price(6500100) { // 65001.00 at 2 decimals
-		t.Fatalf("fired price = %d, want 6500100", tr.Price)
+	// The trigger pump (Task 6) drains the ring asynchronously; the fired
+	// price itself is asserted in TestWatchReceivesEnrichedTrigger.
+	waitTriggers(t, e, 1)
+	if got := e.core.AlertsByState()["triggered"]; got != 1 {
+		t.Fatalf("triggered state count = %d, want 1", got)
 	}
 }
 
@@ -153,11 +163,9 @@ func TestIngestDimsScoping(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := e.core.Engine().Triggers().Pop(); !ok {
-		t.Fatal("ATLAS alert did not fire")
-	}
-	if _, ok := e.core.Engine().Triggers().Pop(); ok {
-		t.Fatal("NOVA alert fired on an ATLAS tick")
+	waitTriggers(t, e, 1)
+	if got := e.core.AlertsByState()["active"]; got != 1 {
+		t.Fatalf("active alerts = %d, want 1 (NOVA must stay active)", got)
 	}
 }
 
