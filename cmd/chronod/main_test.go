@@ -9,19 +9,38 @@ import (
 	"time"
 
 	"go.uber.org/goleak"
+
+	"github.com/emir/chrono-tree/internal/pub/pubtest"
 )
 
 func TestMain(m *testing.M) {
 	goleak.VerifyTestMain(m)
 }
 
+func TestRunNATSUnavailableIsFatal(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// Port 1 never answers; run must return promptly with an error.
+	done := make(chan error, 1)
+	go func() { done <- run(ctx, freeAddr(t), freeAddr(t), "nats://127.0.0.1:1") }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("run should fail without NATS")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("run did not fail fast without NATS")
+	}
+}
+
 func TestRunServesHTTP(t *testing.T) {
+	natsURL := pubtest.Start(t)
 	grpcAddr, httpAddr := freeAddr(t), freeAddr(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- run(ctx, grpcAddr, httpAddr) }()
+	go func() { done <- run(ctx, grpcAddr, httpAddr, natsURL) }()
 
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	ok := false
 	for time.Now().Before(deadline) {
 		resp, err := http.Get(fmt.Sprintf("http://%s/healthz", httpAddr))

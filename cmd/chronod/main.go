@@ -36,24 +36,33 @@ const shutdownGrace = 10 * time.Second
 func main() {
 	grpcAddr := flag.String("grpc-addr", ":9090", "gRPC listen address")
 	httpAddr := flag.String("http-addr", ":8080", "HTTP status listen address")
+	natsURL := flag.String("nats-url", "nats://localhost:4222", "NATS server URL (trigger publishing)")
 	flag.Parse()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	if err := run(ctx, *grpcAddr, *httpAddr); err != nil {
+	if err := run(ctx, *grpcAddr, *httpAddr, *natsURL); err != nil {
 		slog.Error("chronod exit", "err", err)
 		os.Exit(1)
 	}
 	slog.Info("chronod stopped")
 }
 
-func run(ctx context.Context, grpcAddr, httpAddr string) error {
+func run(ctx context.Context, grpcAddr, httpAddr, natsURL string) error {
+	// NATS is a boot dependency: unreachable broker is a fatal error.
+	// Later outages reconnect forever; publishes during them drop-and-count.
+	publisher, err := pub.NewNATS(natsURL)
+	if err != nil {
+		return fmt.Errorf("nats: %w", err)
+	}
+	defer func() { _ = publisher.Close() }() // backstop; the shutdown path drains first
+
 	now := time.Now()
 	reg := prometheus.NewRegistry()
 	pm := server.NewPromMetrics(reg)
 	st := stats.New(now)
-	core := service.NewCore(engine.DefaultConfig(), catalog.Default(), pm, st, pub.Noop{})
+	core := service.NewCore(engine.DefaultConfig(), catalog.Default(), pm, st, publisher)
 	defer core.Close()
 
 	statusSrv := server.New(core, st, reg)
@@ -107,7 +116,10 @@ func run(ctx context.Context, grpcAddr, httpAddr string) error {
 		gs.Stop()
 	}
 
-	core.Close() // stops the pump, then the engine (idempotent; the defer is a backstop)
+	core.Close()                              // stops the pump, then the engine (idempotent; the defer is a backstop)
+	if err := publisher.Close(); err != nil { // bounded 3s drain inside
+		slog.Warn("nats drain", "err", err)
+	}
 	shCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
 	defer cancel()
 	_ = httpServer.Shutdown(shCtx)
