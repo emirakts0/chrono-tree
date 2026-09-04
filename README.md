@@ -195,12 +195,12 @@ through NATS — subscribe with wildcards like `chrono.triggers.ATLAS.*` or
 and counted (`triggers_publish_dropped`), never blocking the pump — the
 same drop-and-log philosophy as the engine's own ring. The engine itself is
 untouched: the service layer adds
-catalogs, conversion, fan-out and observability around it.
+catalogs, conversion, publishing and observability around it.
 
 Integration smoke (real binaries over real sockets):
 
 ```sh
-go test -tags integration ./tests -run Integration -v -timeout 120s
+go test -tags integration ./tests -run Integration -v -timeout 180s
 ```
 
 Engine, `price` boundary and service layer are complete. Not yet built:
