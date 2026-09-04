@@ -70,8 +70,7 @@ NATS publisher: subject mapping, JSON payload, headers (`Noop` for tests).
 
 chronod's HTTP status surface: `/healthz`, `/readyz`, `/stats` (encoding/json/v2),
 `/metrics` (Prometheus), `/debug/pprof/` — plus the live monitoring dashboard:
-`/` (embedded bento-grid SPA), `/api/stream` (SSE: 1s snapshots + live triggers
-via NATS loopback), `/api/alerts` (read-only inquiry).
+`/` (embedded bento-grid SPA), `/api/stream` (SSE: 1s snapshots, 10-slot trigger batches via NATS loopback, 2-minute metric history on connect), `/api/alerts` (read-only inquiry).
 
 ### `internal/feed`
 

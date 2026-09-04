@@ -133,6 +133,7 @@ func run(ctx context.Context, grpcAddr, httpAddr, natsURL string) error {
 	shCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
 	defer cancel()
 	_ = httpServer.Shutdown(shCtx)
+	statusSrv.Close() // stop the 1s tick goroutine (SSE relays are gone); the defer is now a no-op
 
 	if err := <-httpErr; err != nil && err != http.ErrServerClosed {
 		return err

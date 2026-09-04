@@ -237,8 +237,8 @@ func TestIntegrationEndToEnd(t *testing.T) {
 	}
 	defer sse.Body.Close()
 	sc := bufio.NewScanner(sse.Body)
-	sawHello, sawSnap := false, false
-	for sc.Scan() && !(sawHello && sawSnap) {
+	sawHello, sawSnap, sawBatch := false, false, false
+	for sc.Scan() && !(sawHello && sawSnap && sawBatch) {
 		line := sc.Text()
 		if strings.Contains(line, `"type":"hello"`) {
 			sawHello = true
@@ -246,8 +246,12 @@ func TestIntegrationEndToEnd(t *testing.T) {
 		if strings.Contains(line, `"type":"snapshot"`) {
 			sawSnap = true
 		}
+		if strings.Contains(line, `"type":"triggers"`) {
+			sawBatch = true
+		}
 	}
 	if !sawHello || !sawSnap {
 		t.Fatalf("sse: hello=%v snapshot=%v (err=%v)", sawHello, sawSnap, sc.Err())
 	}
+	t.Logf("sse triggers batch seen: %v", sawBatch)
 }
