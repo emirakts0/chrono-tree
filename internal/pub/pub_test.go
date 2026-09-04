@@ -122,6 +122,42 @@ func TestPublishWildcardTier(t *testing.T) {
 	}
 }
 
+func TestSubscribeTriggersRoundTrip(t *testing.T) {
+	url := pubtest.Start(t)
+	p, err := NewNATS(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = p.Close() }()
+
+	got := make(chan Trigger, 4)
+	if err := p.SubscribeTriggers(func(tr Trigger) { got <- tr }); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.SubscribeTriggers(func(Trigger) {}); err == nil {
+		t.Fatal("second SubscribeTriggers should error")
+	}
+
+	// Publish on a second connection (the loopback the dashboard uses).
+	nc, err := nats.Connect(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nc.Close()
+	if err := p.Publish(sampleTrigger()); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case tr := <-got:
+		if tr != sampleTrigger() {
+			t.Fatalf("received = %+v, want %+v", tr, sampleTrigger())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("subscription did not receive the published trigger")
+	}
+}
+
 func TestNewNATSBootFails(t *testing.T) {
 	// Port 1 is never a NATS server; RetryOnFailedConnect is off.
 	if _, err := NewNATS("nats://127.0.0.1:1"); err == nil {

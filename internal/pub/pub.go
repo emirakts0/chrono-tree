@@ -6,6 +6,7 @@ package pub
 
 import (
 	"encoding/json/v2"
+	"errors"
 	"fmt"
 	"time"
 
@@ -44,7 +45,8 @@ const drainBound = 3 * time.Second
 
 // NATSPublisher publishes over one core NATS connection.
 type NATSPublisher struct {
-	nc *nats.Conn
+	nc  *nats.Conn
+	sub *nats.Subscription
 }
 
 // NewNATS connects to url and fails if the server is unreachable at call
@@ -77,6 +79,29 @@ func (p *NATSPublisher) Publish(tr Trigger) error {
 	msg.Header.Set("Nats-Msg-Id", tr.AlertID)
 	msg.Header.Set("Symbol", tr.Symbol)
 	return p.nc.PublishMsg(msg)
+}
+
+// SubscribeTriggers re-consumes our own published trigger stream — the
+// NATS loopback the monitoring dashboard uses. fn runs on nats.go's
+// reader goroutine and must never block. The subscription rides the
+// publisher's connection: re-established across reconnects, gone at
+// Close. Only one subscription per publisher.
+func (p *NATSPublisher) SubscribeTriggers(fn func(Trigger)) error {
+	if p.sub != nil {
+		return errors.New("pub: triggers already subscribed")
+	}
+	sub, err := p.nc.Subscribe("chrono.triggers.>", func(m *nats.Msg) {
+		var tr Trigger
+		if err := json.Unmarshal(m.Data, &tr); err != nil {
+			return // not a trigger payload; ignore
+		}
+		fn(tr)
+	})
+	if err != nil {
+		return fmt.Errorf("subscribe chrono.triggers.>: %w", err)
+	}
+	p.sub = sub
+	return nil
 }
 
 // Connected reports the live connection state.
