@@ -369,142 +369,6 @@ func (*CancelAlertResponse) Descriptor() ([]byte, []int) {
 	return file_chrono_v1_chrono_proto_rawDescGZIP(), []int{3}
 }
 
-type WatchTriggersRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *WatchTriggersRequest) Reset() {
-	*x = WatchTriggersRequest{}
-	mi := &file_chrono_v1_chrono_proto_msgTypes[4]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *WatchTriggersRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*WatchTriggersRequest) ProtoMessage() {}
-
-func (x *WatchTriggersRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_chrono_v1_chrono_proto_msgTypes[4]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use WatchTriggersRequest.ProtoReflect.Descriptor instead.
-func (*WatchTriggersRequest) Descriptor() ([]byte, []int) {
-	return file_chrono_v1_chrono_proto_rawDescGZIP(), []int{4}
-}
-
-type Trigger struct {
-	state            protoimpl.MessageState `protogen:"open.v1"`
-	AlertId          string                 `protobuf:"bytes,1,opt,name=alert_id,json=alertId,proto3" json:"alert_id,omitempty"` // UUID string form
-	Symbol           string                 `protobuf:"bytes,2,opt,name=symbol,proto3" json:"symbol,omitempty"`
-	Venue            string                 `protobuf:"bytes,3,opt,name=venue,proto3" json:"venue,omitempty"`
-	Tier             string                 `protobuf:"bytes,4,opt,name=tier,proto3" json:"tier,omitempty"`
-	FiredPrice       string                 `protobuf:"bytes,5,opt,name=fired_price,json=firedPrice,proto3" json:"fired_price,omitempty"` // decimal string at the symbol's decimals
-	FiredAtUnixNanos int64                  `protobuf:"varint,6,opt,name=fired_at_unix_nanos,json=firedAtUnixNanos,proto3" json:"fired_at_unix_nanos,omitempty"`
-	Direction        Direction              `protobuf:"varint,7,opt,name=direction,proto3,enum=chrono.v1.Direction" json:"direction,omitempty"`
-	TargetPrice      string                 `protobuf:"bytes,8,opt,name=target_price,json=targetPrice,proto3" json:"target_price,omitempty"` // decimal string, the alert's target
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
-}
-
-func (x *Trigger) Reset() {
-	*x = Trigger{}
-	mi := &file_chrono_v1_chrono_proto_msgTypes[5]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *Trigger) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*Trigger) ProtoMessage() {}
-
-func (x *Trigger) ProtoReflect() protoreflect.Message {
-	mi := &file_chrono_v1_chrono_proto_msgTypes[5]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use Trigger.ProtoReflect.Descriptor instead.
-func (*Trigger) Descriptor() ([]byte, []int) {
-	return file_chrono_v1_chrono_proto_rawDescGZIP(), []int{5}
-}
-
-func (x *Trigger) GetAlertId() string {
-	if x != nil {
-		return x.AlertId
-	}
-	return ""
-}
-
-func (x *Trigger) GetSymbol() string {
-	if x != nil {
-		return x.Symbol
-	}
-	return ""
-}
-
-func (x *Trigger) GetVenue() string {
-	if x != nil {
-		return x.Venue
-	}
-	return ""
-}
-
-func (x *Trigger) GetTier() string {
-	if x != nil {
-		return x.Tier
-	}
-	return ""
-}
-
-func (x *Trigger) GetFiredPrice() string {
-	if x != nil {
-		return x.FiredPrice
-	}
-	return ""
-}
-
-func (x *Trigger) GetFiredAtUnixNanos() int64 {
-	if x != nil {
-		return x.FiredAtUnixNanos
-	}
-	return 0
-}
-
-func (x *Trigger) GetDirection() Direction {
-	if x != nil {
-		return x.Direction
-	}
-	return Direction_DIRECTION_UNSPECIFIED
-}
-
-func (x *Trigger) GetTargetPrice() string {
-	if x != nil {
-		return x.TargetPrice
-	}
-	return ""
-}
-
 type Tick struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Symbol        string                 `protobuf:"bytes,1,opt,name=symbol,proto3" json:"symbol,omitempty"`
@@ -519,7 +383,7 @@ type Tick struct {
 
 func (x *Tick) Reset() {
 	*x = Tick{}
-	mi := &file_chrono_v1_chrono_proto_msgTypes[6]
+	mi := &file_chrono_v1_chrono_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -531,7 +395,7 @@ func (x *Tick) String() string {
 func (*Tick) ProtoMessage() {}
 
 func (x *Tick) ProtoReflect() protoreflect.Message {
-	mi := &file_chrono_v1_chrono_proto_msgTypes[6]
+	mi := &file_chrono_v1_chrono_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -544,7 +408,7 @@ func (x *Tick) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Tick.ProtoReflect.Descriptor instead.
 func (*Tick) Descriptor() ([]byte, []int) {
-	return file_chrono_v1_chrono_proto_rawDescGZIP(), []int{6}
+	return file_chrono_v1_chrono_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *Tick) GetSymbol() string {
@@ -598,7 +462,7 @@ type TickBatch struct {
 
 func (x *TickBatch) Reset() {
 	*x = TickBatch{}
-	mi := &file_chrono_v1_chrono_proto_msgTypes[7]
+	mi := &file_chrono_v1_chrono_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -610,7 +474,7 @@ func (x *TickBatch) String() string {
 func (*TickBatch) ProtoMessage() {}
 
 func (x *TickBatch) ProtoReflect() protoreflect.Message {
-	mi := &file_chrono_v1_chrono_proto_msgTypes[7]
+	mi := &file_chrono_v1_chrono_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -623,7 +487,7 @@ func (x *TickBatch) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TickBatch.ProtoReflect.Descriptor instead.
 func (*TickBatch) Descriptor() ([]byte, []int) {
-	return file_chrono_v1_chrono_proto_rawDescGZIP(), []int{7}
+	return file_chrono_v1_chrono_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *TickBatch) GetTicks() []*Tick {
@@ -643,7 +507,7 @@ type FeedStatus struct {
 
 func (x *FeedStatus) Reset() {
 	*x = FeedStatus{}
-	mi := &file_chrono_v1_chrono_proto_msgTypes[8]
+	mi := &file_chrono_v1_chrono_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -655,7 +519,7 @@ func (x *FeedStatus) String() string {
 func (*FeedStatus) ProtoMessage() {}
 
 func (x *FeedStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_chrono_v1_chrono_proto_msgTypes[8]
+	mi := &file_chrono_v1_chrono_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -668,7 +532,7 @@ func (x *FeedStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FeedStatus.ProtoReflect.Descriptor instead.
 func (*FeedStatus) Descriptor() ([]byte, []int) {
-	return file_chrono_v1_chrono_proto_rawDescGZIP(), []int{8}
+	return file_chrono_v1_chrono_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *FeedStatus) GetAccepted() uint64 {
@@ -696,7 +560,7 @@ type SymbolInfo struct {
 
 func (x *SymbolInfo) Reset() {
 	*x = SymbolInfo{}
-	mi := &file_chrono_v1_chrono_proto_msgTypes[9]
+	mi := &file_chrono_v1_chrono_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -708,7 +572,7 @@ func (x *SymbolInfo) String() string {
 func (*SymbolInfo) ProtoMessage() {}
 
 func (x *SymbolInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_chrono_v1_chrono_proto_msgTypes[9]
+	mi := &file_chrono_v1_chrono_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -721,7 +585,7 @@ func (x *SymbolInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SymbolInfo.ProtoReflect.Descriptor instead.
 func (*SymbolInfo) Descriptor() ([]byte, []int) {
-	return file_chrono_v1_chrono_proto_rawDescGZIP(), []int{9}
+	return file_chrono_v1_chrono_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *SymbolInfo) GetSymbol() string {
@@ -755,7 +619,7 @@ type DimInfo struct {
 
 func (x *DimInfo) Reset() {
 	*x = DimInfo{}
-	mi := &file_chrono_v1_chrono_proto_msgTypes[10]
+	mi := &file_chrono_v1_chrono_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -767,7 +631,7 @@ func (x *DimInfo) String() string {
 func (*DimInfo) ProtoMessage() {}
 
 func (x *DimInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_chrono_v1_chrono_proto_msgTypes[10]
+	mi := &file_chrono_v1_chrono_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -780,7 +644,7 @@ func (x *DimInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DimInfo.ProtoReflect.Descriptor instead.
 func (*DimInfo) Descriptor() ([]byte, []int) {
-	return file_chrono_v1_chrono_proto_rawDescGZIP(), []int{10}
+	return file_chrono_v1_chrono_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *DimInfo) GetName() string {
@@ -805,7 +669,7 @@ type CatalogRequest struct {
 
 func (x *CatalogRequest) Reset() {
 	*x = CatalogRequest{}
-	mi := &file_chrono_v1_chrono_proto_msgTypes[11]
+	mi := &file_chrono_v1_chrono_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -817,7 +681,7 @@ func (x *CatalogRequest) String() string {
 func (*CatalogRequest) ProtoMessage() {}
 
 func (x *CatalogRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_chrono_v1_chrono_proto_msgTypes[11]
+	mi := &file_chrono_v1_chrono_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -830,7 +694,7 @@ func (x *CatalogRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CatalogRequest.ProtoReflect.Descriptor instead.
 func (*CatalogRequest) Descriptor() ([]byte, []int) {
-	return file_chrono_v1_chrono_proto_rawDescGZIP(), []int{11}
+	return file_chrono_v1_chrono_proto_rawDescGZIP(), []int{9}
 }
 
 type CatalogReply struct {
@@ -843,7 +707,7 @@ type CatalogReply struct {
 
 func (x *CatalogReply) Reset() {
 	*x = CatalogReply{}
-	mi := &file_chrono_v1_chrono_proto_msgTypes[12]
+	mi := &file_chrono_v1_chrono_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -855,7 +719,7 @@ func (x *CatalogReply) String() string {
 func (*CatalogReply) ProtoMessage() {}
 
 func (x *CatalogReply) ProtoReflect() protoreflect.Message {
-	mi := &file_chrono_v1_chrono_proto_msgTypes[12]
+	mi := &file_chrono_v1_chrono_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -868,7 +732,7 @@ func (x *CatalogReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CatalogReply.ProtoReflect.Descriptor instead.
 func (*CatalogReply) Descriptor() ([]byte, []int) {
-	return file_chrono_v1_chrono_proto_rawDescGZIP(), []int{12}
+	return file_chrono_v1_chrono_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *CatalogReply) GetSymbols() []*SymbolInfo {
@@ -907,18 +771,7 @@ const file_chrono_v1_chrono_proto_rawDesc = "" +
 	"\balert_id\x18\x01 \x01(\tR\aalertId\"M\n" +
 	"\x12CancelAlertRequest\x127\n" +
 	"\balert_id\x18\x01 \x01(\tB\x1c\xbaH\x19r\x172\x12^[0-9a-fA-F-]{36}$\x98\x01$R\aalertId\"\x15\n" +
-	"\x13CancelAlertResponse\"\x16\n" +
-	"\x14WatchTriggersRequest\"\x8d\x02\n" +
-	"\aTrigger\x12\x19\n" +
-	"\balert_id\x18\x01 \x01(\tR\aalertId\x12\x16\n" +
-	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12\x14\n" +
-	"\x05venue\x18\x03 \x01(\tR\x05venue\x12\x12\n" +
-	"\x04tier\x18\x04 \x01(\tR\x04tier\x12\x1f\n" +
-	"\vfired_price\x18\x05 \x01(\tR\n" +
-	"firedPrice\x12-\n" +
-	"\x13fired_at_unix_nanos\x18\x06 \x01(\x03R\x10firedAtUnixNanos\x122\n" +
-	"\tdirection\x18\a \x01(\x0e2\x14.chrono.v1.DirectionR\tdirection\x12!\n" +
-	"\ftarget_price\x18\b \x01(\tR\vtargetPrice\"\x90\x01\n" +
+	"\x13CancelAlertResponse\"\x90\x01\n" +
 	"\x04Tick\x12\x16\n" +
 	"\x06symbol\x18\x01 \x01(\tR\x06symbol\x12\x10\n" +
 	"\x03bid\x18\x02 \x01(\tR\x03bid\x12\x10\n" +
@@ -953,11 +806,10 @@ const file_chrono_v1_chrono_proto_rawDesc = "" +
 	"\tDirection\x12\x19\n" +
 	"\x15DIRECTION_UNSPECIFIED\x10\x00\x12\x13\n" +
 	"\x0fDIRECTION_ABOVE\x10\x01\x12\x13\n" +
-	"\x0fDIRECTION_BELOW\x10\x022\xf2\x01\n" +
+	"\x0fDIRECTION_BELOW\x10\x022\xaa\x01\n" +
 	"\fAlertService\x12L\n" +
 	"\vUpsertAlert\x12\x1d.chrono.v1.UpsertAlertRequest\x1a\x1e.chrono.v1.UpsertAlertResponse\x12L\n" +
-	"\vCancelAlert\x12\x1d.chrono.v1.CancelAlertRequest\x1a\x1e.chrono.v1.CancelAlertResponse\x12F\n" +
-	"\rWatchTriggers\x12\x1f.chrono.v1.WatchTriggersRequest\x1a\x12.chrono.v1.Trigger0\x012\x8d\x01\n" +
+	"\vCancelAlert\x12\x1d.chrono.v1.CancelAlertRequest\x1a\x1e.chrono.v1.CancelAlertResponse2\x8d\x01\n" +
 	"\vFeedService\x12<\n" +
 	"\vStreamTicks\x12\x14.chrono.v1.TickBatch\x1a\x15.chrono.v1.FeedStatus(\x01\x12@\n" +
 	"\n" +
@@ -976,46 +828,41 @@ func file_chrono_v1_chrono_proto_rawDescGZIP() []byte {
 }
 
 var file_chrono_v1_chrono_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_chrono_v1_chrono_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_chrono_v1_chrono_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_chrono_v1_chrono_proto_goTypes = []any{
-	(PriceType)(0),               // 0: chrono.v1.PriceType
-	(Direction)(0),               // 1: chrono.v1.Direction
-	(*UpsertAlertRequest)(nil),   // 2: chrono.v1.UpsertAlertRequest
-	(*UpsertAlertResponse)(nil),  // 3: chrono.v1.UpsertAlertResponse
-	(*CancelAlertRequest)(nil),   // 4: chrono.v1.CancelAlertRequest
-	(*CancelAlertResponse)(nil),  // 5: chrono.v1.CancelAlertResponse
-	(*WatchTriggersRequest)(nil), // 6: chrono.v1.WatchTriggersRequest
-	(*Trigger)(nil),              // 7: chrono.v1.Trigger
-	(*Tick)(nil),                 // 8: chrono.v1.Tick
-	(*TickBatch)(nil),            // 9: chrono.v1.TickBatch
-	(*FeedStatus)(nil),           // 10: chrono.v1.FeedStatus
-	(*SymbolInfo)(nil),           // 11: chrono.v1.SymbolInfo
-	(*DimInfo)(nil),              // 12: chrono.v1.DimInfo
-	(*CatalogRequest)(nil),       // 13: chrono.v1.CatalogRequest
-	(*CatalogReply)(nil),         // 14: chrono.v1.CatalogReply
+	(PriceType)(0),              // 0: chrono.v1.PriceType
+	(Direction)(0),              // 1: chrono.v1.Direction
+	(*UpsertAlertRequest)(nil),  // 2: chrono.v1.UpsertAlertRequest
+	(*UpsertAlertResponse)(nil), // 3: chrono.v1.UpsertAlertResponse
+	(*CancelAlertRequest)(nil),  // 4: chrono.v1.CancelAlertRequest
+	(*CancelAlertResponse)(nil), // 5: chrono.v1.CancelAlertResponse
+	(*Tick)(nil),                // 6: chrono.v1.Tick
+	(*TickBatch)(nil),           // 7: chrono.v1.TickBatch
+	(*FeedStatus)(nil),          // 8: chrono.v1.FeedStatus
+	(*SymbolInfo)(nil),          // 9: chrono.v1.SymbolInfo
+	(*DimInfo)(nil),             // 10: chrono.v1.DimInfo
+	(*CatalogRequest)(nil),      // 11: chrono.v1.CatalogRequest
+	(*CatalogReply)(nil),        // 12: chrono.v1.CatalogReply
 }
 var file_chrono_v1_chrono_proto_depIdxs = []int32{
 	0,  // 0: chrono.v1.UpsertAlertRequest.price_type:type_name -> chrono.v1.PriceType
 	1,  // 1: chrono.v1.UpsertAlertRequest.direction:type_name -> chrono.v1.Direction
-	1,  // 2: chrono.v1.Trigger.direction:type_name -> chrono.v1.Direction
-	8,  // 3: chrono.v1.TickBatch.ticks:type_name -> chrono.v1.Tick
-	11, // 4: chrono.v1.CatalogReply.symbols:type_name -> chrono.v1.SymbolInfo
-	12, // 5: chrono.v1.CatalogReply.dims:type_name -> chrono.v1.DimInfo
-	2,  // 6: chrono.v1.AlertService.UpsertAlert:input_type -> chrono.v1.UpsertAlertRequest
-	4,  // 7: chrono.v1.AlertService.CancelAlert:input_type -> chrono.v1.CancelAlertRequest
-	6,  // 8: chrono.v1.AlertService.WatchTriggers:input_type -> chrono.v1.WatchTriggersRequest
-	9,  // 9: chrono.v1.FeedService.StreamTicks:input_type -> chrono.v1.TickBatch
-	13, // 10: chrono.v1.FeedService.GetCatalog:input_type -> chrono.v1.CatalogRequest
-	3,  // 11: chrono.v1.AlertService.UpsertAlert:output_type -> chrono.v1.UpsertAlertResponse
-	5,  // 12: chrono.v1.AlertService.CancelAlert:output_type -> chrono.v1.CancelAlertResponse
-	7,  // 13: chrono.v1.AlertService.WatchTriggers:output_type -> chrono.v1.Trigger
-	10, // 14: chrono.v1.FeedService.StreamTicks:output_type -> chrono.v1.FeedStatus
-	14, // 15: chrono.v1.FeedService.GetCatalog:output_type -> chrono.v1.CatalogReply
-	11, // [11:16] is the sub-list for method output_type
-	6,  // [6:11] is the sub-list for method input_type
-	6,  // [6:6] is the sub-list for extension type_name
-	6,  // [6:6] is the sub-list for extension extendee
-	0,  // [0:6] is the sub-list for field type_name
+	6,  // 2: chrono.v1.TickBatch.ticks:type_name -> chrono.v1.Tick
+	9,  // 3: chrono.v1.CatalogReply.symbols:type_name -> chrono.v1.SymbolInfo
+	10, // 4: chrono.v1.CatalogReply.dims:type_name -> chrono.v1.DimInfo
+	2,  // 5: chrono.v1.AlertService.UpsertAlert:input_type -> chrono.v1.UpsertAlertRequest
+	4,  // 6: chrono.v1.AlertService.CancelAlert:input_type -> chrono.v1.CancelAlertRequest
+	7,  // 7: chrono.v1.FeedService.StreamTicks:input_type -> chrono.v1.TickBatch
+	11, // 8: chrono.v1.FeedService.GetCatalog:input_type -> chrono.v1.CatalogRequest
+	3,  // 9: chrono.v1.AlertService.UpsertAlert:output_type -> chrono.v1.UpsertAlertResponse
+	5,  // 10: chrono.v1.AlertService.CancelAlert:output_type -> chrono.v1.CancelAlertResponse
+	8,  // 11: chrono.v1.FeedService.StreamTicks:output_type -> chrono.v1.FeedStatus
+	12, // 12: chrono.v1.FeedService.GetCatalog:output_type -> chrono.v1.CatalogReply
+	9,  // [9:13] is the sub-list for method output_type
+	5,  // [5:9] is the sub-list for method input_type
+	5,  // [5:5] is the sub-list for extension type_name
+	5,  // [5:5] is the sub-list for extension extendee
+	0,  // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_chrono_v1_chrono_proto_init() }
@@ -1029,7 +876,7 @@ func file_chrono_v1_chrono_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_chrono_v1_chrono_proto_rawDesc), len(file_chrono_v1_chrono_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   13,
+			NumMessages:   11,
 			NumExtensions: 0,
 			NumServices:   2,
 		},

@@ -60,7 +60,11 @@ vocabulary - 3 fictional venues × 2 book tiers.
 
 The chrono.v1 gRPC services on top of the engine: catalog validation, exact
 price conversion at the boundary, a service-side alert catalog for trigger
-enrichment, and WatchTriggers fan-out (drop-and-log - the pump never blocks).
+enrichment, and a trigger pump publishing to NATS.
+
+### `internal/pub`
+
+NATS publisher: subject mapping, JSON payload, headers (`Noop` for tests).
 
 ### `internal/server`
 
@@ -161,30 +165,36 @@ Both paths are allocation-free. `BenchmarkMatchSparse10M` exists behind
 
 Three binaries wrap the engine (spec: `docs/superpowers/specs/2026-09-04-service-design.md`):
 
-- `chronod` — hosts the engine: `chrono.v1` gRPC on `:9090` (alerts, trigger
-  streaming, tick ingestion, catalog; gRPC health + reflection), HTTP status
-  on `:8080` (`/healthz`, `/readyz`, `/stats` json/v2, `/metrics`
-  Prometheus, `/debug/pprof/`).
+- `chronod` — hosts the engine: `chrono.v1` gRPC on `:9090` (alerts, tick
+  ingestion, catalog; gRPC health + reflection), HTTP status on `:8080`
+  (`/healthz`, `/readyz`, `/stats` json/v2, `/metrics` Prometheus,
+  `/debug/pprof/`). Fired triggers are published to NATS on
+  `chrono.triggers.{venue}.{tier}` (JSON payloads, `Nats-Msg-Id`/`Symbol`
+  headers); chronod refuses to start without NATS and drops-and-counts
+  publishes during outages.
 - `chronofeed` — synthetic crypto market: ~500 pairs (realistic majors down
   to sub-cent memecoins), heat-weighted random walk, 3 fictional venues ×
   2 book tiers as the engine's two dims, one client-stream per venue,
   `-rate 20000` default.
-- `chronoctl` — demo client: `alert` (register one), `watch` (print
-  triggers), `demo` (seed 1000 dim-scoped alerts + a per-venue fan-out
-  set, then print every trigger).
+- `chronoctl` — alert creation: `alert` (register one alert, print its ID),
+  `seed` (register N dim-scoped alerts plus a per-venue BTCUSDT fan-out set).
 
 ```sh
+nats-server &                    # or: docker run -p 4222:4222 nats
 go run ./cmd/chronod &
 go run ./cmd/chronofeed -rate 20000 &
-go run ./cmd/chronoctl demo -n 1000
+go run ./cmd/chronoctl seed -n 1000
+nats sub 'chrono.triggers.>'     # watch triggers fire
 curl -s localhost:8080/stats | jq
 ```
 
 Prices are decimal strings end to end (`"65000.12"`), converted exactly
-through the `price` package at the gRPC boundary. Triggers stream to every
-`WatchTriggers` client; a watcher that falls behind is disconnected with
-`ResourceExhausted` (drop-and-log — the pump never blocks, mirroring the
-engine's own ring). The engine itself is untouched: the service layer adds
+through the `price` package at the gRPC boundary. Triggers are delivered
+through NATS — subscribe with wildcards like `chrono.triggers.ATLAS.*` or
+`chrono.triggers.>`. A publish that fails (NATS briefly down) is dropped
+and counted (`triggers_publish_dropped`), never blocking the pump — the
+same drop-and-log philosophy as the engine's own ring. The engine itself is
+untouched: the service layer adds
 catalogs, conversion, fan-out and observability around it.
 
 Integration smoke (real binaries over real sockets):

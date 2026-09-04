@@ -29,9 +29,6 @@ service AlertService {
   // The alert is guaranteed visible to Match before the response returns.
   rpc UpsertAlert(UpsertAlertRequest) returns (UpsertAlertResponse);
   rpc CancelAlert(CancelAlertRequest) returns (CancelAlertResponse);
-  // WatchTriggers streams every trigger fired by the engine. A watcher that
-  // falls behind is disconnected with ResourceExhausted; it may reconnect.
-  rpc WatchTriggers(WatchTriggersRequest) returns (stream Trigger);
 }
 
 service FeedService {
@@ -64,19 +61,6 @@ message CancelAlertRequest {
   string alert_id = 1 [(buf.validate.field).string = {len: 36, pattern: "^[0-9a-fA-F-]{36}$"}]; // UUID string form
 }
 message CancelAlertResponse {}
-
-message WatchTriggersRequest {}
-
-message Trigger {
-  string alert_id = 1;       // UUID string form
-  string symbol = 2;
-  string venue = 3;
-  string tier = 4;
-  string fired_price = 5;    // decimal string at the symbol's decimals
-  int64 fired_at_unix_nanos = 6;
-  Direction direction = 7;
-  string target_price = 8;   // decimal string, the alert's target
-}
 
 message Tick {
   string symbol = 1;

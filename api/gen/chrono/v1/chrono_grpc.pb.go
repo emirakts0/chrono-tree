@@ -19,9 +19,8 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	AlertService_UpsertAlert_FullMethodName   = "/chrono.v1.AlertService/UpsertAlert"
-	AlertService_CancelAlert_FullMethodName   = "/chrono.v1.AlertService/CancelAlert"
-	AlertService_WatchTriggers_FullMethodName = "/chrono.v1.AlertService/WatchTriggers"
+	AlertService_UpsertAlert_FullMethodName = "/chrono.v1.AlertService/UpsertAlert"
+	AlertService_CancelAlert_FullMethodName = "/chrono.v1.AlertService/CancelAlert"
 )
 
 // AlertServiceClient is the client API for AlertService service.
@@ -33,9 +32,6 @@ type AlertServiceClient interface {
 	// The alert is guaranteed visible to Match before the response returns.
 	UpsertAlert(ctx context.Context, in *UpsertAlertRequest, opts ...grpc.CallOption) (*UpsertAlertResponse, error)
 	CancelAlert(ctx context.Context, in *CancelAlertRequest, opts ...grpc.CallOption) (*CancelAlertResponse, error)
-	// WatchTriggers streams every trigger fired by the engine. A watcher that
-	// falls behind is disconnected with ResourceExhausted; it may reconnect.
-	WatchTriggers(ctx context.Context, in *WatchTriggersRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[Trigger], error)
 }
 
 type alertServiceClient struct {
@@ -66,25 +62,6 @@ func (c *alertServiceClient) CancelAlert(ctx context.Context, in *CancelAlertReq
 	return out, nil
 }
 
-func (c *alertServiceClient) WatchTriggers(ctx context.Context, in *WatchTriggersRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[Trigger], error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &AlertService_ServiceDesc.Streams[0], AlertService_WatchTriggers_FullMethodName, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	x := &grpc.GenericClientStream[WatchTriggersRequest, Trigger]{ClientStream: stream}
-	if err := x.ClientStream.SendMsg(in); err != nil {
-		return nil, err
-	}
-	if err := x.ClientStream.CloseSend(); err != nil {
-		return nil, err
-	}
-	return x, nil
-}
-
-// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type AlertService_WatchTriggersClient = grpc.ServerStreamingClient[Trigger]
-
 // AlertServiceServer is the server API for AlertService service.
 // All implementations must embed UnimplementedAlertServiceServer
 // for forward compatibility.
@@ -94,9 +71,6 @@ type AlertServiceServer interface {
 	// The alert is guaranteed visible to Match before the response returns.
 	UpsertAlert(context.Context, *UpsertAlertRequest) (*UpsertAlertResponse, error)
 	CancelAlert(context.Context, *CancelAlertRequest) (*CancelAlertResponse, error)
-	// WatchTriggers streams every trigger fired by the engine. A watcher that
-	// falls behind is disconnected with ResourceExhausted; it may reconnect.
-	WatchTriggers(*WatchTriggersRequest, grpc.ServerStreamingServer[Trigger]) error
 	mustEmbedUnimplementedAlertServiceServer()
 }
 
@@ -112,9 +86,6 @@ func (UnimplementedAlertServiceServer) UpsertAlert(context.Context, *UpsertAlert
 }
 func (UnimplementedAlertServiceServer) CancelAlert(context.Context, *CancelAlertRequest) (*CancelAlertResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CancelAlert not implemented")
-}
-func (UnimplementedAlertServiceServer) WatchTriggers(*WatchTriggersRequest, grpc.ServerStreamingServer[Trigger]) error {
-	return status.Error(codes.Unimplemented, "method WatchTriggers not implemented")
 }
 func (UnimplementedAlertServiceServer) mustEmbedUnimplementedAlertServiceServer() {}
 func (UnimplementedAlertServiceServer) testEmbeddedByValue()                      {}
@@ -173,17 +144,6 @@ func _AlertService_CancelAlert_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
-func _AlertService_WatchTriggers_Handler(srv interface{}, stream grpc.ServerStream) error {
-	m := new(WatchTriggersRequest)
-	if err := stream.RecvMsg(m); err != nil {
-		return err
-	}
-	return srv.(AlertServiceServer).WatchTriggers(m, &grpc.GenericServerStream[WatchTriggersRequest, Trigger]{ServerStream: stream})
-}
-
-// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type AlertService_WatchTriggersServer = grpc.ServerStreamingServer[Trigger]
-
 // AlertService_ServiceDesc is the grpc.ServiceDesc for AlertService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -200,13 +160,7 @@ var AlertService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _AlertService_CancelAlert_Handler,
 		},
 	},
-	Streams: []grpc.StreamDesc{
-		{
-			StreamName:    "WatchTriggers",
-			Handler:       _AlertService_WatchTriggers_Handler,
-			ServerStreams: true,
-		},
-	},
+	Streams:  []grpc.StreamDesc{},
 	Metadata: "chrono/v1/chrono.proto",
 }
 

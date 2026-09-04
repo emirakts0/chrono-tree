@@ -1,12 +1,12 @@
 //go:build integration
 
 // End-to-end smoke: real binaries, real sockets, real network hop.
-// Run: go test -tags integration ./tests -run Integration -v -timeout 120s
+// Run: go test -tags integration ./tests -run Integration -v -timeout 180s
 package tests
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"fmt"
 	"io"
 	"net"
@@ -18,10 +18,13 @@ import (
 	"testing"
 	"time"
 
+	nats "github.com/nats-io/nats.go"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
 	chronov1 "github.com/emir/chrono-tree/api/gen/chrono/v1"
+	"github.com/emir/chrono-tree/internal/pub"
+	"github.com/emir/chrono-tree/internal/pub/pubtest"
 )
 
 func freePort(t *testing.T) int {
@@ -57,9 +60,11 @@ func TestIntegrationEndToEnd(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
+	natsURL := pubtest.Start(t)
+
 	root := repoRoot(t)
 	daemon := exec.CommandContext(ctx, "go", "run", "./cmd/chronod",
-		"-grpc-addr", grpcAddr, "-http-addr", httpAddr)
+		"-grpc-addr", grpcAddr, "-http-addr", httpAddr, "-nats-url", natsURL)
 	daemon.Dir = root
 	feeder := exec.CommandContext(ctx, "go", "run", "./cmd/chronofeed",
 		"-server", grpcAddr, "-rate", "20000", "-seed", "1")
@@ -90,40 +95,65 @@ func TestIntegrationEndToEnd(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 	}
 
-	// Wire one alert near BTC's anchor and watch for it to fire.
+	// Subscribe before wiring the alert, then register a BELOW alert just
+	// above BTC's anchor: the first ATLAS/TOP BTCUSDT ask at ~65000
+	// satisfies it, so the trigger fires within moments of the feed's
+	// first matching tick.
+	nc, err := nats.Connect(natsURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer nc.Close()
+	sub, err := nc.SubscribeSync("chrono.triggers.>")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := nc.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
 	conn, err := grpc.NewClient(grpcAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = conn.Close() }()
 	alerts := chronov1.NewAlertServiceClient(conn)
-	wctx, wcancel := context.WithTimeout(ctx, 30*time.Second)
-	defer wcancel()
-	wstream, err := alerts.WatchTriggers(wctx, &chronov1.WatchTriggersRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = alerts.UpsertAlert(ctx, &chronov1.UpsertAlertRequest{
+	if _, err := alerts.UpsertAlert(ctx, &chronov1.UpsertAlertRequest{
 		Symbol: "BTCUSDT", PriceType: chronov1.PriceType_PRICE_TYPE_ASK,
-		Direction:   chronov1.Direction_DIRECTION_BELOW, // walk down through it
-		TargetPrice: "66000.00", Venue: "ATLAS", Tier: "TOP",
-	})
+		Direction:   chronov1.Direction_DIRECTION_BELOW,
+		TargetPrice: "65100.00", Venue: "ATLAS", Tier: "TOP",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	msg, err := sub.NextMsg(25 * time.Second)
+	if err != nil {
+		t.Fatalf("no trigger published to NATS: %v", err)
+	}
+	if msg.Subject != pub.Subject("ATLAS", "TOP") {
+		t.Fatalf("subject = %q", msg.Subject)
+	}
+	var tr pub.Trigger
+	if err := json.Unmarshal(msg.Data, &tr); err != nil {
+		t.Fatalf("payload: %v", err)
+	}
+	if tr.Symbol != "BTCUSDT" || tr.Venue != "ATLAS" || tr.Tier != "TOP" {
+		t.Fatalf("trigger dims wrong: %+v", tr)
+	}
+
+	// /stats must show NATS connected.
+	sresp, err := http.Get("http://" + httpAddr + "/stats")
 	if err != nil {
 		t.Fatal(err)
 	}
-	triggered := make(chan struct{})
-	go func() {
-		for {
-			if _, err := wstream.Recv(); err == nil {
-				close(triggered)
-				return
-			}
-		}
-	}()
-	select {
-	case <-triggered:
-	case <-time.After(25 * time.Second):
-		t.Fatal("no trigger observed end-to-end")
+	var health map[string]any
+	if err := json.UnmarshalRead(sresp.Body, &health); err != nil {
+		sresp.Body.Close()
+		t.Fatal(err)
+	}
+	sresp.Body.Close()
+	if v, _ := health["nats_connected"].(bool); !v {
+		t.Fatalf("nats_connected = %v, want true", health["nats_connected"])
 	}
 
 	// /stats must show the feed's rate. The rate is a mean over complete
@@ -137,7 +167,7 @@ func TestIntegrationEndToEnd(t *testing.T) {
 			t.Fatal(err)
 		}
 		var body map[string]any
-		if err := json.NewDecoder(sresp.Body).Decode(&body); err != nil {
+		if err := json.UnmarshalRead(sresp.Body, &body); err != nil {
 			sresp.Body.Close()
 			t.Fatal(err)
 		}
