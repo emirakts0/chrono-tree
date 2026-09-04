@@ -4,11 +4,14 @@
 package service
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -72,6 +75,8 @@ type Alert struct {
 	PriceType   engine.PriceType
 	Direction   engine.Direction
 	TargetPrice engine.Price
+	ValidFrom   int64
+	Expires     int64
 	State       AlertState
 	CreatedAt   time.Time
 }
@@ -235,6 +240,7 @@ func (c *Core) UpsertAlert(ctx context.Context, req *chronov1.UpsertAlertRequest
 		ID: id, Symbol: sym.Name, Decimals: sym.Decimals,
 		Venue: req.GetVenue(), Tier: req.GetTier(),
 		PriceType: pt, Direction: dir, TargetPrice: engine.Price(base),
+		ValidFrom: req.GetValidFromUnixNanos(), Expires: req.GetExpiresUnixNanos(),
 		State: StateActive, CreatedAt: c.now(),
 	}
 	c.mu.Lock()
@@ -508,3 +514,127 @@ func directionOf(d engine.Direction) string {
 // NATSConnected reports the publisher's connection state for /stats and
 // the chrono_nats_connected gauge. Observability only — never readiness.
 func (c *Core) NATSConnected() bool { return c.pub.Connected() }
+
+// AlertView is the read-only shape of a catalog alert for the monitoring
+// surface. Prices are decimal strings, ready to render.
+type AlertView struct {
+	ID                 string `json:"id"`
+	Symbol             string `json:"symbol"`
+	Venue              string `json:"venue"`
+	Tier               string `json:"tier"`
+	PriceType          string `json:"price_type"`
+	Direction          string `json:"direction"`
+	TargetPrice        string `json:"target_price"`
+	State              string `json:"state"`
+	ValidFromUnixNanos int64  `json:"valid_from_unix_nanos"`
+	ExpiresUnixNanos   int64  `json:"expires_unix_nanos"`
+	CreatedAtUnixNanos int64  `json:"created_at_unix_nanos"`
+}
+
+// AlertFilter selects catalog alerts for the inquiry API. Empty string
+// fields match anything; Direction is "ABOVE" or "BELOW" (anything else
+// matches nothing). Limit/Offset are applied after sorting; Limit <= 0
+// means no cap.
+type AlertFilter struct {
+	State, Symbol, Venue, Tier, Direction string
+	Limit, Offset                         int
+}
+
+func priceTypeString(pt engine.PriceType) string {
+	switch pt {
+	case engine.PriceBid:
+		return "BID"
+	case engine.PriceAsk:
+		return "ASK"
+	case engine.PriceMid:
+		return "MID"
+	default:
+		return "LAST"
+	}
+}
+
+func (a *Alert) view() AlertView {
+	return AlertView{
+		ID:                 alertIDString(a.ID),
+		Symbol:             a.Symbol,
+		Venue:              a.Venue,
+		Tier:               a.Tier,
+		PriceType:          priceTypeString(a.PriceType),
+		Direction:          directionOf(a.Direction),
+		TargetPrice:        price.Format(int64(a.TargetPrice), a.Decimals),
+		State:              string(a.State),
+		ValidFromUnixNanos: a.ValidFrom,
+		ExpiresUnixNanos:   a.Expires,
+		CreatedAtUnixNanos: a.CreatedAt.UnixNano(),
+	}
+}
+
+// GetAlert resolves one alert by its string id (the form UpsertAlert
+// returned). ok is false for unknown or malformed ids.
+func (c *Core) GetAlert(id string) (AlertView, bool) {
+	raw, err := parseAlertID(id)
+	if err != nil {
+		return AlertView{}, false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	a, ok := c.alerts[raw]
+	if !ok {
+		return AlertView{}, false
+	}
+	return a.view(), true
+}
+
+// ListAlerts returns one page of the filtered catalog, newest first,
+// plus the total match count.
+func (c *Core) ListAlerts(f AlertFilter) ([]AlertView, int) {
+	dirOK := true
+	var dir engine.Direction
+	switch f.Direction {
+	case "":
+	case "ABOVE":
+		dir = engine.DirGTE
+	case "BELOW":
+		dir = engine.DirLTE
+	default:
+		dirOK = false
+	}
+	c.mu.RLock()
+	views := make([]AlertView, 0, len(c.alerts))
+	for _, a := range c.alerts {
+		if !dirOK {
+			break
+		}
+		if f.State != "" && string(a.State) != f.State {
+			continue
+		}
+		if f.Symbol != "" && a.Symbol != f.Symbol {
+			continue
+		}
+		if f.Venue != "" && a.Venue != f.Venue {
+			continue
+		}
+		if f.Tier != "" && a.Tier != f.Tier {
+			continue
+		}
+		if f.Direction != "" && a.Direction != dir {
+			continue
+		}
+		views = append(views, a.view())
+	}
+	c.mu.RUnlock()
+
+	slices.SortStableFunc(views, func(a, b AlertView) int {
+		if c := cmp.Compare(b.CreatedAtUnixNanos, a.CreatedAtUnixNanos); c != 0 {
+			return c // newest first
+		}
+		return strings.Compare(b.ID, a.ID) // deterministic tiebreak; map order is random
+	})
+	total := len(views)
+	start := min(max(f.Offset, 0), total)
+	end := total
+	if f.Limit > 0 {
+		end = min(start+f.Limit, total)
+	}
+	return views[start:end], total
+}
