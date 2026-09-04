@@ -24,6 +24,7 @@ import (
 	chronov1 "github.com/emir/chrono-tree/api/gen/chrono/v1"
 	"github.com/emir/chrono-tree/engine"
 	"github.com/emir/chrono-tree/internal/catalog"
+	"github.com/emir/chrono-tree/internal/pub"
 	"github.com/emir/chrono-tree/internal/server"
 	"github.com/emir/chrono-tree/internal/service"
 	"github.com/emir/chrono-tree/internal/stats"
@@ -52,7 +53,7 @@ func run(ctx context.Context, grpcAddr, httpAddr string) error {
 	reg := prometheus.NewRegistry()
 	pm := server.NewPromMetrics(reg)
 	st := stats.New(now)
-	core := service.NewCore(engine.DefaultConfig(), catalog.Default(), pm, st)
+	core := service.NewCore(engine.DefaultConfig(), catalog.Default(), pm, st, pub.Noop{})
 	defer core.Close()
 
 	statusSrv := server.New(core, st, reg)

@@ -80,11 +80,11 @@ func (r *Rate) PerSecond(now time.Time) float64 {
 type Stats struct {
 	started time.Time
 
-	Ticks             atomic.Uint64
-	TicksDropped      atomic.Uint64
-	TriggersFired     atomic.Uint64
-	TriggersDelivered atomic.Uint64
-	WatcherDrops      atomic.Uint64
+	Ticks                  atomic.Uint64
+	TicksDropped           atomic.Uint64
+	TriggersFired          atomic.Uint64
+	TriggersPublished      atomic.Uint64
+	TriggersPublishDropped atomic.Uint64
 
 	TickRate Rate
 	FireRate Rate
@@ -94,25 +94,25 @@ func New(now time.Time) *Stats { return &Stats{started: now} }
 
 // Snapshot is the /stats JSON shape (json/v2 marshals the tags).
 type Snapshot struct {
-	UptimeSec         float64 `json:"uptime_sec"`
-	Ticks             uint64  `json:"ticks"`
-	TicksPerSec       float64 `json:"ticks_per_sec"`
-	TicksDropped      uint64  `json:"ticks_dropped"`
-	TriggersFired     uint64  `json:"triggers_fired"`
-	TriggersPerSec    float64 `json:"triggers_per_sec"`
-	TriggersDelivered uint64  `json:"triggers_delivered"`
-	WatcherDrops      uint64  `json:"watcher_drops"`
+	UptimeSec              float64 `json:"uptime_sec"`
+	Ticks                  uint64  `json:"ticks"`
+	TicksPerSec            float64 `json:"ticks_per_sec"`
+	TicksDropped           uint64  `json:"ticks_dropped"`
+	TriggersFired          uint64  `json:"triggers_fired"`
+	TriggersPerSec         float64 `json:"triggers_per_sec"`
+	TriggersPublished      uint64  `json:"triggers_published"`
+	TriggersPublishDropped uint64  `json:"triggers_publish_dropped"`
 }
 
 func (s *Stats) Snapshot(now time.Time) Snapshot {
 	return Snapshot{
-		UptimeSec:         now.Sub(s.started).Seconds(),
-		Ticks:             s.Ticks.Load(),
-		TicksPerSec:       s.TickRate.PerSecond(now),
-		TicksDropped:      s.TicksDropped.Load(),
-		TriggersFired:     s.TriggersFired.Load(),
-		TriggersPerSec:    s.FireRate.PerSecond(now),
-		TriggersDelivered: s.TriggersDelivered.Load(),
-		WatcherDrops:      s.WatcherDrops.Load(),
+		UptimeSec:              now.Sub(s.started).Seconds(),
+		Ticks:                  s.Ticks.Load(),
+		TicksPerSec:            s.TickRate.PerSecond(now),
+		TicksDropped:           s.TicksDropped.Load(),
+		TriggersFired:          s.TriggersFired.Load(),
+		TriggersPerSec:         s.FireRate.PerSecond(now),
+		TriggersPublished:      s.TriggersPublished.Load(),
+		TriggersPublishDropped: s.TriggersPublishDropped.Load(),
 	}
 }

@@ -45,11 +45,11 @@ func TestSnapshotFields(t *testing.T) {
 	s.Ticks.Add(3)
 	s.TicksDropped.Add(1)
 	s.TriggersFired.Add(2)
-	s.TriggersDelivered.Add(2)
-	s.WatcherDrops.Add(1)
+	s.TriggersPublished.Add(2)
+	s.TriggersPublishDropped.Add(1)
 	snap := s.Snapshot(now.Add(2 * time.Second))
 	if snap.Ticks != 3 || snap.TicksDropped != 1 || snap.TriggersFired != 2 ||
-		snap.TriggersDelivered != 2 || snap.WatcherDrops != 1 {
+		snap.TriggersPublished != 2 || snap.TriggersPublishDropped != 1 {
 		t.Fatalf("snapshot counters wrong: %+v", snap)
 	}
 	if math.Abs(snap.UptimeSec-2) > 0.01 {

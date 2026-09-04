@@ -1,6 +1,6 @@
 // Package service implements the chrono.v1 gRPC services on top of the
 // engine: reference-data validation, price conversion at the boundary,
-// a service-side alert catalog, and (Task 6) trigger fan-out.
+// a service-side alert catalog, and trigger publishing to NATS.
 package service
 
 import (
@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -18,6 +19,7 @@ import (
 	chronov1 "github.com/emir/chrono-tree/api/gen/chrono/v1"
 	"github.com/emir/chrono-tree/engine"
 	"github.com/emir/chrono-tree/internal/catalog"
+	"github.com/emir/chrono-tree/internal/pub"
 	"github.com/emir/chrono-tree/internal/stats"
 	"github.com/emir/chrono-tree/price"
 )
@@ -30,10 +32,9 @@ type Metrics interface {
 	TickBatch(n int)
 	TickLatency(d time.Duration)
 	TriggerFired(symbol, venue, tier string)
-	TriggerDelivered()
-	WatcherDrop()
+	TriggerPublished()
+	TriggerPublishDropped()
 	AlertsActive(n int)
-	Watchers(n int)
 	FeedConnected(b bool)
 }
 
@@ -45,10 +46,9 @@ func (NoopMetrics) TickDropped()                        {}
 func (NoopMetrics) TickBatch(int)                       {}
 func (NoopMetrics) TickLatency(time.Duration)           {}
 func (NoopMetrics) TriggerFired(string, string, string) {}
-func (NoopMetrics) TriggerDelivered()                   {}
-func (NoopMetrics) WatcherDrop()                        {}
+func (NoopMetrics) TriggerPublished()                   {}
+func (NoopMetrics) TriggerPublishDropped()              {}
 func (NoopMetrics) AlertsActive(int)                    {}
-func (NoopMetrics) Watchers(int)                        {}
 func (NoopMetrics) FeedConnected(bool)                  {}
 
 // AlertState is the service-side lifecycle view.
@@ -94,8 +94,8 @@ type Core struct {
 	pumpCancel context.CancelFunc
 	pumpDone   chan struct{}
 
-	hubMu    sync.RWMutex
-	watchers map[*watcher]struct{}
+	pub        pub.Publisher
+	pubHealthy atomic.Bool // log publish failures on transition only
 
 	feedEver     atomic.Bool
 	feedLastSeen atomic.Int64 // unix nanos
@@ -103,23 +103,17 @@ type Core struct {
 	venueTicks map[string]*atomic.Uint64 // venue → accepted ticks; fixed keys, written at construction
 }
 
-// watcher is one connected WatchTriggers stream. ch is buffered; a full
-// channel at broadcast time disconnects the watcher (drop-and-log — the
-// pump must never block, same philosophy as the engine's trigger ring).
-type watcher struct {
-	ch chan *chronov1.Trigger
-}
-
-func newWatcher() *watcher { return &watcher{ch: make(chan *chronov1.Trigger, 256)} }
-
-// NewCore builds the engine with the catalog's dim vocabulary.
-func NewCore(cfg engine.Config, cat *catalog.Catalog, m Metrics, st *stats.Stats) *Core {
+// NewCore builds the engine with the catalog's dim vocabulary. The
+// publisher receives every enriched trigger; nil is not allowed — pass
+// pub.Noop{} when there is nothing to publish to.
+func NewCore(cfg engine.Config, cat *catalog.Catalog, m Metrics, st *stats.Stats, p pub.Publisher) *Core {
 	cfg.Dims = cat.Dims() // the catalog owns the vocabulary
 	c := &Core{
 		Cat:     cat,
 		eng:     engine.New(cfg),
 		metrics: m,
 		stats:   st,
+		pub:     p,
 		now:     func() time.Time { return time.Now() },
 		alerts:  make(map[engine.AlertID]*Alert),
 	}
@@ -129,7 +123,6 @@ func NewCore(cfg engine.Config, cat *catalog.Catalog, m Metrics, st *stats.Stats
 	}
 	c.pumpCtx, c.pumpCancel = context.WithCancel(context.Background())
 	c.pumpDone = make(chan struct{})
-	c.watchers = make(map[*watcher]struct{})
 	go c.pump()
 	return c
 }
@@ -425,14 +418,8 @@ func (c *Core) GetCatalog(ctx context.Context, _ *chronov1.CatalogRequest) (*chr
 	return &chronov1.CatalogReply{Symbols: syms, Dims: dims}, nil
 }
 
-func (c *Core) WatcherCount() int {
-	c.hubMu.RLock()
-	defer c.hubMu.RUnlock()
-	return len(c.watchers)
-}
-
-// pump drains the engine's trigger ring and fans enriched triggers out to
-// every watcher. It is the ONLY Triggers() consumer.
+// pump drains the engine's trigger ring and publishes enriched triggers
+// to NATS. It is the ONLY Triggers() consumer.
 func (c *Core) pump() {
 	defer close(c.pumpDone)
 	buf := make([]engine.Trigger, 64)
@@ -454,7 +441,7 @@ func (c *Core) pump() {
 }
 
 // deliver enriches one engine trigger from the service catalog and
-// broadcasts it. The catalog entry survives the engine's own fire-time
+// publishes it. The catalog entry survives the engine's own fire-time
 // refs cleanup — that removal race is why the service catalog exists.
 func (c *Core) deliver(tr *engine.Trigger, now time.Time) {
 	c.mu.RLock()
@@ -478,87 +465,40 @@ func (c *Core) deliver(tr *engine.Trigger, now time.Time) {
 	}
 	a.State = StateTriggered
 	c.mu.Unlock()
-	out := &chronov1.Trigger{
-		AlertId:          alertIDString(tr.ID),
+	out := pub.Trigger{
+		AlertID:          alertIDString(tr.ID),
 		Symbol:           a.Symbol,
 		Venue:            a.Venue,
 		Tier:             a.Tier,
 		FiredPrice:       price.Format(int64(tr.Price), a.Decimals),
 		FiredAtUnixNanos: tr.TS,
-		Direction:        fromEngineDirection(a.Direction),
+		Direction:        directionOf(a.Direction),
 		TargetPrice:      price.Format(int64(a.TargetPrice), a.Decimals),
 	}
 	c.metrics.TriggerFired(a.Symbol, a.Venue, a.Tier)
-	c.broadcast(out)
-}
-
-// broadcast fans out to all watchers; a full watcher is disconnected, not
-// blocking the pump.
-func (c *Core) broadcast(tr *chronov1.Trigger) {
-	c.hubMu.RLock()
-	targets := make([]*watcher, 0, len(c.watchers))
-	for w := range c.watchers {
-		targets = append(targets, w)
-	}
-	c.hubMu.RUnlock()
-	for _, w := range targets {
-		select {
-		case w.ch <- tr:
-		default:
-			c.hubMu.Lock()
-			delete(c.watchers, w)
-			n := len(c.watchers)
-			c.hubMu.Unlock()
-			close(w.ch)
-			c.stats.WatcherDrops.Add(1)
-			c.metrics.WatcherDrop()
-			c.metrics.Watchers(n)
+	if err := c.pub.Publish(out); err != nil {
+		// Drop-and-count: the pump never blocks, never retries (spec §4).
+		c.stats.TriggersPublishDropped.Add(1)
+		c.metrics.TriggerPublishDropped()
+		if c.pubHealthy.CompareAndSwap(true, false) {
+			slog.Warn("trigger publish failing; dropping until NATS recovers", "err", err)
 		}
+		return
 	}
+	if !c.pubHealthy.Swap(true) {
+		slog.Info("trigger publishing recovered")
+	}
+	c.stats.TriggersPublished.Add(1)
+	c.metrics.TriggerPublished()
 }
 
-func fromEngineDirection(d engine.Direction) chronov1.Direction {
+func directionOf(d engine.Direction) string {
 	if d == engine.DirLTE {
-		return chronov1.Direction_DIRECTION_BELOW
+		return "BELOW"
 	}
-	return chronov1.Direction_DIRECTION_ABOVE
+	return "ABOVE"
 }
 
-// WatchTriggers registers a watcher and streams until the client goes or
-// the watcher is evicted for being too slow.
-func (c *Core) WatchTriggers(_ *chronov1.WatchTriggersRequest, ss chronov1.AlertService_WatchTriggersServer) error {
-	w := newWatcher()
-	c.hubMu.Lock()
-	c.watchers[w] = struct{}{}
-	n := len(c.watchers)
-	c.hubMu.Unlock()
-	c.metrics.Watchers(n)
-	defer func() {
-		c.hubMu.Lock()
-		if _, ok := c.watchers[w]; ok {
-			delete(c.watchers, w)
-			n = len(c.watchers)
-		} else {
-			n = -1 // already evicted by broadcast
-		}
-		c.hubMu.Unlock()
-		if n >= 0 {
-			c.metrics.Watchers(n)
-		}
-	}()
-	for {
-		select {
-		case <-ss.Context().Done():
-			return nil
-		case tr, ok := <-w.ch:
-			if !ok {
-				return status.Error(codes.ResourceExhausted, "watcher too slow; disconnected")
-			}
-			if err := ss.Send(tr); err != nil {
-				return err
-			}
-			c.stats.TriggersDelivered.Add(1)
-			c.metrics.TriggerDelivered()
-		}
-	}
-}
+// NATSConnected reports the publisher's connection state for /stats and
+// the chrono_nats_connected gauge. Observability only — never readiness.
+func (c *Core) NATSConnected() bool { return c.pub.Connected() }

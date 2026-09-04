@@ -15,6 +15,7 @@ import (
 	chronov1 "github.com/emir/chrono-tree/api/gen/chrono/v1"
 	"github.com/emir/chrono-tree/engine"
 	"github.com/emir/chrono-tree/internal/catalog"
+	"github.com/emir/chrono-tree/internal/pub"
 	"github.com/emir/chrono-tree/internal/service"
 	"github.com/emir/chrono-tree/internal/stats"
 )
@@ -40,7 +41,7 @@ func newServer(t *testing.T) (*Server, *service.Core) {
 	t.Helper()
 	now := time.Now()
 	reg := prometheus.NewRegistry()
-	core := service.NewCore(engine.DefaultConfig(), catalog.Default(), service.NoopMetrics{}, stats.New(now))
+	core := service.NewCore(engine.DefaultConfig(), catalog.Default(), service.NoopMetrics{}, stats.New(now), pub.Noop{})
 	t.Cleanup(core.Close)
 	return New(core, stats.New(now), reg), core
 }
@@ -99,7 +100,7 @@ func TestReadyzStaleUnderSynctest(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		now := time.Now()
 		reg := prometheus.NewRegistry()
-		core := service.NewCore(engine.DefaultConfig(), catalog.Default(), service.NoopMetrics{}, stats.New(now))
+		core := service.NewCore(engine.DefaultConfig(), catalog.Default(), service.NoopMetrics{}, stats.New(now), pub.Noop{})
 		defer core.Close()
 		s := New(core, stats.New(now), reg)
 		ts := httptest.NewTestServer(t, s.Handler())
@@ -141,8 +142,9 @@ func TestStatsJSON(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"uptime_sec", "alerts_by_state", "watchers", "ticks", "ticks_per_sec",
-		"triggers_fired", "venue_ticks", "engine"} {
+	for _, key := range []string{"uptime_sec", "alerts_by_state", "feed_ever_connected", "venue_ticks",
+		"ticks", "ticks_per_sec", "triggers_fired", "triggers_published", "triggers_publish_dropped",
+		"nats_connected", "engine"} {
 		if _, ok := body[key]; !ok {
 			t.Fatalf("stats missing %q: %v", key, body)
 		}
@@ -153,7 +155,7 @@ func TestMetricsEndpoint(t *testing.T) {
 	now := time.Now()
 	reg := prometheus.NewRegistry()
 	pm := NewPromMetrics(reg)
-	core := service.NewCore(engine.DefaultConfig(), catalog.Default(), pm, stats.New(now))
+	core := service.NewCore(engine.DefaultConfig(), catalog.Default(), pm, stats.New(now), pub.Noop{})
 	t.Cleanup(core.Close)
 	s := New(core, stats.New(now), reg)
 	ts := httptest.NewServer(s.Handler())
@@ -161,6 +163,7 @@ func TestMetricsEndpoint(t *testing.T) {
 
 	pm.Tick("ATLAS", "TOP")
 	pm.TriggerFired("BTCUSDT", "ATLAS", "TOP")
+	pm.TriggerPublished()
 	resp, err := http.Get(ts.URL + "/metrics")
 	if err != nil {
 		t.Fatal(err)
@@ -169,9 +172,9 @@ func TestMetricsEndpoint(t *testing.T) {
 	b, _ := io.ReadAll(resp.Body)
 	text := string(b)
 	for _, name := range []string{
-		"chrono_ticks_total", "chrono_triggers_fired_total", "chrono_triggers_delivered_total",
-		"chrono_trigger_drops_total", "chrono_ticks_dropped_total", "chrono_alerts_active",
-		"chrono_watchers", "chrono_feed_connected", "chrono_tick_batch_size", "chrono_tick_latency_seconds",
+		"chrono_ticks_total", "chrono_triggers_fired_total", "chrono_triggers_published_total",
+		"chrono_triggers_publish_dropped_total", "chrono_ticks_dropped_total", "chrono_alerts_active",
+		"chrono_nats_connected", "chrono_feed_connected", "chrono_tick_batch_size", "chrono_tick_latency_seconds",
 	} {
 		if !strings.Contains(text, name) {
 			t.Fatalf("metrics missing %s", name)

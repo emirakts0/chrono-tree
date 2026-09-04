@@ -10,16 +10,15 @@ import (
 
 // PromMetrics implements service.Metrics on a Prometheus registry.
 type PromMetrics struct {
-	ticks        *prometheus.CounterVec
-	fired        *prometheus.CounterVec
-	delivered    prometheus.Counter
-	triggerDrops prometheus.Counter
-	ticksDropped prometheus.Counter
-	batch        prometheus.Histogram
-	latency      prometheus.Histogram
-	active       prometheus.Gauge
-	watchers     prometheus.Gauge
-	feed         prometheus.Gauge
+	ticks          *prometheus.CounterVec
+	fired          *prometheus.CounterVec
+	published      prometheus.Counter
+	publishDropped prometheus.Counter
+	ticksDropped   prometheus.Counter
+	batch          prometheus.Histogram
+	latency        prometheus.Histogram
+	active         prometheus.Gauge
+	feed           prometheus.Gauge
 }
 
 // NewPromMetrics registers and returns the metric set. The names are
@@ -32,11 +31,11 @@ func NewPromMetrics(reg prometheus.Registerer) *PromMetrics {
 		fired: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "chrono_triggers_fired_total", Help: "Alerts fired by the engine, by symbol/venue/tier.",
 		}, []string{"symbol", "venue", "tier"}),
-		delivered: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "chrono_triggers_delivered_total", Help: "Triggers delivered to watchers.",
+		published: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "chrono_triggers_published_total", Help: "Triggers published to NATS.",
 		}),
-		triggerDrops: prometheus.NewCounter(prometheus.CounterOpts{
-			Name: "chrono_trigger_drops_total", Help: "Watchers evicted for falling behind.",
+		publishDropped: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "chrono_triggers_publish_dropped_total", Help: "Triggers dropped because the NATS publish failed.",
 		}),
 		ticksDropped: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "chrono_ticks_dropped_total", Help: "Ticks dropped for unrepresentable prices.",
@@ -52,15 +51,12 @@ func NewPromMetrics(reg prometheus.Registerer) *PromMetrics {
 		active: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "chrono_alerts_active", Help: "Alerts currently active service-side.",
 		}),
-		watchers: prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "chrono_watchers", Help: "Connected WatchTriggers streams.",
-		}),
 		feed: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "chrono_feed_connected", Help: "1 once a feed has ever connected.",
 		}),
 	}
-	reg.MustRegister(m.ticks, m.fired, m.delivered, m.triggerDrops, m.ticksDropped,
-		m.batch, m.latency, m.active, m.watchers, m.feed)
+	reg.MustRegister(m.ticks, m.fired, m.published, m.publishDropped, m.ticksDropped,
+		m.batch, m.latency, m.active, m.feed)
 	return m
 }
 
@@ -71,10 +67,9 @@ func (m *PromMetrics) TickLatency(d time.Duration) { m.latency.Observe(d.Seconds
 func (m *PromMetrics) TriggerFired(symbol, venue, tier string) {
 	m.fired.WithLabelValues(symbol, venue, tier).Inc()
 }
-func (m *PromMetrics) TriggerDelivered()  { m.delivered.Inc() }
-func (m *PromMetrics) WatcherDrop()       { m.triggerDrops.Inc() }
-func (m *PromMetrics) AlertsActive(n int) { m.active.Set(float64(n)) }
-func (m *PromMetrics) Watchers(n int)     { m.watchers.Set(float64(n)) }
+func (m *PromMetrics) TriggerPublished()      { m.published.Inc() }
+func (m *PromMetrics) TriggerPublishDropped() { m.publishDropped.Inc() }
+func (m *PromMetrics) AlertsActive(n int)     { m.active.Set(float64(n)) }
 func (m *PromMetrics) FeedConnected(b bool) {
 	if b {
 		m.feed.Set(1)

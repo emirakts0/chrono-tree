@@ -17,6 +17,7 @@ import (
 	chronov1 "github.com/emir/chrono-tree/api/gen/chrono/v1"
 	"github.com/emir/chrono-tree/engine"
 	"github.com/emir/chrono-tree/internal/catalog"
+	"github.com/emir/chrono-tree/internal/pub"
 	"github.com/emir/chrono-tree/internal/service"
 	"github.com/emir/chrono-tree/internal/stats"
 	"github.com/emir/chrono-tree/price"
@@ -26,7 +27,7 @@ func TestMain(m *testing.M) { goleak.VerifyTestMain(m) }
 
 func TestRunDemoFiresAndPrints(t *testing.T) {
 	now := time.Now()
-	core := service.NewCore(engine.DefaultConfig(), catalog.Default(), service.NoopMetrics{}, stats.New(now))
+	core := service.NewCore(engine.DefaultConfig(), catalog.Default(), service.NoopMetrics{}, stats.New(now), pub.Noop{})
 	t.Cleanup(core.Close)
 	lis := bufconn.Listen(1 << 20)
 	srv := grpc.NewServer()
@@ -78,14 +79,20 @@ func TestRunDemoFiresAndPrints(t *testing.T) {
 	}
 
 	deadline := time.Now().Add(8 * time.Second)
-	for time.Now().Before(deadline) && strings.Count(buf.String(), "FIRED") == 0 {
+	for time.Now().Before(deadline) && core.AlertsByState()["triggered"] == 0 {
 		time.Sleep(50 * time.Millisecond)
 	}
 	cancel()
 	<-done
 	out := buf.String()
-	if !strings.Contains(out, "FIRED") {
-		t.Fatalf("no trigger printed:\n%s", out)
+	// WatchTriggers is gone (NATS publishing replaced it); until Task 4
+	// rewrites this file as seed_test.go, assert the seeding path
+	// end-to-end: the demo's alerts must fire server-side.
+	if got := core.AlertsByState()["triggered"]; got == 0 {
+		t.Fatalf("no demo alerts fired:\n%s", out)
+	}
+	if !strings.Contains(out, "seeded") {
+		t.Fatalf("demo did not report seeding:\n%s", out)
 	}
 }
 

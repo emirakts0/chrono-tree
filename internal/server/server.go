@@ -27,6 +27,14 @@ type Server struct {
 }
 
 func New(core *service.Core, st *stats.Stats, reg *prometheus.Registry) *Server {
+	reg.MustRegister(prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Name: "chrono_nats_connected", Help: "1 while the NATS publisher connection is up.",
+	}, func() float64 {
+		if core.NATSConnected() {
+			return 1
+		}
+		return 0
+	}))
 	return &Server{core: core, stats: st, reg: reg}
 }
 
@@ -77,20 +85,20 @@ func (s *Server) ready() bool {
 
 // statusView is the /stats JSON document.
 type statusView struct {
-	UptimeSec         float64           `json:"uptime_sec"`
-	AlertsByState     map[string]int    `json:"alerts_by_state"`
-	Watchers          int               `json:"watchers"`
-	FeedEverConnected bool              `json:"feed_ever_connected"`
-	FeedLastSeenMsAgo int64             `json:"feed_last_seen_ms_ago"` // -1 = never
-	VenueTicks        map[string]uint64 `json:"venue_ticks"`
-	Ticks             uint64            `json:"ticks"`
-	TicksPerSec       float64           `json:"ticks_per_sec"`
-	TicksDropped      uint64            `json:"ticks_dropped"`
-	TriggersFired     uint64            `json:"triggers_fired"`
-	TriggersPerSec    float64           `json:"triggers_per_sec"`
-	TriggersDelivered uint64            `json:"triggers_delivered"`
-	WatcherDrops      uint64            `json:"watcher_drops"`
-	Engine            engineView        `json:"engine"`
+	UptimeSec              float64           `json:"uptime_sec"`
+	AlertsByState          map[string]int    `json:"alerts_by_state"`
+	FeedEverConnected      bool              `json:"feed_ever_connected"`
+	FeedLastSeenMsAgo      int64             `json:"feed_last_seen_ms_ago"` // -1 = never
+	NATSConnected          bool              `json:"nats_connected"`
+	VenueTicks             map[string]uint64 `json:"venue_ticks"`
+	Ticks                  uint64            `json:"ticks"`
+	TicksPerSec            float64           `json:"ticks_per_sec"`
+	TicksDropped           uint64            `json:"ticks_dropped"`
+	TriggersFired          uint64            `json:"triggers_fired"`
+	TriggersPerSec         float64           `json:"triggers_per_sec"`
+	TriggersPublished      uint64            `json:"triggers_published"`
+	TriggersPublishDropped uint64            `json:"triggers_publish_dropped"`
+	Engine                 engineView        `json:"engine"`
 }
 
 type engineView struct {
@@ -103,20 +111,20 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	snap := s.stats.Snapshot(now)
 	es := s.core.Engine().Stats()
 	view := statusView{
-		UptimeSec:         snap.UptimeSec,
-		AlertsByState:     s.core.AlertsByState(),
-		Watchers:          s.core.WatcherCount(),
-		FeedEverConnected: s.core.FeedEverConnected(),
-		FeedLastSeenMsAgo: -1,
-		VenueTicks:        s.core.VenueTicks(),
-		Ticks:             snap.Ticks,
-		TicksPerSec:       snap.TicksPerSec,
-		TicksDropped:      snap.TicksDropped,
-		TriggersFired:     snap.TriggersFired,
-		TriggersPerSec:    snap.TriggersPerSec,
-		TriggersDelivered: snap.TriggersDelivered,
-		WatcherDrops:      snap.WatcherDrops,
-		Engine:            engineView{Live: es.Live, DroppedTriggers: es.DroppedTriggers},
+		UptimeSec:              snap.UptimeSec,
+		AlertsByState:          s.core.AlertsByState(),
+		FeedEverConnected:      s.core.FeedEverConnected(),
+		FeedLastSeenMsAgo:      -1,
+		NATSConnected:          s.core.NATSConnected(),
+		VenueTicks:             s.core.VenueTicks(),
+		Ticks:                  snap.Ticks,
+		TicksPerSec:            snap.TicksPerSec,
+		TicksDropped:           snap.TicksDropped,
+		TriggersFired:          snap.TriggersFired,
+		TriggersPerSec:         snap.TriggersPerSec,
+		TriggersPublished:      snap.TriggersPublished,
+		TriggersPublishDropped: snap.TriggersPublishDropped,
+		Engine:                 engineView{Live: es.Live, DroppedTriggers: es.DroppedTriggers},
 	}
 	if last := s.core.FeedLastSeen(); !last.IsZero() {
 		view.FeedLastSeenMsAgo = time.Since(last).Milliseconds()

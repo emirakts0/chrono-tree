@@ -14,6 +14,7 @@ import (
 	chronov1 "github.com/emir/chrono-tree/api/gen/chrono/v1"
 	"github.com/emir/chrono-tree/engine"
 	"github.com/emir/chrono-tree/internal/catalog"
+	"github.com/emir/chrono-tree/internal/pub"
 	"github.com/emir/chrono-tree/internal/service"
 	"github.com/emir/chrono-tree/internal/stats"
 )
@@ -23,7 +24,7 @@ func TestMain(m *testing.M) { goleak.VerifyTestMain(m) }
 func newCore(t *testing.T) (*service.Core, *grpc.ClientConn) {
 	t.Helper()
 	now := time.Now()
-	core := service.NewCore(engine.DefaultConfig(), catalog.Default(), service.NoopMetrics{}, stats.New(now))
+	core := service.NewCore(engine.DefaultConfig(), catalog.Default(), service.NoopMetrics{}, stats.New(now), pub.Noop{})
 	t.Cleanup(core.Close)
 	lis := bufconn.Listen(1 << 20)
 	srv := grpc.NewServer()

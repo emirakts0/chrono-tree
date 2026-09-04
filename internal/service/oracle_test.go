@@ -2,17 +2,21 @@ package service
 
 import (
 	"context"
+	"encoding/json/v2"
 	"math/rand/v2"
 	"testing"
 	"time"
 
+	nats "github.com/nats-io/nats.go"
+
 	chronov1 "github.com/emir/chrono-tree/api/gen/chrono/v1"
 	"github.com/emir/chrono-tree/internal/catalog"
+	"github.com/emir/chrono-tree/internal/pub"
 	"github.com/emir/chrono-tree/price"
 )
 
 func TestServiceOracle(t *testing.T) {
-	e := newEnv(t)
+	e := newNATSEnv(t)
 	cat := catalog.Default()
 	all := cat.Symbols()
 	syms := all[:25]
@@ -50,29 +54,28 @@ func TestServiceOracle(t *testing.T) {
 		alerts[i] = oracleAlert{id: resp.GetAlertId(), symbol: sym.Name, venue: venue, tier: tier, dir: dir, target: target}
 	}
 
-	// Watch in the background, collecting trigger IDs.
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	wstream, err := e.alerts().WatchTriggers(ctx, &chronov1.WatchTriggersRequest{})
-	if err != nil {
+	// Subscribe in the background, collecting trigger IDs from the wire —
+	// the same path real consumers use.
+	nc := e.natsClient(t)
+	raw := make(chan *nats.Msg, 4096)
+	if _, err := nc.ChanSubscribe("chrono.triggers.>", raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := nc.Flush(); err != nil {
 		t.Fatal(err)
 	}
 	gotIDs := make(chan string, 4096)
 	go func() {
-		for {
-			tr, err := wstream.Recv()
-			if err != nil {
-				close(gotIDs)
-				return
+		for m := range raw {
+			var tr pub.Trigger
+			if err := json.Unmarshal(m.Data, &tr); err == nil {
+				gotIDs <- tr.AlertID
 			}
-			gotIDs <- tr.GetAlertId()
 		}
+		close(gotIDs)
 	}()
-	// Let the watcher register before ticking.
-	deadline := time.Now().Add(2 * time.Second)
-	for e.core.WatcherCount() == 0 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
 
 	// Random tick stream; the naive evaluator applies each tick in order.
 	type wireTick struct {
@@ -81,8 +84,7 @@ func TestServiceOracle(t *testing.T) {
 		venue  string
 		tier   string
 	}
-	var stream chronov1.FeedService_StreamTicksClient
-	stream, err = e.feed().StreamTicks(ctx)
+	stream, err := e.feed().StreamTicks(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -4,41 +4,34 @@ import (
 	"context"
 	"math/rand/v2"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	nats "github.com/nats-io/nats.go"
 
 	chronov1 "github.com/emir/chrono-tree/api/gen/chrono/v1"
 	"github.com/emir/chrono-tree/internal/catalog"
 	"github.com/emir/chrono-tree/price"
 )
 
-// TestStressWatchersAndFeed: 4 watchers, parallel upserts and cancels, and
-// a 5k/s tick stream for ~1.5s. Under -race this exercises the pump,
-// broadcast eviction, and catalog mutation together. Assertions are the
-// documented invariants: triggers fired > 0, deliveries observed, no
-// watcher drops at this modest rate.
-func TestStressWatchersAndFeed(t *testing.T) {
-	e := newEnv(t)
+// TestStressFeedAndPublish: parallel upserts and a 5k/s tick stream for
+// ~1.5s against a real in-process NATS server. Under -race this
+// exercises the pump, the publisher, and catalog mutation together.
+// Assertions: triggers fired > 0, received over NATS > 0, zero dropped
+// publishes at this modest rate.
+func TestStressFeedAndPublish(t *testing.T) {
+	e := newNATSEnv(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	var delivered = make([]uint64, 4)
-	var wwg sync.WaitGroup
-	for i := range delivered {
-		stream, err := e.alerts().WatchTriggers(ctx, &chronov1.WatchTriggersRequest{})
-		if err != nil {
-			t.Fatal(err)
-		}
-		wwg.Add(1)
-		go func(i int, s chronov1.AlertService_WatchTriggersClient) {
-			defer wwg.Done()
-			for {
-				if _, err := s.Recv(); err != nil {
-					return
-				}
-				delivered[i]++
-			}
-		}(i, stream)
+	nc := e.natsClient(t)
+	var received atomic.Uint64
+	if _, err := nc.Subscribe("chrono.triggers.>", func(*nats.Msg) { received.Add(1) }); err != nil {
+		t.Fatal(err)
+	}
+	if err := nc.Flush(); err != nil {
+		t.Fatal(err)
 	}
 
 	syms := catalog.Default().Symbols()
@@ -112,11 +105,10 @@ func TestStressWatchersAndFeed(t *testing.T) {
 	wg.Wait()
 	<-feedDone
 	cancel()
-	wwg.Wait() // writers of delivered are done; now reads are race-free
 
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if e.core.stats.TriggersFired.Load() > 0 && sum(delivered) > 0 {
+		if e.core.stats.TriggersFired.Load() > 0 && received.Load() > 0 {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -124,20 +116,12 @@ func TestStressWatchersAndFeed(t *testing.T) {
 	if e.core.stats.TriggersFired.Load() == 0 {
 		t.Fatal("nothing fired under stress")
 	}
-	if sum(delivered) == 0 {
-		t.Fatal("watchers observed no deliveries")
+	if received.Load() == 0 {
+		t.Fatal("no triggers received over NATS")
 	}
-	if got := e.core.stats.WatcherDrops.Load(); got != 0 {
-		t.Fatalf("watcher drops at 5k/s: %d (watchers should keep up)", got)
+	if got := e.core.stats.TriggersPublishDropped.Load(); got != 0 {
+		t.Fatalf("dropped publishes at 5k ticks/s: %d", got)
 	}
-}
-
-func sum(v []uint64) uint64 {
-	var s uint64
-	for _, x := range v {
-		s += x
-	}
-	return s
 }
 
 func parseRefForTest(t *testing.T, s catalog.Symbol) int64 {
@@ -152,40 +136,4 @@ func parseRefForTest(t *testing.T, s catalog.Symbol) int64 {
 func formatForTest(t *testing.T, base int64, dec uint8) string {
 	t.Helper()
 	return price.Format(base, dec)
-}
-
-// TestWatcherEviction drives the eviction branch deterministically: fill a
-// watcher's 256-slot channel, broadcast once more — the watcher must be
-// evicted (channel closed, counted), and broadcast must not block.
-func TestWatcherEviction(t *testing.T) {
-	e := newEnv(t)
-	w := newWatcher()
-	e.core.hubMu.Lock()
-	e.core.watchers[w] = struct{}{}
-	e.core.hubMu.Unlock()
-	tr := &chronov1.Trigger{AlertId: "eviction-probe"}
-	for i := 0; i < 256; i++ {
-		select {
-		case w.ch <- tr:
-		default:
-			t.Fatal("watcher buffer smaller than 256")
-		}
-	}
-	e.core.broadcast(tr)
-	if got := e.core.WatcherCount(); got != 0 {
-		t.Fatalf("watcher not evicted, count = %d", got)
-	}
-	// A closed buffered channel still delivers its queued items; drain the
-	// 256 probes, then the channel must report closed.
-	for i := 0; i < 256; i++ {
-		if _, ok := <-w.ch; !ok {
-			t.Fatalf("channel closed after %d of 256 buffered items", i)
-		}
-	}
-	if _, ok := <-w.ch; ok {
-		t.Fatal("evicted watcher channel should be closed")
-	}
-	if got := e.core.stats.WatcherDrops.Load(); got != 1 {
-		t.Fatalf("WatcherDrops = %d, want 1", got)
-	}
 }
