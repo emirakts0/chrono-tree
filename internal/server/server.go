@@ -3,8 +3,10 @@
 package server
 
 import (
+	"embed"
 	"encoding/json/v2"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/http/pprof"
 	"strconv"
@@ -22,6 +24,18 @@ import (
 
 // feedStaleAfter is how long the feed may be silent before readyz flips.
 const feedStaleAfter = 30 * time.Second
+
+// webFS is the committed UI bundle (internal/server/web/dist, built by
+// web/build.sh). The FS root is dist, so / serves index.html and /app.js
+// the bundle; `go build` needs no TS toolchain.
+//
+//go:embed web/dist
+var webFS embed.FS
+
+// distFS is webFS re-rooted at web/dist (embed keeps the directory prefix),
+// so / serves index.html and /app.js the bundle. fs.Sub cannot fail on a
+// valid embed directive.
+var distFS, _ = fs.Sub(webFS, "web/dist")
 
 type Server struct {
 	core     *service.Core
@@ -74,6 +88,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
 	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
 	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	// Method-less "/" so it does not conflict with the method-less
+	// /debug/pprof/ subtree; every more specific pattern above wins.
+	mux.Handle("/", http.FileServer(http.FS(distFS)))
 	return mux
 }
 

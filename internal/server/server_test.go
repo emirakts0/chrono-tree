@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -148,6 +149,30 @@ func TestStatsJSON(t *testing.T) {
 		if _, ok := body[key]; !ok {
 			t.Fatalf("stats missing %q: %v", key, body)
 		}
+	}
+}
+
+func TestUIAssetsServed(t *testing.T) {
+	s := newServer(t)
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	resp, err := ts.Client().Get(ts.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || !bytes.Contains(body, []byte("app.js")) {
+		t.Fatalf("index: status=%d body=%q", resp.StatusCode, body[:min(len(body), 200)])
+	}
+	js, err := ts.Client().Get(ts.URL + "/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js.Body.Close()
+	if js.StatusCode != 200 {
+		t.Fatalf("app.js status = %d", js.StatusCode)
 	}
 }
 
