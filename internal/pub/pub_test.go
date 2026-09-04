@@ -138,12 +138,9 @@ func TestSubscribeTriggersRoundTrip(t *testing.T) {
 		t.Fatal("second SubscribeTriggers should error")
 	}
 
-	// Publish on a second connection (the loopback the dashboard uses).
-	nc, err := nats.Connect(url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer nc.Close()
+	// Publish on the publisher's own connection: the broker delivers it
+	// back to the subscription on the same connection (the loopback the
+	// dashboard uses is same-connection too).
 	if err := p.Publish(sampleTrigger()); err != nil {
 		t.Fatal(err)
 	}
