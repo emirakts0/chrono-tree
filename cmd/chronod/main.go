@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -135,8 +136,8 @@ func run(ctx context.Context, grpcAddr, httpAddr, natsURL string) error {
 	if err := <-httpErr; err != nil && err != http.ErrServerClosed {
 		return err
 	}
-	if err := <-grpcErr; err != nil {
-		return err
+	if err := <-grpcErr; err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+		return err // ErrServerStopped is the normal GracefulStop exit
 	}
 	return nil
 }
