@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"context"
 	"encoding/json/v2"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -37,7 +39,10 @@ func readFrame(t *testing.T, body *bufio.Reader) map[string]any {
 	return nil
 }
 
-func TestStreamHelloSnapshotTrigger(t *testing.T) {
+// TestStreamContractBatched: hello (with history) on connect, snapshots at
+// 1Hz from the shared tick, and trigger batches only on ticks where the
+// ring drained non-empty — never per-trigger frames.
+func TestStreamContractBatched(t *testing.T) {
 	s := newServer(t)
 	ts := httptest.NewServer(s.Handler())
 	defer ts.Close()
@@ -56,44 +61,147 @@ func TestStreamHelloSnapshotTrigger(t *testing.T) {
 	if hello["type"] != "hello" {
 		t.Fatalf("first frame = %v, want hello", hello["type"])
 	}
-	if n, _ := hello["symbol_count"].(float64); n < 100 {
-		t.Fatalf("symbol_count = %v, want the full catalog", hello["symbol_count"])
+	hist, ok := hello["history"].(map[string]any)
+	if !ok {
+		t.Fatalf("hello.history missing: %v", hello)
 	}
-	if _, ok := hello["venues"].([]any); !ok {
-		t.Fatalf("hello.venues missing: %v", hello)
-	}
-
-	// Snapshots flow at ~1Hz.
-	var snap map[string]any
-	for {
-		f := readFrame(t, body)
-		if f["type"] == "snapshot" {
-			snap = f["snapshot"].(map[string]any)
-			break
-		}
-	}
-	for _, k := range []string{"ticks", "ticks_per_sec", "triggers_fired", "alerts_by_state", "nats_connected", "venue_ticks", "engine"} {
-		if _, ok := snap[k]; !ok {
-			t.Fatalf("snapshot.%s missing", k)
+	for _, k := range []string{"t", "f", "l", "v"} {
+		if _, ok := hist[k]; !ok {
+			t.Fatalf("hello.history.%s missing: %v", k, hist)
 		}
 	}
 
-	// A trigger handed to the hub arrives as a frame.
-	go s.HandleTrigger(pub.Trigger{
+	// A trigger handed to HandleTrigger rides the NEXT tick's batch.
+	s.HandleTrigger(pub.Trigger{
 		AlertID: "0192ced1-4a1e-7abc-8def-0123456789ab", Symbol: "BTCUSDT",
 		Venue: "ATLAS", Tier: "TOP", FiredPrice: "65001.00",
 		FiredAtUnixNanos: 1, Direction: "ABOVE", TargetPrice: "65000.00",
 	})
-	for {
+	sawSnapshot, sawTriggers, sawPerTrigger := false, false, false
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && !(sawSnapshot && sawTriggers) {
 		f := readFrame(t, body)
-		if f["type"] != "trigger" {
-			continue
+		switch f["type"] {
+		case "snapshot":
+			sawSnapshot = true
+			snap := f["snapshot"].(map[string]any)
+			for _, k := range []string{"ticks", "ticks_per_sec", "triggers_fired", "alerts_by_state", "nats_connected", "venue_ticks", "engine"} {
+				if _, ok := snap[k]; !ok {
+					t.Fatalf("snapshot.%s missing", k)
+				}
+			}
+		case "triggers":
+			sawTriggers = true
+			batch := f["triggers"].([]any)
+			if len(batch) != 1 {
+				t.Fatalf("batch len = %d, want 1", len(batch))
+			}
+			tr := batch[0].(map[string]any)
+			if tr["alert_id"] != "0192ced1-4a1e-7abc-8def-0123456789ab" {
+				t.Fatalf("trigger = %v", tr)
+			}
+		case "trigger":
+			sawPerTrigger = true
 		}
-		tr := f["trigger"].(map[string]any)
-		if tr["alert_id"] != "0192ced1-4a1e-7abc-8def-0123456789ab" {
-			t.Fatalf("trigger frame = %v", tr)
+	}
+	if !sawSnapshot {
+		t.Fatal("no snapshot frame within deadline")
+	}
+	if !sawTriggers {
+		t.Fatal("no triggers batch within deadline")
+	}
+	if sawPerTrigger {
+		t.Fatal("per-trigger frames must not exist in v2")
+	}
+}
+
+// TestTriggerRing: overflow keeps the last 10, drain returns oldest→newest
+// and clears.
+func TestTriggerRing(t *testing.T) {
+	r := &triggerRing{}
+	for i := 0; i < 15; i++ {
+		r.push(pub.Trigger{AlertID: fmt.Sprintf("id-%02d", i)})
+	}
+	got := r.drain()
+	if len(got) != 10 {
+		t.Fatalf("drain len = %d, want 10", len(got))
+	}
+	if got[0].AlertID != "id-05" || got[9].AlertID != "id-14" {
+		t.Fatalf("drain bounds = %s..%s, want id-05..id-14", got[0].AlertID, got[9].AlertID)
+	}
+	if again := r.drain(); len(again) != 0 {
+		t.Fatalf("drain after drain = %d, want 0", len(again))
+	}
+}
+
+// TestTriggerRingConcurrent: concurrent push + drain under -race.
+func TestTriggerRingConcurrent(t *testing.T) {
+	r := &triggerRing{}
+	var wg sync.WaitGroup
+	for w := 0; w < 4; w++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 500; i++ {
+				r.push(pub.Trigger{})
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 500; i++ {
+				r.drain()
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+// TestHistorySampling: 130 samples cap at 120; venue rates are deltas of
+// cumulative counters (first sample 0).
+func TestHistorySampling(t *testing.T) {
+	h := newHistory()
+	v := statusView{
+		TicksPerSec:    100,
+		TriggersPerSec: 2,
+		Engine:         engineView{Live: 7},
+		VenueTicks:     map[string]uint64{"ATLAS": 1000},
+	}
+	for i := 0; i < 130; i++ {
+		v.VenueTicks["ATLAS"] += 50
+		v.Engine.Live++
+		h.sample(v)
+	}
+	view := h.view()
+	if len(view.T) != 120 || len(view.F) != 120 || len(view.L) != 120 {
+		t.Fatalf("lengths = %d/%d/%d, want 120/120/120", len(view.T), len(view.F), len(view.L))
+	}
+	if view.T[0] != 100 || view.F[0] != 2 {
+		t.Fatalf("t/f = %v/%v, want 100/2", view.T[0], view.F[0])
+	}
+	if got := view.L[0]; got != 18 { // 11th sample (the cap evicted the first 10): Live was 7+11
+		t.Fatalf("l[0] = %v, want 18", got)
+	}
+	if got := view.V["ATLAS"][0]; got != 50 {
+		t.Fatalf("venue delta[0] = %v, want 50", got)
+	}
+	if n := len(view.V["ATLAS"]); n != 120 {
+		t.Fatalf("venue series len = %d, want 120", n)
+	}
+}
+
+// TestServerCloseStopsTick: after Close, no more frames are broadcast.
+func TestServerCloseStopsTick(t *testing.T) {
+	s := newServer(t)
+	ch, remove := s.hub.add()
+	defer remove()
+	s.Close()
+	s.Close() // idempotent
+	select {
+	case frame, ok := <-ch:
+		if ok {
+			t.Fatalf("frame after Close: %s", frame)
 		}
-		break
+	case <-time.After(1500 * time.Millisecond):
 	}
 }
 

@@ -67,6 +67,7 @@ func run(ctx context.Context, grpcAddr, httpAddr, natsURL string) error {
 	defer core.Close()
 
 	statusSrv := server.New(core, st, reg)
+	defer statusSrv.Close() // stop the 1s tick engine at exit (idempotent)
 
 	// Dashboard live feed: re-consume our own published triggers. The
 	// handler fans out to browsers over SSE; it never blocks us.

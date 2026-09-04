@@ -44,7 +44,9 @@ func newServer(t *testing.T) *Server {
 	reg := prometheus.NewRegistry()
 	core := service.NewCore(engine.DefaultConfig(), catalog.Default(), service.NoopMetrics{}, stats.New(now), pub.Noop{})
 	t.Cleanup(core.Close)
-	return New(core, stats.New(now), reg)
+	s := New(core, stats.New(now), reg)
+	t.Cleanup(s.Close)
+	return s
 }
 
 func TestHealthz(t *testing.T) {
@@ -104,6 +106,7 @@ func TestReadyzStaleUnderSynctest(t *testing.T) {
 		core := service.NewCore(engine.DefaultConfig(), catalog.Default(), service.NoopMetrics{}, stats.New(now), pub.Noop{})
 		defer core.Close()
 		s := New(core, stats.New(now), reg)
+		defer s.Close()
 		ts := httptest.NewTestServer(t, s.Handler())
 		defer ts.Close()
 
