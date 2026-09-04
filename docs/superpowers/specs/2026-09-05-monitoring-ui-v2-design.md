@@ -31,8 +31,10 @@ Three improvements to the live dashboard:
 ### The 1-second engine
 
 `internal/server` gains a single background tick goroutine started by `New`
-(stopped via an internal stop channel; the process exit path already bounds
-the HTTP server's life). Every second, in order:
+and stopped by a new `Server.Close()` (idempotent, closes an internal stop
+channel). chronod calls it in its shutdown path, after `httpServer.Shutdown`
+returns — the goroutine's exit no longer depends on connection lifetimes.
+Every second, in order:
 
 1. **Sample history** — append `ticks_per_sec`, `triggers_per_sec`,
    `engine.live`, and per-venue `ticks/s` (delta of cumulative `venue_ticks`
