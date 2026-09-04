@@ -47,7 +47,7 @@ func NewPromMetrics(reg prometheus.Registerer) *PromMetrics {
 		}),
 		latency: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name: "chrono_tick_latency_seconds", Help: "Tick timestamp-to-ingest latency.",
-			Buckets: prometheus.ExponentialBuckets(0.0001, 2, 12), // 100µs .. ~400ms
+			Buckets: prometheus.ExponentialBuckets(0.0001, 2, 13), // 100µs .. ~410ms
 		}),
 		active: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "chrono_alerts_active", Help: "Alerts currently active service-side.",
