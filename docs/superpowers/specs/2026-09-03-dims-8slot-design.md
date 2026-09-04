@@ -148,8 +148,9 @@ Existing suite passes unchanged at width 0 (except `TestEntrySize` → 64).
 1. `TestDimsMatching` — table-driven: exact match fires; any differing slot
    does not fire; real-vs-sentinel in the same slot does not fire; fan-out
    (two alerts, two values, one tick) fires exactly one.
-2. Oracle test extension — randomized brute-force evaluator gains random
-   width (0–3) and values; the naive check is element-wise dim equality plus
+2. Oracle test extension — randomized brute-force evaluator runs at width 3
+   (random values); width 0 remains covered by the pre-existing `TestOracle`.
+   The naive check is element-wise dim equality plus
    existing price/direction logic. Main correctness net for the comparator
    rewrite.
 3. `TestDimsValidation` — `Upsert` rejects sentinel-inside-width (`ErrDims`)

@@ -20,6 +20,16 @@ func TestDimsHelper(t *testing.T) {
 	if d != want {
 		t.Fatalf("Dims(3,1,42) = %v, want %v", d, want)
 	}
+	// More than dimMax values is programmer error and must panic, not
+	// silently index out of range.
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("Dims with more than dimMax values must panic")
+			}
+		}()
+		Dims(1, 2, 3, 4, 5, 6, 7, 8, 9)
+	}()
 }
 
 func TestNormalizeDims(t *testing.T) {
@@ -61,6 +71,34 @@ func TestDimsValidation(t *testing.T) {
 	good.Dims = [dimMax]uint16{1, 2, 7, 7, 7, 7, 7, 7}
 	if err := e.Upsert(good); err != nil {
 		t.Fatalf("trailing junk should be normalized: %v", err)
+	}
+
+	// Behavioral proof of normalization: a width-2 match must fire the
+	// trailing-junk alert exactly once. If Upsert stopped at validation and
+	// stored the junk, the alert would be unreachable and never fire.
+	e.Sync()
+	e.Match(&Tick{Symbol: "S", Ask: 150, Present: 1 << uint(PriceAsk),
+		TS: 1 << 40, Dims: Dims(1, 2)})
+	trs := drainTriggers(e)
+	if len(trs) != 1 || trs[0].ID != mkID(2) {
+		t.Fatalf("trailing-junk alert: got %v fires, want exactly one fire of %v",
+			trs, mkID(2))
+	}
+
+	// A zero-value Dims array carries real zeros (not sentinels) below
+	// width: at width 2 it means dims (0, 0), so it must store and fire.
+	zero := base
+	zero.ID = mkID(3)
+	if err := e.Upsert(zero); err != nil {
+		t.Fatalf("zero-value Dims: %v", err)
+	}
+	e.Sync()
+	e.Match(&Tick{Symbol: "S", Ask: 150, Present: 1 << uint(PriceAsk),
+		TS: 1 << 40, Dims: Dims(0, 0)})
+	trs = drainTriggers(e)
+	if len(trs) != 1 || trs[0].ID != mkID(3) {
+		t.Fatalf("zero-value Dims alert: got %v fires, want exactly one fire of %v",
+			trs, mkID(3))
 	}
 }
 

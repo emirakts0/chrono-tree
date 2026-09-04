@@ -1,5 +1,7 @@
 package engine
 
+import "fmt"
+
 // DimSentinel marks an unused dimension slot. Real values are 0x0000..0xFFFE;
 // the value vocabulary is caller-owned — the engine is value-agnostic, the
 // same way it is scale-agnostic for prices.
@@ -14,6 +16,9 @@ const dimMax = 8
 // Config.Dims, which New validates, so this is a programmer error and must
 // fail loudly, not truncate silently.
 func Dims(values ...uint16) [dimMax]uint16 {
+	if len(values) > dimMax {
+		panic(fmt.Sprintf("chrono-tree: at most %d dims, got %d", dimMax, len(values)))
+	}
 	var d [dimMax]uint16
 	for i := range d {
 		d[i] = DimSentinel
@@ -27,7 +32,9 @@ func Dims(values ...uint16) [dimMax]uint16 {
 // normalizeDims validates d against the engine's width: every slot below
 // width must carry a real value; slots at or past width are overwritten with
 // the sentinel, so a zero-value array is valid at any width. ok=false means a
-// slot below width holds the sentinel (malformed input).
+// slot below width holds the sentinel (malformed input). The caller must
+// ensure width <= dimMax (New enforces this); there is no bounds guard on
+// this hot path.
 func normalizeDims(d [dimMax]uint16, width uint8) ([dimMax]uint16, bool) {
 	for i := 0; i < int(width); i++ {
 		if d[i] == DimSentinel {
