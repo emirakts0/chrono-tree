@@ -736,12 +736,15 @@ import (
 
 // Rate counts events per second over a 60-second sliding window. Adds take
 // a mutex — at the feed's ~20k ticks/s this is nanoseconds of work and it
-// keeps rollover bookkeeping trivially correct.
+// keeps rollover bookkeeping trivially correct. The ring holds 61 slots
+// (index = unix second % 61): with 60 the in-progress second's bucket would
+// alias the oldest second in the read window, leaking the current count
+// into PerSecond.
 type Rate struct {
 	mu      sync.Mutex
 	started int64 // unix second of first Add, 0 = never
 	curSec  int64
-	buckets [60]uint64 // index = unix second % 60
+	buckets [61]uint64 // index = unix second % 61
 }
 
 func (r *Rate) Add(n uint64, now time.Time) {
@@ -751,7 +754,7 @@ func (r *Rate) Add(n uint64, now time.Time) {
 	if r.started == 0 {
 		r.started = sec
 	}
-	r.buckets[sec%60] += n
+	r.buckets[sec%61] += n
 	r.mu.Unlock()
 }
 
@@ -761,13 +764,13 @@ func (r *Rate) advance(sec int64) {
 	switch {
 	case sec == r.curSec:
 		return
-	case sec-r.curSec >= 60:
+	case sec-r.curSec >= 61:
 		for i := range r.buckets {
 			r.buckets[i] = 0
 		}
 	default:
 		for s := r.curSec + 1; s <= sec; s++ {
-			r.buckets[s%60] = 0
+			r.buckets[s%61] = 0
 		}
 	}
 	r.curSec = sec
@@ -791,7 +794,7 @@ func (r *Rate) PerSecond(now time.Time) float64 {
 	}
 	var total uint64
 	for s := lo; s < sec; s++ {
-		total += r.buckets[s%60]
+		total += r.buckets[s%61]
 	}
 	r.mu.Unlock()
 	return float64(total) / float64(sec-lo)
