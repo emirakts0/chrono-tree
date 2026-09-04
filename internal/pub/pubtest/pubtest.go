@@ -25,9 +25,11 @@ func Start(t *testing.T) string {
 		t.Fatalf("embedded NATS server: %v", err)
 	}
 	go s.Start()
+	// Register cleanup before the readiness wait: if readiness fails, the
+	// server goroutine must still be shut down (goleak-guarded suites).
+	t.Cleanup(s.Shutdown)
 	if !s.ReadyForConnections(2 * time.Second) {
 		t.Fatal("embedded NATS server did not become ready")
 	}
-	t.Cleanup(s.Shutdown)
 	return s.ClientURL()
 }
