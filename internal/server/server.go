@@ -264,8 +264,10 @@ func appendCapped(s []float64, x float64) []float64 {
 }
 
 // sample records one second of the snapshot view. Venue rates are deltas
-// of the cumulative venue_ticks counters; the first sample of each venue
-// is 0 (no prior point to diff).
+// of the cumulative venue_ticks counters; there is no prior point for a
+// venue's first sample, so it diffs against zero — which at process boot
+// (counters start at 0, first tick is 1s in) is exactly that first
+// second's rate.
 func (h *history) sample(v statusView) {
 	h.mu.Lock()
 	defer h.mu.Unlock()

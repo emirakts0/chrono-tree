@@ -194,6 +194,7 @@ func TestMetricsEndpoint(t *testing.T) {
 	core := service.NewCore(engine.DefaultConfig(), catalog.Default(), pm, stats.New(now), pub.Noop{})
 	t.Cleanup(core.Close)
 	s := New(core, stats.New(now), reg)
+	t.Cleanup(s.Close) // stop the tick goroutine
 	ts := httptest.NewServer(s.Handler())
 	defer ts.Close()
 
