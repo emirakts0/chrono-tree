@@ -1,0 +1,152 @@
+//go:build integration
+
+// End-to-end smoke: real binaries, real sockets, real network hop.
+// Run: go test -tags integration ./tests -run Integration -v -timeout 120s
+package tests
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"syscall"
+	"testing"
+	"time"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+
+	chronov1 "github.com/emir/chrono-tree/api/gen/chrono/v1"
+)
+
+func freePort(t *testing.T) int {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	return l.Addr().(*net.TCPAddr).Port
+}
+
+// repoRoot is this file's parent directory; the test binary's CWD is the
+// package dir, but the `go run` invocations need the module root.
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	root, err := filepath.Abs(filepath.Join(filepath.Dir(thisFile), ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+func TestIntegrationEndToEnd(t *testing.T) {
+	grpcPort, httpPort := freePort(t), freePort(t)
+	grpcAddr := fmt.Sprintf("127.0.0.1:%d", grpcPort)
+	httpAddr := fmt.Sprintf("127.0.0.1:%d", httpPort)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	root := repoRoot(t)
+	daemon := exec.CommandContext(ctx, "go", "run", "./cmd/chronod",
+		"-grpc-addr", grpcAddr, "-http-addr", httpAddr)
+	daemon.Dir = root
+	feeder := exec.CommandContext(ctx, "go", "run", "./cmd/chronofeed",
+		"-server", grpcAddr, "-rate", "20000", "-seed", "1")
+	feeder.Dir = root
+	// `go run` execs the real binary as a child; kill the whole process
+	// group so no daemon survives the test.
+	startAndWait := func(cmd *exec.Cmd) {
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start %v: %v", cmd.Args, err)
+		}
+		t.Cleanup(func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) })
+	}
+	startAndWait(daemon)
+	startAndWait(feeder)
+
+	// Wait for readiness.
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := http.Get("http://" + httpAddr + "/readyz")
+		if err == nil {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode == 200 {
+				break
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	// Wire one alert near BTC's anchor and watch for it to fire.
+	conn, err := grpc.NewClient(grpcAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	alerts := chronov1.NewAlertServiceClient(conn)
+	wctx, wcancel := context.WithTimeout(ctx, 30*time.Second)
+	defer wcancel()
+	wstream, err := alerts.WatchTriggers(wctx, &chronov1.WatchTriggersRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = alerts.UpsertAlert(ctx, &chronov1.UpsertAlertRequest{
+		Symbol: "BTCUSDT", PriceType: chronov1.PriceType_PRICE_TYPE_ASK,
+		Direction:   chronov1.Direction_DIRECTION_BELOW, // walk down through it
+		TargetPrice: "66000.00", Venue: "ATLAS", Tier: "TOP",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	triggered := make(chan struct{})
+	go func() {
+		for {
+			if _, err := wstream.Recv(); err == nil {
+				close(triggered)
+				return
+			}
+		}
+	}()
+	select {
+	case <-triggered:
+	case <-time.After(25 * time.Second):
+		t.Fatal("no trigger observed end-to-end")
+	}
+
+	// /stats must show the feed's rate. The rate is a mean over complete
+	// seconds since the first tick, so the daemon's ramp-up second dilutes
+	// it; poll until the gate is met or we run out of time.
+	var rate float64
+	rateDeadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(rateDeadline) {
+		sresp, err := http.Get("http://" + httpAddr + "/stats")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(sresp.Body).Decode(&body); err != nil {
+			sresp.Body.Close()
+			t.Fatal(err)
+		}
+		sresp.Body.Close()
+		rate, _ = body["ticks_per_sec"].(float64)
+		if rate >= 19500 {
+			return // gate met
+		}
+		time.Sleep(1 * time.Second)
+	}
+	t.Fatalf("ticks_per_sec = %v, want >= 19500 (spec gate)", rate)
+}

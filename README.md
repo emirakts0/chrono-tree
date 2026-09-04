@@ -50,6 +50,32 @@ The conversion boundary. Stdlib only, exact or error:
 Scale (how many decimals a symbol quotes with) is the caller's contract; a
 service layer would own a symbol-to-decimals table.
 
+### `internal/catalog`
+
+Reference data for the service layer: ~500 synthetic symbols (name, quote
+decimals, reference anchor price) and the engine's two dims as a fixed
+vocabulary - 3 fictional venues x 2 book tiers.
+
+### `internal/service`
+
+The chrono.v1 gRPC services on top of the engine: catalog validation, exact
+price conversion at the boundary, a service-side alert catalog for trigger
+enrichment, and WatchTriggers fan-out (drop-and-log - the pump never blocks).
+
+### `internal/server`
+
+chronod's HTTP status surface: `/healthz`, `/readyz`, `/stats` (encoding/json/v2),
+`/metrics` (Prometheus) and `/debug/pprof/`.
+
+### `internal/feed`
+
+The synthetic market behind chronofeed: a seeded, heat-weighted random walk
+over the catalog's symbols and dims.
+
+### `cmd/`
+
+Three binaries - `chronod`, `chronofeed`, `chronoctl` - see Services below.
+
 ## Usage
 
 ```go
@@ -131,8 +157,42 @@ BenchmarkMatchDimsDenseSkip-12    	     5793	     201614 ns/op	       0 B/op	   
 Both paths are allocation-free. `BenchmarkMatchSparse10M` exists behind
 `CHRONO_BENCH_10M=1`.
 
-## Status
+## Services
 
-Engine and price boundary are complete. Not yet built: the service layer
-(gRPC daemon, symbol-to-decimals config, input validation). Design docs live
-in `docs/superpowers/specs/`.
+Three binaries wrap the engine (spec: `docs/superpowers/specs/2026-09-04-service-design.md`):
+
+- `chronod` — hosts the engine: `chrono.v1` gRPC on `:9090` (alerts, trigger
+  streaming, tick ingestion, catalog; gRPC health + reflection), HTTP status
+  on `:8080` (`/healthz`, `/readyz`, `/stats` json/v2, `/metrics`
+  Prometheus, `/debug/pprof/`).
+- `chronofeed` — synthetic crypto market: ~500 pairs (realistic majors down
+  to sub-cent memecoins), heat-weighted random walk, 3 fictional venues ×
+  2 book tiers as the engine's two dims, one client-stream per venue,
+  `-rate 20000` default.
+- `chronoctl` — demo client: `alert` (register one), `watch` (print
+  triggers), `demo` (seed 1000 dim-scoped alerts + a per-venue fan-out
+  set, then print every trigger).
+
+```sh
+go run ./cmd/chronod &
+go run ./cmd/chronofeed -rate 20000 &
+go run ./cmd/chronoctl demo -n 1000
+curl -s localhost:8080/stats | jq
+```
+
+Prices are decimal strings end to end (`"65000.12"`), converted exactly
+through the `price` package at the gRPC boundary. Triggers stream to every
+`WatchTriggers` client; a watcher that falls behind is disconnected with
+`ResourceExhausted` (drop-and-log — the pump never blocks, mirroring the
+engine's own ring). The engine itself is untouched: the service layer adds
+catalogs, conversion, fan-out and observability around it.
+
+Integration smoke (real binaries over real sockets):
+
+```sh
+go test -tags integration ./tests -run Integration -v -timeout 120s
+```
+
+Engine, `price` boundary and service layer are complete. Not yet built:
+persistence, TLS/auth, multi-node anything. Design docs live in
+`docs/superpowers/specs/`.
