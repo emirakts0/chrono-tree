@@ -165,16 +165,25 @@ Existing `Sparse1M` / `DenseSkip` keep running at width 0 as the
 compatibility baseline. New: `BenchmarkMatchDimsSparse1M` and
 `BenchmarkMatchDimsDenseSkip` at width 2.
 
-Gates (median of `-count=5`, AMD Ryzen 5 5600H):
+Gates (median of `-count=5`, AMD Ryzen 5 5600H). The original estimate-derived
+gates (≤575/≤600/≤200/≤240) were unreachable at 64-byte entries: profiling
+showed sparse ticks visit zero entries, so the width-0 delta is B-tree
+routing bandwidth (64B vs 48B entries), irreducible in code. Gates were
+re-derived on 2026-09-04 from a same-day back-to-back calibration against
+the 48-byte baseline (08ad75f: Sparse1M 541.0 ns, DenseSkip 187.5 µs):
 
-| Benchmark | Gate |
-|---|---|
-| Sparse1M (width 0) | ≤ 575 ns/op (today: 526.8) |
-| DimsSparse1M (width 2) | ≤ 600 ns/op |
-| DenseSkip (width 0) | ≤ 200 µs/op (today: 183.9) |
-| DimsDenseSkip (width 2) | ≤ 240 µs/op |
-| All of the above | 0 B/op, 0 allocs/op |
-| `unsafe.Sizeof(entry{})` | == 64 |
+| Benchmark | Gate | Rationale |
+|---|---|---|
+| Sparse1M (width 0) | ≤ 650 ns/op | baseline 541.0 + ≤20% entry-bandwidth tax |
+| DimsSparse1M (width 2) | ≤ 1000 ns/op | measured 952.1; comparator routes across dim blocks |
+| DenseSkip (width 0) | ≤ 225 µs/op | baseline 187.5 + ≤20% |
+| DimsDenseSkip (width 2) | ≤ 240 µs/op | unchanged |
+| All of the above | 0 B/op, 0 allocs/op | hard |
+| `unsafe.Sizeof(entry{})` | == 64 | hard |
+
+Rejected alternatives (2026-09-04): 56-byte entry with uint8 dims (loses
+value headroom for ~half the width-0 tax); fire-time dim filtering
+(re-introduces non-qualifying scans).
 
 ## 10. Out of Scope
 
