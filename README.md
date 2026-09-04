@@ -54,7 +54,7 @@ service layer would own a symbol-to-decimals table.
 
 Reference data for the service layer: ~500 synthetic symbols (name, quote
 decimals, reference anchor price) and the engine's two dims as a fixed
-vocabulary - 3 fictional venues x 2 book tiers.
+vocabulary - 3 fictional venues × 2 book tiers.
 
 ### `internal/service`
 
