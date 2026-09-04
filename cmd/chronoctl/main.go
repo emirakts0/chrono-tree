@@ -45,10 +45,13 @@ func main() {
 	demoCmd := flag.NewFlagSet("demo", flag.ExitOnError)
 	demoN := demoCmd.Int("n", 1000, "alerts to seed")
 	demoSeed := demoCmd.Uint64("seed", 1, "demo RNG seed")
+	// Global flags come before the subcommand: Parse stops at the first
+	// non-flag argument, which is the subcommand name.
+	flag.Parse()
 
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, nil)))
 
-	if len(os.Args) < 2 {
+	if flag.NArg() < 1 {
 		fmt.Fprintln(os.Stderr, "usage: chronoctl [flags] <alert|watch|demo> ...")
 		os.Exit(2)
 	}
@@ -63,9 +66,9 @@ func main() {
 	defer func() { _ = conn.Close() }()
 	c := Clients{Alerts: chronov1.NewAlertServiceClient(conn), Feed: chronov1.NewFeedServiceClient(conn)}
 
-	switch os.Args[1] {
+	switch flag.Arg(0) {
 	case "alert":
-		if err := alertCmd.Parse(os.Args[2:]); err != nil {
+		if err := alertCmd.Parse(flag.Args()[1:]); err != nil {
 			os.Exit(2)
 		}
 		if err := runAlert(ctx, c, *alertPair, *alertVenue, *alertTier, *alertDir, *alertType, *alertPrice); err != nil {
@@ -78,7 +81,7 @@ func main() {
 			os.Exit(1)
 		}
 	case "demo":
-		if err := demoCmd.Parse(os.Args[2:]); err != nil {
+		if err := demoCmd.Parse(flag.Args()[1:]); err != nil {
 			os.Exit(2)
 		}
 		if err := runDemo(ctx, c, os.Stdout, *demoSeed, *demoN); err != nil && ctx.Err() == nil {
@@ -86,7 +89,7 @@ func main() {
 			os.Exit(1)
 		}
 	default:
-		fmt.Fprintln(os.Stderr, "unknown subcommand", os.Args[1])
+		fmt.Fprintln(os.Stderr, "unknown subcommand", flag.Arg(0))
 		os.Exit(2)
 	}
 }
