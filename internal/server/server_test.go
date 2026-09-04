@@ -37,17 +37,17 @@ func (f *fakeFeedStream) Recv() (*chronov1.TickBatch, error) {
 
 func (f *fakeFeedStream) SendAndClose(*chronov1.FeedStatus) error { return nil }
 
-func newServer(t *testing.T) (*Server, *service.Core) {
+func newServer(t *testing.T) *Server {
 	t.Helper()
 	now := time.Now()
 	reg := prometheus.NewRegistry()
 	core := service.NewCore(engine.DefaultConfig(), catalog.Default(), service.NoopMetrics{}, stats.New(now), pub.Noop{})
 	t.Cleanup(core.Close)
-	return New(core, stats.New(now), reg), core
+	return New(core, stats.New(now), reg)
 }
 
 func TestHealthz(t *testing.T) {
-	s, _ := newServer(t)
+	s := newServer(t)
 	ts := httptest.NewServer(s.Handler())
 	defer ts.Close()
 	resp, err := http.Get(ts.URL + "/healthz")
@@ -70,7 +70,7 @@ func TestHealthz(t *testing.T) {
 }
 
 func TestReadyzFlipsWithFeed(t *testing.T) {
-	s, core := newServer(t)
+	s := newServer(t)
 	ts := httptest.NewServer(s.Handler())
 	defer ts.Close()
 
@@ -83,7 +83,7 @@ func TestReadyzFlipsWithFeed(t *testing.T) {
 	fs := &fakeFeedStream{batches: []*chronov1.TickBatch{{Ticks: []*chronov1.Tick{
 		{Symbol: "BTCUSDT", Bid: "65000.00", Ask: "65000.10", Venue: "ATLAS", Tier: "TOP"},
 	}}}}
-	if err := core.StreamTicks(fs); err != nil {
+	if err := s.core.StreamTicks(fs); err != nil {
 		t.Fatal(err)
 	}
 	resp, _ = http.Get(ts.URL + "/readyz")
@@ -127,7 +127,7 @@ func TestReadyzStaleUnderSynctest(t *testing.T) {
 }
 
 func TestStatsJSON(t *testing.T) {
-	s, _ := newServer(t)
+	s := newServer(t)
 	ts := httptest.NewServer(s.Handler())
 	defer ts.Close()
 	resp, err := http.Get(ts.URL + "/stats")

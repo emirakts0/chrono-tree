@@ -4,14 +4,18 @@ package server
 
 import (
 	"encoding/json/v2"
+	"fmt"
 	"net/http"
 	"net/http/pprof"
+	"strconv"
 	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/emir/chrono-tree/internal/catalog"
+	"github.com/emir/chrono-tree/internal/pub"
 	"github.com/emir/chrono-tree/internal/service"
 	"github.com/emir/chrono-tree/internal/stats"
 )
@@ -23,6 +27,7 @@ type Server struct {
 	core     *service.Core
 	stats    *stats.Stats
 	reg      *prometheus.Registry
+	hub      *sseHub
 	shutting atomic.Bool
 }
 
@@ -35,7 +40,7 @@ func New(core *service.Core, st *stats.Stats, reg *prometheus.Registry) *Server 
 		}
 		return 0
 	}))
-	return &Server{core: core, stats: st, reg: reg}
+	return &Server{core: core, stats: st, reg: reg, hub: newSSEHub()}
 }
 
 // SetShuttingDown flips /healthz and /readyz to 503.
@@ -60,6 +65,9 @@ func (s *Server) Handler() http.Handler {
 		_, _ = w.Write([]byte("ready\n"))
 	})
 	mux.HandleFunc("GET /stats", s.handleStats)
+	mux.HandleFunc("GET /api/stream", s.handleStream)
+	mux.HandleFunc("GET /api/alerts", s.handleAlerts)
+	mux.HandleFunc("GET /api/alerts/{id}", s.handleAlert)
 	mux.Handle("GET /metrics", promhttp.HandlerFor(s.reg, promhttp.HandlerOpts{}))
 	mux.HandleFunc("/debug/pprof/", pprof.Index)
 	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
@@ -106,7 +114,8 @@ type engineView struct {
 	DroppedTriggers uint64 `json:"dropped_triggers"`
 }
 
-func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
+// statusSnapshot builds the current /stats document.
+func (s *Server) statusSnapshot() statusView {
 	now := time.Now()
 	snap := s.stats.Snapshot(now)
 	es := s.core.Engine().Stats()
@@ -129,9 +138,123 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	if last := s.core.FeedLastSeen(); !last.IsZero() {
 		view.FeedLastSeenMsAgo = time.Since(last).Milliseconds()
 	}
+	return view
+}
+
+func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
+	view := s.statusSnapshot()
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.MarshalWrite(w, view); err != nil {
 		// Headers are sent; nothing to do but log-shape the error.
 		_ = err
 	}
+}
+
+// helloFrame is the on-connect vocabulary frame.
+type helloFrame struct {
+	Type        string   `json:"type"`
+	Venues      []string `json:"venues"`
+	Tiers       []string `json:"tiers"`
+	SymbolCount int      `json:"symbol_count"`
+}
+
+type snapshotFrame struct {
+	Type     string     `json:"type"`
+	Snapshot statusView `json:"snapshot"`
+}
+
+type triggerFrame struct {
+	Type    string      `json:"type"`
+	Trigger pub.Trigger `json:"trigger"`
+}
+
+// HandleTrigger fans one published trigger to every connected browser.
+// chronod wires it to pub.NATSPublisher.SubscribeTriggers.
+func (s *Server) HandleTrigger(tr pub.Trigger) {
+	frame, err := json.Marshal(triggerFrame{Type: "trigger", Trigger: tr})
+	if err != nil {
+		return // Trigger is strings and ints; unreachable
+	}
+	s.hub.broadcast(frame)
+}
+
+func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
+	fl, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+
+	ch, remove := s.hub.add()
+	defer remove()
+
+	hello, err := json.Marshal(helloFrame{
+		Type:        "hello",
+		Venues:      s.core.Cat.DimValues(catalog.DimVenue),
+		Tiers:       s.core.Cat.DimValues(catalog.DimTier),
+		SymbolCount: len(s.core.Cat.Symbols()),
+	})
+	if err != nil {
+		return
+	}
+	fmt.Fprintf(w, "data: %s\n\n", hello)
+	fl.Flush()
+
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-ticker.C:
+			frame, err := json.Marshal(snapshotFrame{Type: "snapshot", Snapshot: s.statusSnapshot()})
+			if err != nil {
+				return
+			}
+			fmt.Fprintf(w, "data: %s\n\n", frame)
+			fl.Flush()
+		case frame, ok := <-ch:
+			if !ok {
+				return // overflowed (broadcast closed us) or removed
+			}
+			fmt.Fprintf(w, "data: %s\n\n", frame)
+			fl.Flush()
+		}
+	}
+}
+
+type alertsReply struct {
+	Total int                 `json:"total"`
+	Items []service.AlertView `json:"items"`
+}
+
+func (s *Server) handleAlerts(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	limit := 50
+	if v, err := strconv.Atoi(q.Get("limit")); err == nil {
+		limit = min(max(v, 1), 200)
+	}
+	offset := 0
+	if v, err := strconv.Atoi(q.Get("offset")); err == nil && v > 0 {
+		offset = v
+	}
+	items, total := s.core.ListAlerts(service.AlertFilter{
+		State: q.Get("state"), Symbol: q.Get("symbol"),
+		Venue: q.Get("venue"), Tier: q.Get("tier"),
+		Direction: q.Get("direction"), Limit: limit, Offset: offset,
+	})
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.MarshalWrite(w, alertsReply{Total: total, Items: items})
+}
+
+func (s *Server) handleAlert(w http.ResponseWriter, r *http.Request) {
+	view, ok := s.core.GetAlert(r.PathValue("id"))
+	if !ok {
+		http.Error(w, "alert not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.MarshalWrite(w, view)
 }
