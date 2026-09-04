@@ -38,7 +38,7 @@ func (h *sseHub) add() (<-chan []byte, func()) {
 	return ch, remove
 }
 
-// broadcastTrigger fans one pre-marshaled frame to every client. Runs on
+// broadcast fans one pre-marshaled frame to every client. Runs on
 // the NATS reader goroutine — must never block.
 func (h *sseHub) broadcast(frame []byte) {
 	h.mu.Lock()
