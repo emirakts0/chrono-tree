@@ -1,5 +1,5 @@
 // Package stats holds the service-level counters backing /stats and
-// /metrics: plain atomics for totals and a fixed 60-bucket ring for
+// /metrics: plain atomics for totals and a fixed 61-slot ring for
 // per-second rates. All methods are safe for concurrent use.
 package stats
 
