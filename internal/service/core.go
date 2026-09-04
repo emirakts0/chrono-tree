@@ -99,6 +99,8 @@ type Core struct {
 
 	feedEver     atomic.Bool
 	feedLastSeen atomic.Int64 // unix nanos
+
+	venueTicks map[string]*atomic.Uint64 // venue → accepted ticks; fixed keys, written at construction
 }
 
 // watcher is one connected WatchTriggers stream. ch is buffered; a full
@@ -120,6 +122,10 @@ func NewCore(cfg engine.Config, cat *catalog.Catalog, m Metrics, st *stats.Stats
 		stats:   st,
 		now:     func() time.Time { return time.Now() },
 		alerts:  make(map[engine.AlertID]*Alert),
+	}
+	c.venueTicks = make(map[string]*atomic.Uint64, len(cat.DimValues(catalog.DimVenue)))
+	for _, v := range cat.DimValues(catalog.DimVenue) {
+		c.venueTicks[v] = &atomic.Uint64{}
 	}
 	c.pumpCtx, c.pumpCancel = context.WithCancel(context.Background())
 	c.pumpDone = make(chan struct{})
@@ -318,6 +324,7 @@ func (c *Core) ingestTick(t *chronov1.Tick, now time.Time) error {
 	if !ok {
 		return fmt.Errorf("venue %q: %w", t.GetVenue(), errUnknownRefdata)
 	}
+	c.venueTicks[t.GetVenue()].Add(1)
 	tv, ok := c.Cat.Value(catalog.DimTier, t.GetTier())
 	if !ok {
 		return fmt.Errorf("tier %q: %w", t.GetTier(), errUnknownRefdata)
@@ -395,6 +402,15 @@ func (c *Core) FeedLastSeen() time.Time {
 }
 
 func (c *Core) FeedEverConnected() bool { return c.feedEver.Load() }
+
+// VenueTicks reports accepted ticks per venue.
+func (c *Core) VenueTicks() map[string]uint64 {
+	out := make(map[string]uint64, len(c.venueTicks))
+	for v, ctr := range c.venueTicks {
+		out[v] = ctr.Load()
+	}
+	return out
+}
 
 // GetCatalog serves the reference data.
 func (c *Core) GetCatalog(ctx context.Context, _ *chronov1.CatalogRequest) (*chronov1.CatalogReply, error) {
