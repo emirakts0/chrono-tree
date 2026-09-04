@@ -40,7 +40,8 @@
 **Files:**
 - Modify: `internal/server/server.go`
 - Modify: `internal/server/stream_test.go`
-- Modify: `internal/server/server_test.go` (one line: `t.Cleanup(s.Close)` in `newServer`)
+- Modify: `internal/server/server_test.go` (`t.Cleanup(s.Close)` in `newServer`; `defer s.Close()` in `TestReadyzStaleUnderSynctest`)
+- Modify: `cmd/chronod/main.go` (one line: `defer statusSrv.Close()` — without it the tick goroutine leaks in cmd/chronod's in-process goleak tests until Task 2 lands)
 
 **Interfaces:**
 - Consumes: existing `sseHub` (unchanged), `statusSnapshot()`, `handleStream`, `pub.Trigger`, `catalog`.
@@ -214,6 +215,14 @@ In `internal/server/server_test.go`, `newServer` gains `t.Cleanup(s.Close)` befo
 	s := New(core, stats.New(now), reg)
 	t.Cleanup(s.Close)
 	return s
+```
+
+Also in `server_test.go`, `TestReadyzStaleUnderSynctest` builds its Server directly inside the synctest bubble — a goroutine parked on the fake-time ticker is not durably blocked, so the bubble fails at test end. Add `defer s.Close()` immediately after `s := New(...)` in that test.
+
+And in `cmd/chronod/main.go`, immediately after `statusSrv := server.New(core, st, reg)`:
+
+```go
+	defer statusSrv.Close() // stop the 1s tick engine at exit (idempotent)
 ```
 
 - [ ] **Step 2: Run to verify it fails**
@@ -460,13 +469,13 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 
 - [ ] **Step 4: Run tests**
 
-Run: `go test ./internal/server/ -race -count=1`
-Expected: PASS (whole package, including the untouched hub/inquiry tests).
+Run: `go test ./internal/server/ ./cmd/chronod/ -race -count=1`
+Expected: PASS (whole packages, including the untouched hub/inquiry tests and chronod's goleak).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add internal/server/
+git add internal/server/ cmd/chronod/main.go
 git commit -m "feat(server): 1Hz tick engine with trigger ring and history"
 ```
 
@@ -483,10 +492,10 @@ git commit -m "feat(server): 1Hz tick engine with trigger ring and history"
 - Consumes: Task 1's `Server.Close()` and the batched SSE contract.
 - Produces: the daemon stops its tick goroutine on shutdown; e2e asserts a `triggers` batch frame.
 
-- [ ] **Step 1: Wire Close.** In `cmd/chronod/main.go`, after `_ = httpServer.Shutdown(shCtx)` add:
+- [ ] **Step 1: Wire Close early.** Task 1 added `defer statusSrv.Close()` as the backstop; make the stop explicit once the SSE relays are gone. In `cmd/chronod/main.go`, after `_ = httpServer.Shutdown(shCtx)` add:
 
 ```go
-	statusSrv.Close() // stop the 1s tick goroutine (SSE relays are gone)
+	statusSrv.Close() // stop the 1s tick goroutine (SSE relays are gone); the defer is now a no-op
 ```
 
 - [ ] **Step 2: Extend the integration test.** In `tests/integration_test.go`, locate the existing SSE block (asserts `"type":"hello"` and `"type":"snapshot"`). Keep it, and extend the loop to also capture `"type":"triggers"` (the alert fires earlier in the test, so a batch must arrive). Change the two booleans to three:
