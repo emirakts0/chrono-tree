@@ -117,6 +117,9 @@ func NewCore(cfg engine.Config, cat *catalog.Catalog, m Metrics, st *stats.Stats
 		now:     func() time.Time { return time.Now() },
 		alerts:  make(map[engine.AlertID]*Alert),
 	}
+	// Healthy until a publish fails: "recovered" must only ever log after
+	// an actual failure, never on the process's first publish.
+	c.pubHealthy.Store(true)
 	c.venueTicks = make(map[string]*atomic.Uint64, len(cat.DimValues(catalog.DimVenue)))
 	for _, v := range cat.DimValues(catalog.DimVenue) {
 		c.venueTicks[v] = &atomic.Uint64{}
