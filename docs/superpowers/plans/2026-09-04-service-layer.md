@@ -3129,7 +3129,7 @@ func halfSpreadFrac(tier string) float64 {
 
 func NewMarket(syms []catalog.Symbol, venues, tiers []string, seed uint64) *Market {
 	m := &Market{
-		rng:    rand.New(rand.NewChaCha8([32]byte(*seedBytes(seed)))),
+		rng:    rand.New(rand.NewChaCha8(*SeedBytes(seed))),
 		venues: venues,
 		tiers:  tiers,
 	}
@@ -3143,8 +3143,9 @@ func NewMarket(syms []catalog.Symbol, venues, tiers []string, seed uint64) *Mark
 	return m
 }
 
-// seedBytes spreads a uint64 seed into a 32-byte ChaCha8 key.
-func seedBytes(seed uint64) *[32]byte {
+// SeedBytes spreads a uint64 seed into a 32-byte ChaCha8 key. Shared with
+// cmd/chronoctl so demo and feed derive identical RNG streams from a flag.
+func SeedBytes(seed uint64) *[32]byte {
 	var b [32]byte
 	for i := 0; i < 32; i++ {
 		b[i] = byte(seed >> (uint(i%8) * 8))
@@ -3230,7 +3231,7 @@ func (e *Emitter) Take(interval time.Duration) int {
 }
 ```
 
-(`rand.NewChaCha8` takes a `[32]byte` seed — `seedBytes` above builds one deterministically from the uint64 flag. `TestMarketDeterministic` compares TickMsg structs: TS must be passed identically; the test passes the same `ts` value, and `TS` is a field so `==` covers it.)
+(`rand.NewChaCha8` takes a `[32]byte` seed — `SeedBytes` above builds one deterministically from the uint64 flag, and is shared with `cmd/chronoctl`. `TestMarketDeterministic` compares TickMsg structs: TS must be passed identically; the test passes the same `ts` value, and `TS` is a field so `==` covers it.)
 
 - [ ] **Step 4: Run tests**
 
@@ -3773,6 +3774,7 @@ import (
 
 	chronov1 "github.com/emir/chrono-tree/api/gen/chrono/v1"
 	"github.com/emir/chrono-tree/internal/catalog"
+	"github.com/emir/chrono-tree/internal/feed"
 	"github.com/emir/chrono-tree/price"
 )
 
@@ -3916,7 +3918,7 @@ func runWatch(ctx context.Context, c Clients, out io.Writer) error {
 func runDemo(ctx context.Context, c Clients, out io.Writer, seed uint64, nAlerts int) error {
 	cat := catalog.Default()
 	syms := cat.Symbols()
-	rng := rand.New(rand.NewChaCha8(*seedBytes(seed)))
+	rng := rand.New(rand.NewChaCha8(*feed.SeedBytes(seed)))
 
 	seedOne := func(sym catalog.Symbol, venue, tier string) error {
 		ref, err := price.Parse(sym.Reference, sym.Decimals)
@@ -3960,26 +3962,12 @@ func runDemo(ctx context.Context, c Clients, out io.Writer, seed uint64, nAlerts
 	fmt.Fprintf(out, "seeded %d alerts (incl. %d-venue BTCUSDT fan-out); watching\n", nAlerts+len(venues), len(venues))
 	return runWatch(ctx, c, out)
 }
-
-// seedBytes mirrors internal/feed's seeding so demo and feed share the
-// derivation (32-byte ChaCha8 key from a uint64).
-func seedBytes(seed uint64) *[32]byte {
-	var b [32]byte
-	for i := 0; i < 32; i++ {
-		b[i] = byte(seed >> (uint(i%8) * 8))
-	}
-	seed = seed*6364136223846793005 + 1442695040888963407
-	for i := 0; i < 32; i++ {
-		b[i] ^= byte(seed >> (uint(i%8) * 8))
-	}
-	return &b
-}
 ```
 
 - [ ] **Step 4: Run tests**
 
 Run: `go test ./cmd/chronoctl/ -race -count=1 -timeout 60s`
-Expected: PASS, goleak clean. (If `seedBytes` duplication bothers you, leave it — two small binaries each 12 lines; hoisting it into a shared internal package is not worth a dependency edge for this demo. The comment already says they mirror each other.)
+Expected: PASS, goleak clean. (`feed.SeedBytes` is the single derivation shared by feed and demo — no duplication.)
 
 - [ ] **Step 5: Commit**
 
