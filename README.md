@@ -19,6 +19,9 @@ where the decimal point is.
 
 - Alerts are indexed in B-trees keyed by `(price, alert id)` - one tree per
   symbol, price type (bid/ask/mid/last) and direction (>= / <=).
+- Up to 8 matching dimensions (`Config.Dims`): alert and tick dim arrays fold
+  into the tree key, so a scan is scoped to one dimension combination —
+  strict exact-match, no wildcards.
 - `Match` runs lock-free on the hot path: a tick descends/ascends the two
   trees for its symbol and touches only entries in range. No full scans, no
   allocations.
@@ -84,7 +87,7 @@ for {
 
 ```
 go test ./... -race -count=1
-ok  github.com/emir/chrono-tree/engine  3.482s
+ok  github.com/emir/chrono-tree/engine  4.306s
 ok  github.com/emir/chrono-tree/price   1.552s
 ```
 
@@ -110,15 +113,20 @@ goos: linux
 goarch: amd64
 cpu: AMD Ryzen 5 5600H with Radeon Graphics
 
-BenchmarkMatchSparse1M-12     2277883    526.8 ns/op    0 B/op    0 allocs/op
-BenchmarkMatchDenseSkip-12       6387    183943 ns/op   0 B/op    0 allocs/op
+BenchmarkMatchSparse1M-12    	  1956019	      623.3 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMatchDenseSkip-12    	     5798	     209715 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMatchDimsSparse1M-12    	  1363500	      873.7 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMatchDimsDenseSkip-12    	     5793	     201614 ns/op	       0 B/op	       0 allocs/op
 ```
 
 - `Sparse1M`: 1,000,000 alerts over 1000 symbols; a tick that fires nothing.
-  This is the dominant shape under sustained load: ~527 ns per tick,
+  This is the dominant shape under sustained load: ~623 ns per tick,
   independent of total alert count (only the symbol's trees are touched).
 - `DenseSkip`: 20,000 alerts already triggered on one symbol; measures the
   per-tick cost of skipping out-of-range entries between price gaps.
+- `DimsSparse1M` / `DimsDenseSkip`: the same shapes with two configured
+  dimensions (`Config.Dims`) — alerts and ticks carry `[8]uint16` dim arrays,
+  and a fire additionally requires exact dim equality.
 
 Both paths are allocation-free. `BenchmarkMatchSparse10M` exists behind
 `CHRONO_BENCH_10M=1`.
