@@ -1,5 +1,12 @@
 import { state } from "../store";
-import { fmt, fmtDuration, sparkline, statusDot, trend, trendArrow } from "./cards";
+import { fmt, fmtDuration, sparkline, statusDot, trend, trendArrow, trendDir } from "./cards";
+
+// Small inline-SVG glyphs for the alert book tiles (no icon libraries).
+const GLYPHS: Record<string, string> = {
+  active: `<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3.5" fill="none" stroke="currentColor" stroke-width="2"/><circle class="pulse" cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1"/></svg>`,
+  triggered: `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9.5 1 3 9.2h3.6L6 15l6.3-8.2H8.7L9.5 1z" fill="currentColor"/></svg>`,
+  cancelled: `<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" stroke-width="1.5"/><line x1="3.4" y1="12.6" x2="12.6" y2="3.4" stroke="currentColor" stroke-width="1.5"/></svg>`,
+};
 
 export interface Mounts {
   inquiry: HTMLElement;
@@ -32,9 +39,9 @@ export function mount(root: HTMLElement): Mounts {
     </section>
     <section class="card area-book"><h2>alert book</h2>
       <div class="trio">
-        <div class="tile"><div class="big mono" id="st-active">—</div><div class="sub">active</div></div>
-        <div class="tile"><div class="big mono" id="st-triggered">—</div><div class="sub">triggered</div></div>
-        <div class="tile"><div class="big mono" id="st-cancelled">—</div><div class="sub">cancelled</div></div>
+        <div class="tile t-active"><span class="glyph">${GLYPHS.active}</span><div class="big mono" id="st-active">—</div><div class="sub">active</div></div>
+        <div class="tile t-triggered"><span class="glyph">${GLYPHS.triggered}</span><div class="big mono" id="st-triggered">—</div><div class="sub">triggered</div></div>
+        <div class="tile t-cancelled"><span class="glyph">${GLYPHS.cancelled}</span><div class="big mono" id="st-cancelled">—</div><div class="sub">cancelled</div></div>
       </div>
       <div class="livetrend"><span class="lbl">live alerts</span>
         <span class="mono" id="live">—</span><span id="livetrendline"></span></div>
@@ -75,7 +82,11 @@ export function update(): void {
 
   // Fires owns the fired counter + rate trend.
   set("fired", fmt(s.triggers_fired));
-  set("firesarrow", trendArrow(state.series.fires));
+  const fa = document.getElementById("firesarrow");
+  if (fa) {
+    fa.textContent = trendArrow(state.series.fires);
+    fa.className = `trendmark ${trendDir(state.series.fires)}`;
+  }
   const fspark = document.getElementById("firesspark");
   if (fspark) fspark.innerHTML = trend(state.series.fires);
 
@@ -91,14 +102,17 @@ export function update(): void {
   if (venues) {
     const entries = Object.entries(s.venue_ticks).sort((a, b) => b[1] - a[1]);
     const max = entries[0]?.[1] || 1;
+    // Rate marker: the venue's current ticks/s against the busiest venue's.
+    const rate = (v: string): number => (state.series.venues[v] ?? []).slice(-1)[0] ?? 0;
+    const maxRate = Math.max(1, ...entries.map(([v]) => rate(v)));
     venues.innerHTML =
       entries
         .map(([v, n]) => {
           const series = state.series.venues[v] ?? [];
           return `<div class="row">
-          <span class="vname">${v} <span class="trendmark">${trendArrow(series)}</span></span>
+          <span class="vname">${v} <span class="trendmark ${trendDir(series)}">${trendArrow(series)}</span></span>
           <span class="vmeta">${trend(series.slice(-40))}</span>
-          <span class="bar"><i style="width:${(100 * n) / max}%"></i></span>
+          <span class="bar"><i style="width:${(100 * n) / max}%"></i><i class="mark" style="left:${(100 * rate(v)) / maxRate}%"></i></span>
           <span class="mono">${fmt(n)}</span>
         </div>`;
         })

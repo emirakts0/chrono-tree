@@ -1,6 +1,7 @@
 import { fetchAlerts, type AlertsPage } from "../api";
 import { state } from "../store";
 import type { Hello } from "../store";
+import { mountDropdown, setDropdownOptions, type DDOption } from "./dropdown";
 
 const PAGE = 25;
 const STATES = ["active", "triggered", "cancelled"];
@@ -22,12 +23,10 @@ export function mountInquiry(root: HTMLElement): void {
     <h2>alert inquiry</h2>
     <form class="filters" id="f">
       <input name="symbol" placeholder="symbol (e.g. BTCUSDT)">
-      <select name="state"><option value="">state: any</option>
-        ${STATES.map((s) => `<option>${s}</option>`).join("")}</select>
-      <select name="venue"><option value="">venue: any</option></select>
-      <select name="tier"><option value="">tier: any</option></select>
-      <select name="direction"><option value="">direction: any</option>
-        <option>ABOVE</option><option>BELOW</option></select>
+      <span class="ddhost" data-dd="state"></span>
+      <span class="ddhost" data-dd="venue"></span>
+      <span class="ddhost" data-dd="tier"></span>
+      <span class="ddhost" data-dd="direction"></span>
       <button type="submit">query</button>
     </form>
     <table class="tbl"><thead><tr>
@@ -43,20 +42,22 @@ export function mountInquiry(root: HTMLElement): void {
   const pg = root.querySelector("#pg") as HTMLElement;
   const prev = root.querySelector("#prev") as HTMLButtonElement;
   const next = root.querySelector("#next") as HTMLButtonElement;
-  const venueSel = root.querySelector('select[name="venue"]') as HTMLSelectElement;
-  const tierSel = root.querySelector('select[name="tier"]') as HTMLSelectElement;
 
-  const setOptions = (sel: HTMLSelectElement, values: string[]): void => {
-    const current = sel.value;
-    sel.innerHTML =
-      `<option value="">${sel.name}: any</option>` +
-      values.map((v) => `<option>${v}</option>`).join("");
-    sel.value = current;
-  };
+  const dd = (name: string): HTMLElement =>
+    root.querySelector(`[data-dd="${name}"]`) as HTMLElement;
+  const staticOpts = (vals: string[], label: string): DDOption[] =>
+    [{ value: "", label }, ...vals.map((v) => ({ value: v, label: v }))];
+  mountDropdown(dd("state"), "state", staticOpts(STATES, "state: any"));
+  mountDropdown(dd("venue"), "venue", staticOpts([], "venue: any"));
+  mountDropdown(dd("tier"), "tier", staticOpts([], "tier: any"));
+  mountDropdown(
+    dd("direction"), "direction",
+    staticOpts(["ABOVE", "BELOW"], "direction: any"),
+  );
 
   fillVocab = (hello: Hello): void => {
-    setOptions(venueSel, hello.venues);
-    setOptions(tierSel, hello.tiers);
+    setDropdownOptions(dd("venue"), staticOpts(hello.venues, "venue: any"));
+    setDropdownOptions(dd("tier"), staticOpts(hello.tiers, "tier: any"));
     fillVocab = null;
   };
   // The hello frame may have arrived before this mount.

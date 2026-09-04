@@ -60,8 +60,11 @@ function capPush(arr: number[], v: number): void {
   if (arr.length > SERIES_CAP) arr.shift();
 }
 
-/** Called once when the hello frame lands: graphs start full. */
+/** Called when the hello frame lands: graphs start full. Runs again on SSE
+ * reconnect, so the venue diff base must reset or the first post-reconnect
+ * venue sample would spike by the reconnect gap. */
 export function seedHistory(h: History): void {
+  for (const k in lastVenueTotal) delete lastVenueTotal[k];
   state.series.ticks = [...h.t];
   state.series.fires = [...h.f];
   state.series.live = [...h.l];

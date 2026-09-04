@@ -3,8 +3,10 @@ import { state, seedHistory, pushSample, pushTriggers } from "./store";
 import type { Hello, Snapshot, Trigger } from "./store";
 import { mount, update } from "./components/layout";
 import { mountInquiry, helloArrived } from "./components/inquiry";
+import { playIntro } from "./components/intro";
 
 function main(): void {
+  playIntro();
   mountInquiry(mount(document.getElementById("app")!).inquiry);
   const es = new EventSource("/api/stream"); // EventSource reconnects on its own
   es.onmessage = (ev: MessageEvent<string>) => {

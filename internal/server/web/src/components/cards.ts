@@ -43,3 +43,10 @@ export function trendArrow(series: number[]): string {
   const d = series[series.length - 1] - series[series.length - 2];
   return d > 0 ? "▲" : d < 0 ? "▼" : "—";
 }
+
+/** Trend direction as a class ("up"/"down"/"flat") for arrow coloring. */
+export function trendDir(series: number[]): string {
+  if (series.length < 2) return "flat";
+  const d = series[series.length - 1] - series[series.length - 2];
+  return d > 0 ? "up" : d < 0 ? "down" : "flat";
+}
