@@ -1,5 +1,5 @@
-// Command chronoctl is the demo client: register alerts, watch triggers,
-// or run the full demo loop.
+// Command chronoctl is the control client: register alerts or seed the
+// alert set. Triggers are observed on NATS, not through this client.
 package main
 
 import (
@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -42,9 +41,9 @@ func main() {
 	alertDir := alertCmd.String("dir", "above", "above|below")
 	alertType := alertCmd.String("type", "ask", "bid|ask|mid|last")
 	alertPrice := alertCmd.String("price", "", "target price (decimal string)")
-	demoCmd := flag.NewFlagSet("demo", flag.ExitOnError)
-	demoN := demoCmd.Int("n", 1000, "alerts to seed")
-	demoSeed := demoCmd.Uint64("seed", 1, "demo RNG seed")
+	seedCmd := flag.NewFlagSet("seed", flag.ExitOnError)
+	seedN := seedCmd.Int("n", 1000, "alerts to seed")
+	seedSeed := seedCmd.Uint64("seed", 1, "RNG seed")
 	// Global flags come before the subcommand: Parse stops at the first
 	// non-flag argument, which is the subcommand name.
 	flag.Parse()
@@ -52,7 +51,7 @@ func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, nil)))
 
 	if flag.NArg() < 1 {
-		fmt.Fprintln(os.Stderr, "usage: chronoctl [flags] <alert|watch|demo> ...")
+		fmt.Fprintln(os.Stderr, "usage: chronoctl [flags] <alert|seed> ...")
 		os.Exit(2)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -75,17 +74,12 @@ func main() {
 			slog.Error("alert", "err", err)
 			os.Exit(1)
 		}
-	case "watch":
-		if err := runWatch(ctx, c, os.Stdout); err != nil && ctx.Err() == nil {
-			slog.Error("watch", "err", err)
-			os.Exit(1)
-		}
-	case "demo":
-		if err := demoCmd.Parse(flag.Args()[1:]); err != nil {
+	case "seed":
+		if err := seedCmd.Parse(flag.Args()[1:]); err != nil {
 			os.Exit(2)
 		}
-		if err := runDemo(ctx, c, os.Stdout, *demoSeed, *demoN); err != nil && ctx.Err() == nil {
-			slog.Error("demo", "err", err)
+		if err := runSeed(ctx, c, os.Stdout, *seedSeed, *seedN); err != nil {
+			slog.Error("seed", "err", err)
 			os.Exit(1)
 		}
 	default:
@@ -138,32 +132,11 @@ func runAlert(ctx context.Context, c Clients, pair, venue, tier, dir, ptype, pri
 	return nil
 }
 
-func printTrigger(w io.Writer, tr *chronov1.Trigger) {
-	fmt.Fprintf(w, "FIRED %s %s %s/%s price=%s target=%s dir=%s at=%s\n",
-		tr.GetAlertId(), tr.GetSymbol(), tr.GetVenue(), tr.GetTier(),
-		tr.GetFiredPrice(), tr.GetTargetPrice(),
-		tr.GetDirection().String(),
-		time.Unix(0, tr.GetFiredAtUnixNanos()).UTC().Format(time.RFC3339Nano))
-}
-
-func runWatch(ctx context.Context, c Clients, out io.Writer) error {
-	stream, err := c.Alerts.WatchTriggers(ctx, &chronov1.WatchTriggersRequest{})
-	if err != nil {
-		return err
-	}
-	for {
-		tr, err := stream.Recv()
-		if err != nil {
-			return err
-		}
-		printTrigger(out, tr)
-	}
-}
-
-// runDemo seeds nAlerts dim-scoped ABOVE alerts at reference ±2% across
-// random pairs/venues/tiers (plus one deliberate per-venue fan-out set on
-// BTCUSDT), then watches and prints triggers until ctx is done.
-func runDemo(ctx context.Context, c Clients, out io.Writer, seed uint64, nAlerts int) error {
+// runSeed registers nAlerts dim-scoped ABOVE alerts at reference ±2%
+// across random pairs/venues/tiers, plus one deliberate per-venue
+// fan-out set on BTCUSDT, then returns. Triggers are observed on NATS
+// (`nats sub chrono.triggers.>`), never through this client.
+func runSeed(ctx context.Context, c Clients, out io.Writer, seed uint64, nAlerts int) error {
 	cat := catalog.Default()
 	syms := cat.Symbols()
 	rng := rand.New(rand.NewChaCha8(*feed.SeedBytes(seed)))
@@ -181,10 +154,7 @@ func runDemo(ctx context.Context, c Clients, out io.Writer, seed uint64, nAlerts
 			TargetPrice: price.Format(target, sym.Decimals),
 			Venue:       venue, Tier: tier,
 		})
-		if err != nil {
-			return err
-		}
-		return nil
+		return err
 	}
 
 	venues, tiers := cat.DimValues(catalog.DimVenue), cat.DimValues(catalog.DimTier)
@@ -207,6 +177,6 @@ func runDemo(ctx context.Context, c Clients, out io.Writer, seed uint64, nAlerts
 			return err
 		}
 	}
-	fmt.Fprintf(out, "seeded %d alerts (incl. %d-venue BTCUSDT fan-out); watching\n", nAlerts+len(venues), len(venues))
-	return runWatch(ctx, c, out)
+	fmt.Fprintf(out, "seeded %d alerts (incl. %d-venue BTCUSDT fan-out)\n", nAlerts+len(venues), len(venues))
+	return nil
 }
