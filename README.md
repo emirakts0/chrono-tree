@@ -193,8 +193,9 @@ curl -s localhost:8080/stats | jq
 
 The dashboard is embedded in the binary — no extra process. Its TypeScript
 source lives in `internal/server/web/src`; the committed bundle (`dist/app.js`)
-is rebuilt with `internal/server/web/build.sh` (standalone `esbuild` + `tsc`;
-`go build` never needs it).
+is rebuilt with `internal/server/web/build.sh` (`npx -y -p typescript@5 tsc`
+and `npx -y -p esbuild@0.25`, so Node 22+ is required and the tools are
+fetched on first run; `go build` never needs it).
 
 Prices are decimal strings end to end (`"65000.12"`), converted exactly
 through the `price` package at the gRPC boundary. Triggers are delivered

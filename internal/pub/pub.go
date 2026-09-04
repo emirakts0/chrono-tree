@@ -112,6 +112,14 @@ func (p *NATSPublisher) Connected() bool {
 // Close drains (flushes pending publishes, bounded by drainBound) and
 // closes the connection. Safe to call more than once.
 func (p *NATSPublisher) Close() error {
+	// Unsubscribe before draining: with a live subscription, nats.go's
+	// drain spins an UNSUB+FlushTimeout goroutine that can outlive Close
+	// (goleak in cmd/chronod). SubscribeTriggers and Close are both called
+	// from chronod's run goroutine chain, so this unsynchronized read is
+	// safe today.
+	if p.sub != nil {
+		_ = p.sub.Unsubscribe()
+	}
 	done := make(chan error, 1)
 	go func() { done <- p.nc.Drain() }()
 	select {

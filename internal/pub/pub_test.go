@@ -155,6 +155,43 @@ func TestSubscribeTriggersRoundTrip(t *testing.T) {
 	}
 }
 
+// TestSubscribeTriggersThenClose pins the unsubscribe-before-drain order
+// in Close: with a live subscription, nats.go's drain spins an UNSUB+
+// FlushTimeout goroutine that can outlive Close — the goleak flake in
+// cmd/chronod. At this level we assert the observable contract: Close
+// succeeds with a subscription active, and publishing after Close hits
+// the drop-and-count error path.
+func TestSubscribeTriggersThenClose(t *testing.T) {
+	url := pubtest.Start(t)
+	p, err := NewNATS(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := make(chan Trigger, 4)
+	if err := p.SubscribeTriggers(func(tr Trigger) { got <- tr }); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Publish(sampleTrigger()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case tr := <-got:
+		if tr != sampleTrigger() {
+			t.Fatalf("received = %+v, want %+v", tr, sampleTrigger())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("subscription did not receive the published trigger")
+	}
+
+	if err := p.Close(); err != nil {
+		t.Fatalf("Close with live subscription: %v", err)
+	}
+	if err := p.Publish(sampleTrigger()); err == nil {
+		t.Fatal("Publish after Close should error (drop-and-count path)")
+	}
+}
+
 func TestNewNATSBootFails(t *testing.T) {
 	// Port 1 is never a NATS server; RetryOnFailedConnect is off.
 	if _, err := NewNATS("nats://127.0.0.1:1"); err == nil {
