@@ -174,6 +174,14 @@ func TestUIAssetsServed(t *testing.T) {
 	if js.StatusCode != 200 {
 		t.Fatalf("app.js status = %d", js.StatusCode)
 	}
+	css, err := ts.Client().Get(ts.URL + "/app.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	css.Body.Close()
+	if css.StatusCode != 200 {
+		t.Fatalf("app.css status = %d (required asset; unstyled page otherwise)", css.StatusCode)
+	}
 }
 
 func TestMetricsEndpoint(t *testing.T) {
