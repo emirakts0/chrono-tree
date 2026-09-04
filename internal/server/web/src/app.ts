@@ -1,5 +1,5 @@
 import "./style.css";
-import { state, tickSeries, pushTrigger } from "./store";
+import { state, seedHistory, pushSample, pushTriggers } from "./store";
 import type { Hello, Snapshot, Trigger } from "./store";
 import { mount, update } from "./components/layout";
 import { mountInquiry, helloArrived } from "./components/inquiry";
@@ -12,15 +12,15 @@ function main(): void {
     switch (frame.type) {
       case "hello":
         state.hello = frame as unknown as Hello;
+        seedHistory(state.hello.history);
         helloArrived(state.hello);
         break;
       case "snapshot":
         state.snapshot = frame.snapshot as Snapshot;
-        tickSeries.push(state.snapshot.ticks_per_sec);
-        if (tickSeries.length > 120) tickSeries.shift();
+        pushSample(state.snapshot);
         break;
-      case "trigger":
-        pushTrigger(frame.trigger as Trigger);
+      case "triggers":
+        pushTriggers(frame.triggers as Trigger[]);
         break;
     }
     update();

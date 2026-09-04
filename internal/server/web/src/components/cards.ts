@@ -20,3 +20,26 @@ export function sparkline(series: number[]): string {
     <polyline fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" points="${pts.join(" ")}"/>
   </svg>`;
 }
+
+/** Thin trend line for embedding in tile/row interiors. */
+export function trend(series: number[], w = 100, h = 16): string {
+  if (series.length < 2) return "";
+  const max = Math.max(...series, 1);
+  const min = Math.min(...series, 0);
+  const span = max - min || 1;
+  const pts = series.map((v, i) => {
+    const x = (i / (series.length - 1)) * w;
+    const y = h - ((v - min) / span) * h;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" class="trend">
+    <polyline fill="none" stroke="currentColor" stroke-width="1.5" points="${pts.join(" ")}"/>
+  </svg>`;
+}
+
+/** Direction arrow (▲/▼/—) for the last vs. previous sample. */
+export function trendArrow(series: number[]): string {
+  if (series.length < 2) return "—";
+  const d = series[series.length - 1] - series[series.length - 2];
+  return d > 0 ? "▲" : d < 0 ? "▼" : "—";
+}
