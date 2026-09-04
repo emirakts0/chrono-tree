@@ -73,7 +73,7 @@ func BenchmarkMatchDenseSkip(b *testing.B) {
 }
 
 // benchDimsSparse is benchSparse with width-2 dims: alerts spread over
-// 3×5 dim combinations; the tick probes one combination.
+// 3×7 dim combinations; the tick probes one combination.
 func benchDimsSparse(b *testing.B, alerts int) {
 	cfg := DefaultConfig()
 	cfg.Dims = []string{"segment", "tier"}
