@@ -867,13 +867,17 @@ func (s *Store) Cancel(id engine.AlertID) (bool, error) {
 func (s *Store) CancelBatch(ids []engine.AlertID) (int, error) {
 	flipped := 0
 	err := s.db.Batch(func(tx *bolt.Tx) error {
+		flipped = 0 // Batch may re-run this fn; each run's count is the truth
 		alerts := tx.Bucket(bktAlerts)
 		for _, id := range ids {
 			a, ok, err := getInTx(alerts, id)
-			if err != nil || !ok || a.State != StateActive {
+			if err != nil {
 				return err
 			}
-			if err := flipState(tx, alerts, &a, StateCancelled, 0, 0); err != nil {
+			if !ok || a.State != StateActive {
+				continue // terminal/unknown member is skipped, never aborts the batch
+			}
+			if err := flipState(tx, &a, StateCancelled, 0, 0); err != nil {
 				return err
 			}
 			flipped++
@@ -897,14 +901,18 @@ type Fired struct {
 func (s *Store) MarkTriggeredBatch(fired []Fired) (int, error) {
 	flipped := 0
 	err := s.db.Batch(func(tx *bolt.Tx) error {
+		flipped = 0 // Batch may re-run this fn; each run's count is the truth
 		alerts := tx.Bucket(bktAlerts)
 		for i := range fired {
 			f := &fired[i]
 			a, ok, err := getInTx(alerts, f.ID)
-			if err != nil || !ok || a.State != StateActive {
+			if err != nil {
 				return err
 			}
-			if err := flipState(tx, alerts, &a, StateTriggered, f.Price, f.At); err != nil {
+			if !ok || a.State != StateActive {
+				continue // terminal/unknown member is skipped, never aborts the batch
+			}
+			if err := flipState(tx, &a, StateTriggered, f.Price, f.At); err != nil {
 				return err
 			}
 			flipped++
