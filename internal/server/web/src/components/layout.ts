@@ -1,5 +1,5 @@
 import { state } from "../store";
-import { fmt, fmtBytes, fmtDuration, sparkline, statusDot, trend, trendArrow, trendDir } from "./cards";
+import { fmt, fmtBytes, fmtDuration, sparkline, statusDot, trend } from "./cards";
 
 // Small inline-SVG glyphs for the alert book tiles (no icon libraries).
 const GLYPHS: Record<string, string> = {
@@ -40,7 +40,7 @@ export function mount(root: HTMLElement): Mounts {
       </div>
     </section>
     <section class="card area-venues"><h2>venues</h2><div id="venues" class="rows"></div></section>
-    <section class="card area-engine"><h2>engine · host</h2><div id="engine" class="rows"></div></section>
+    <section class="card area-engine"><h2>engine</h2><div id="engine" class="rows"></div></section>
     <section class="card area-stream rail"><h2>trigger stream</h2><div class="stream" id="stream">
       <div class="empty">waiting for the first trigger…</div></div></section>
     <section class="card area-inquiry" id="inquiry"></section>
@@ -116,18 +116,16 @@ export function update(): void {
     const entries = Object.entries(s.venue_ticks).sort((a, b) => b[1] - a[1]);
     venues.innerHTML =
       entries
-        .map(([v, n]) => {
-          const series = state.series.venues[v] ?? [];
-          return `<div class="row">
-          <span class="vname">${v} <span class="trendmark ${trendDir(series)}">${trendArrow(series)}</span></span>
-          <span class="vmeta">${trend(series.slice(-40))}</span>
+        .map(
+          ([v, n]) => `<div class="row">
+          <span class="vname">${v}</span>
           <span class="mono">${fmt(n)}</span>
-        </div>`;
-        })
+        </div>`,
+        )
         .join("") || `<div class="empty">no ticks yet</div>`;
   }
 
-  // Engine card: engine-internal health, then host/process resources
+  // Engine card: engine-internal health, then this process's resources
   // below the divider (sys is newer than old bundles' snapshots — read
   // it defensively).
   const eng = document.getElementById("engine");
@@ -141,10 +139,8 @@ export function update(): void {
       <div class="hr"></div>
       <div class="row"><span>cpu<span class="meta"> · ${pct(sys?.proc_cpu_percent ?? 0)} proc</span></span><span class="mono">${pct(sys?.host_cpu_percent ?? 0)}<span class="vmeta">${trend(state.series.cpu.slice(-40))}</span></span></div>
       <div class="row"><span>cores</span><span class="mono">${sys?.cpu_cores ?? "—"}</span></div>
-      <div class="row"><span>rss<span class="meta"> · heap ${fmtBytes(sys?.heap_bytes ?? 0)}</span></span><span class="mono">${fmtBytes(sys?.rss_bytes ?? 0)}<span class="vmeta">${trend(state.series.rss.slice(-40))}</span></span></div>
-      <div class="row"><span>ram</span><span class="mono">${fmtBytes(sys?.host_mem_used_bytes ?? 0)} / ${fmtBytes(sys?.host_mem_total_bytes ?? 0)}</span></div>
-      <div class="row"><span>alert store</span><span class="mono">${(sys?.db_bytes ?? 0) > 0 ? fmtBytes(sys!.db_bytes) : "—"}</span></div>
-      <div class="row"><span>disk free</span><span class="mono">${fmtBytes(sys?.disk_free_bytes ?? 0)}</span></div>`;
+      <div class="row"><span>ram<span class="meta"> · engine heap ${fmtBytes(sys?.heap_bytes ?? 0)}</span></span><span class="mono">${fmtBytes(sys?.rss_bytes ?? 0)}<span class="vmeta">${trend(state.series.rss.slice(-40))}</span></span></div>
+      <div class="row"><span>alert store</span><span class="mono">${(sys?.db_bytes ?? 0) > 0 ? fmtBytes(sys!.db_bytes) : "—"}</span></div>`;
   }
 
   // The rail re-renders only when its content changed (keyed), so the

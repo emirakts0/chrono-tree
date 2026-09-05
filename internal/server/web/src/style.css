@@ -87,12 +87,6 @@ body {
 .duo .mono { color: inherit; }
 .lbl { font-size: 12px; color: var(--linen-ink); }
 
-/* trend arrows: heat up = red on linen; green only on dark surfaces */
-.trendmark { font-size: 12px; }
-.trendmark.up { color: var(--brick-ember); }
-.trendmark.down { color: var(--pine-teal); }
-.trendmark.flat { color: var(--linen-ink); }
-
 /* ---- pulse card ---- */
 #spark svg { width: 100%; height: 46px; color: var(--coffee-bean); margin-top: 6px; }
 
@@ -132,11 +126,10 @@ body {
 
 /* ---- venues ---- */
 #venues .row {
-  display: grid; grid-template-columns: minmax(110px, 1fr) 1fr 90px; gap: 10px;
-  align-items: center; padding: 6px 0; font-size: 14px;
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 6px 0; font-size: 14px;
 }
 .vname { font-weight: 600; overflow-wrap: anywhere; }
-#venues .vmeta { color: var(--linen-ink); }
 
 /* ---- engine card ---- */
 #engine .row {
@@ -151,7 +144,7 @@ body {
   padding: 3px 8px; border-radius: 4px;
 }
 #engine .row .mono { font-size: 15px; }
-/* host-resources section below the divider: cpu/rss rows carry an
+/* process-resources section below the divider: cpu/ram rows carry an
    inline trend (last 40 samples) next to the value. */
 #engine .hr { border-top: 1px solid rgba(191,179,173,.4); margin: 6px 0 2px; }
 #engine .row .vmeta { display: inline-block; width: 90px; margin-left: 10px; vertical-align: middle; color: var(--linen-ink); }

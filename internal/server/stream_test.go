@@ -65,7 +65,7 @@ func TestStreamContractBatched(t *testing.T) {
 	if !ok {
 		t.Fatalf("hello.history missing: %v", hello)
 	}
-	for _, k := range []string{"t", "f", "l", "c", "m", "v"} {
+	for _, k := range []string{"t", "f", "l", "c", "m"} {
 		if _, ok := hist[k]; !ok {
 			t.Fatalf("hello.history.%s missing: %v", k, hist)
 		}
@@ -156,9 +156,8 @@ func TestTriggerRingConcurrent(t *testing.T) {
 	wg.Wait()
 }
 
-// TestHistorySampling: 130 samples cap at 120; venue rates are deltas of
-// cumulative counters (first sample 0); the sys series (cpu/rss) ride
-// the same cap.
+// TestHistorySampling: 130 samples cap at 120; the sys series (cpu/rss)
+// ride the same cap.
 func TestHistorySampling(t *testing.T) {
 	h := newHistory()
 	v := statusView{
@@ -166,10 +165,8 @@ func TestHistorySampling(t *testing.T) {
 		TriggersPerSec: 2,
 		Engine:         engineView{Live: 7},
 		Sys:            sysView{HostCPUPercent: 12.5, RSSBytes: 4096},
-		VenueTicks:     map[string]uint64{"ATLAS": 1000},
 	}
 	for i := 0; i < 130; i++ {
-		v.VenueTicks["ATLAS"] += 50
 		v.Engine.Live++
 		h.sample(v)
 	}
@@ -188,12 +185,6 @@ func TestHistorySampling(t *testing.T) {
 	}
 	if got := view.L[0]; got != 18 { // 11th sample (the cap evicted the first 10): Live was 7+11
 		t.Fatalf("l[0] = %v, want 18", got)
-	}
-	if got := view.V["ATLAS"][0]; got != 50 {
-		t.Fatalf("venue delta[0] = %v, want 50", got)
-	}
-	if n := len(view.V["ATLAS"]); n != 120 {
-		t.Fatalf("venue series len = %d, want 120", n)
 	}
 }
 

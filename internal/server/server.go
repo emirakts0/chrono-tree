@@ -299,24 +299,21 @@ const histSamples = 120
 // history holds the per-second sample series backing the dashboard graphs.
 type history struct {
 	mu      sync.Mutex
-	t, f, l []float64            // ticks/s, triggers/s, engine.live
-	c, m    []float64            // host cpu %, process rss bytes
-	v       map[string][]float64 // per-venue ticks/s
-	lastV   map[string]uint64    // cumulative venue_ticks at last sample
+	t, f, l []float64 // ticks/s, triggers/s, engine.live
+	c, m    []float64 // host cpu %, process rss bytes
 }
 
 func newHistory() *history {
-	return &history{v: make(map[string][]float64), lastV: make(map[string]uint64)}
+	return &history{}
 }
 
-// historyView is the wire shape; keys are short (720 numbers per hello).
+// historyView is the wire shape; keys are short (600 numbers per hello).
 type historyView struct {
-	T []float64            `json:"t"`
-	F []float64            `json:"f"`
-	L []float64            `json:"l"`
-	C []float64            `json:"c"`
-	M []float64            `json:"m"`
-	V map[string][]float64 `json:"v"`
+	T []float64 `json:"t"`
+	F []float64 `json:"f"`
+	L []float64 `json:"l"`
+	C []float64 `json:"c"`
+	M []float64 `json:"m"`
 }
 
 func appendCapped(s []float64, x float64) []float64 {
@@ -327,11 +324,7 @@ func appendCapped(s []float64, x float64) []float64 {
 	return s
 }
 
-// sample records one second of the snapshot view. Venue rates are deltas
-// of the cumulative venue_ticks counters; there is no prior point for a
-// venue's first sample, so it diffs against zero — which at process boot
-// (counters start at 0, first tick is 1s in) is exactly that first
-// second's rate.
+// sample records one second of the snapshot view.
 func (h *history) sample(v statusView) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -340,11 +333,6 @@ func (h *history) sample(v statusView) {
 	h.l = appendCapped(h.l, float64(v.Engine.Live))
 	h.c = appendCapped(h.c, v.Sys.HostCPUPercent)
 	h.m = appendCapped(h.m, float64(v.Sys.RSSBytes))
-	for venue, total := range v.VenueTicks {
-		rate := float64(total - h.lastV[venue])
-		h.lastV[venue] = total
-		h.v[venue] = appendCapped(h.v[venue], rate)
-	}
 }
 
 func (h *history) view() historyView {
@@ -353,16 +341,13 @@ func (h *history) view() historyView {
 	out := historyView{
 		T: make([]float64, len(h.t)), F: make([]float64, len(h.f)),
 		L: make([]float64, len(h.l)), C: make([]float64, len(h.c)),
-		M: make([]float64, len(h.m)), V: make(map[string][]float64, len(h.v)),
+		M: make([]float64, len(h.m)),
 	}
 	copy(out.T, h.t)
 	copy(out.F, h.f)
 	copy(out.L, h.l)
 	copy(out.C, h.c)
 	copy(out.M, h.m)
-	for venue, s := range h.v {
-		out.V[venue] = append([]float64(nil), s...)
-	}
 	return out
 }
 

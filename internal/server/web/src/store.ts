@@ -45,7 +45,6 @@ export interface History {
   l: number[]; // engine.live
   c: number[]; // host cpu %
   m: number[]; // process rss bytes
-  v: Record<string, number[]>; // per-venue ticks/s
 }
 
 export interface Hello {
@@ -65,7 +64,6 @@ export const state = {
     live: [] as number[],    // engine.live, seeded from hello.history.l
     cpu: [] as number[],     // host cpu %, seeded from hello.history.c
     rss: [] as number[],     // process rss bytes, seeded from hello.history.m
-    venues: {} as Record<string, number[]>,
   },
 };
 
@@ -76,28 +74,13 @@ function capPush(arr: number[], v: number): void {
   if (arr.length > SERIES_CAP) arr.shift();
 }
 
-/** Called when the hello frame lands: graphs start full. Runs again on SSE
- * reconnect, so the venue diff base must reset or the first post-reconnect
- * venue sample would spike by the reconnect gap. */
+/** Called when the hello frame lands: graphs start full. */
 export function seedHistory(h: History): void {
-  for (const k in lastVenueTotal) delete lastVenueTotal[k];
   state.series.ticks = [...h.t];
   state.series.fires = [...h.f];
   state.series.live = [...h.l];
   state.series.cpu = [...h.c];
   state.series.rss = [...h.m];
-  state.series.venues = Object.fromEntries(
-    Object.entries(h.v).map(([venue, s]) => [venue, [...s]]),
-  );
-}
-
-// Venue rates need the cumulative counter diff, kept out of band:
-const lastVenueTotal: Record<string, number> = {};
-function pushVenueSample(venue: string, total: number): void {
-  const arr = (state.series.venues[venue] ??= []);
-  const rate = lastVenueTotal[venue] === undefined ? 0 : total - lastVenueTotal[venue];
-  lastVenueTotal[venue] = total;
-  capPush(arr, rate);
 }
 
 /** One 1s snapshot arrives → append the new sample points. */
@@ -108,9 +91,6 @@ export function pushSample(s: Snapshot): void {
   if (s.sys) {
     capPush(state.series.cpu, s.sys.host_cpu_percent);
     capPush(state.series.rss, s.sys.rss_bytes);
-  }
-  for (const [venue, total] of Object.entries(s.venue_ticks)) {
-    pushVenueSample(venue, total);
   }
 }
 
