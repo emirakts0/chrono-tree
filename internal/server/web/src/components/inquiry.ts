@@ -3,7 +3,7 @@ import { state } from "../store";
 import type { Hello } from "../store";
 import { mountDropdown, setDropdownOptions, type DDOption } from "./dropdown";
 
-const PAGE = 25;
+const PAGE_SIZES = [25, 50, 100, 250, 500];
 const STATES = ["active", "triggered", "cancelled"];
 
 // Set by mountInquiry; helloArrived fills the venue/tier selects once the
@@ -17,6 +17,7 @@ export function helloArrived(hello: Hello): void {
 
 export function mountInquiry(root: HTMLElement): void {
   let offset = 0;
+  let pageSize = PAGE_SIZES[0];
   let page: AlertsPage | null = null;
 
   root.innerHTML = `
@@ -29,19 +30,30 @@ export function mountInquiry(root: HTMLElement): void {
       <span class="ddhost" data-dd="direction"></span>
       <button type="submit"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.8"/><line x1="10.6" y1="10.6" x2="14" y2="14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>query</button>
     </form>
-    <table class="tbl"><thead><tr>
+    <div class="tblwrap"><table class="tbl"><thead><tr>
       <th>symbol</th><th>dims</th><th>type</th><th>dir</th><th>target</th>
       <th>state</th><th>created</th><th></th>
-    </tr></thead><tbody id="rows"></tbody></table>
-    <div class="pager"><button id="prev">← prev</button>
+    </tr></thead><tbody id="rows"></tbody></table></div>
+    <div class="pager">
+      <label class="pgsize">rows/page
+        <select id="pgsize">${PAGE_SIZES.map((n) => `<option value="${n}"${n === pageSize ? " selected" : ""}>${n}</option>`).join("")}</select>
+      </label>
+      <button id="first" title="first page">«</button>
+      <button id="prev">← prev</button>
       <span id="pg" class="mono"></span>
-      <button id="next">next →</button></div>`;
+      <button id="next">next →</button>
+      <button id="last" title="last page">»</button>
+    </div>`;
 
   const form = root.querySelector("form") as HTMLFormElement;
   const rows = root.querySelector("#rows") as HTMLElement;
+  const wrap = root.querySelector(".tblwrap") as HTMLElement;
   const pg = root.querySelector("#pg") as HTMLElement;
+  const first = root.querySelector("#first") as HTMLButtonElement;
   const prev = root.querySelector("#prev") as HTMLButtonElement;
   const next = root.querySelector("#next") as HTMLButtonElement;
+  const last = root.querySelector("#last") as HTMLButtonElement;
+  const pgsize = root.querySelector("#pgsize") as HTMLSelectElement;
 
   const dd = (name: string): HTMLElement =>
     root.querySelector(`[data-dd="${name}"]`) as HTMLElement;
@@ -63,14 +75,27 @@ export function mountInquiry(root: HTMLElement): void {
   // The hello frame may have arrived before this mount.
   if (state.hello) fillVocab(state.hello);
 
+  const lastOffset = (): number =>
+    page ? Math.max(0, Math.floor((page.total - 1) / pageSize) * pageSize) : 0;
+
   const setPager = (): void => {
-    prev.disabled = offset === 0;
-    next.disabled = !(page && offset + page.items.length < page.total);
+    const atStart = offset === 0;
+    const atEnd = !(page && offset + page.items.length < page.total);
+    first.disabled = prev.disabled = atStart;
+    next.disabled = last.disabled = atEnd;
+  };
+
+  // A new page of rows starts at the top of the scroll area; the page itself
+  // never moves (the card is fixed-height, so nothing outside it reflows).
+  const turn = (to: number): void => {
+    offset = to;
+    wrap.scrollTop = 0;
+    void load();
   };
 
   async function load(): Promise<void> {
     rows.innerHTML = `<tr><td colspan="8" class="empty">querying…</td></tr>`;
-    const q: Record<string, string> = { limit: String(PAGE), offset: String(offset) };
+    const q: Record<string, string> = { limit: String(pageSize), offset: String(offset) };
     new FormData(form).forEach((v, k) => (q[k] = String(v)));
     try {
       page = await fetchAlerts(q);
@@ -108,20 +133,23 @@ export function mountInquiry(root: HTMLElement): void {
 
   form.addEventListener("submit", (e) => {
     e.preventDefault();
-    offset = 0;
-    void load();
+    turn(0);
+  });
+  first.addEventListener("click", () => {
+    if (offset > 0) turn(0);
   });
   prev.addEventListener("click", () => {
-    if (offset > 0) {
-      offset = Math.max(0, offset - PAGE);
-      void load();
-    }
+    if (offset > 0) turn(Math.max(0, offset - pageSize));
   });
   next.addEventListener("click", () => {
-    if (page && offset + page.items.length < page.total) {
-      offset += PAGE;
-      void load();
-    }
+    if (page && offset + page.items.length < page.total) turn(offset + pageSize);
+  });
+  last.addEventListener("click", () => {
+    if (page && offset + page.items.length < page.total) turn(lastOffset());
+  });
+  pgsize.addEventListener("change", () => {
+    pageSize = Number(pgsize.value);
+    turn(0);
   });
   setPager();
   void load();

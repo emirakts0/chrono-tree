@@ -380,7 +380,7 @@ func (s *Server) handleAlerts(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	limit := 50
 	if v, err := strconv.Atoi(q.Get("limit")); err == nil {
-		limit = min(max(v, 1), 200)
+		limit = min(max(v, 1), 500)
 	}
 	offset := 0
 	if v, err := strconv.Atoi(q.Get("offset")); err == nil && v > 0 {

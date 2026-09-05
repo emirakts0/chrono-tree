@@ -238,10 +238,17 @@ body {
 .dd-list li.sel { background: var(--pine-teal); color: var(--soft-linen); }
 
 /* ---- inquiry table ---- */
+/* The card is a fixed-height flex column (desktop): header + filters stay
+   put, the table scrolls inside .tblwrap, and the pager rides the bottom
+   edge — always visible, right-aligned. Empty or short result sets keep
+   the same card height, so nothing on the page shifts between queries. */
+.card.area-inquiry { display: flex; flex-direction: column; }
+.tblwrap { flex: 1; min-height: 0; overflow: auto; }
 .tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
 .tbl th {
   text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .1em;
   color: var(--linen-ink); padding: 6px 8px; border-bottom: 1px solid var(--hairline);
+  position: sticky; top: 0; z-index: 1; background: var(--soft-linen);
 }
 .tbl td { padding: 8px; border-bottom: 1px solid var(--hairline); }
 .tbl td.meta { color: var(--linen-ink); font-size: 12px; }
@@ -249,12 +256,17 @@ body {
 .chip.state-active { background: var(--pine-teal); color: var(--light-green); }
 .chip.state-triggered { background: var(--brick-ember); color: #fff; }
 .chip.state-cancelled { background: var(--linen); color: var(--linen-ink); border: 1px solid var(--hairline); }
-.pager { display: flex; align-items: center; gap: 14px; margin-top: 10px; color: var(--linen-ink); }
+.pager { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 10px; color: var(--linen-ink); }
 .pager button {
   font: inherit; font-size: 13px; padding: 6px 12px; border-radius: 9px;
   border: 1px solid var(--coffee-bean); background: #fff0; color: var(--coffee-bean); cursor: pointer;
 }
 .pager button:disabled { opacity: .35; cursor: default; }
+.pager .pgsize { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; margin-right: auto; }
+.pager select {
+  font: inherit; font-size: 13px; padding: 6px 8px; border-radius: 9px;
+  border: 1px solid var(--coffee-bean); background: #fff0; color: var(--coffee-bean); cursor: pointer;
+}
 .empty { color: var(--linen-ink); font-size: 13px; padding: 12px 0; }
 .empty.err { color: var(--brick-ember); }
 
@@ -288,7 +300,8 @@ body {
 
 /* ---- focus ---- */
 .filters input:focus-visible, .filters button:focus-visible,
-.dd:focus-visible, .dd-list li:focus-visible, .pager button:focus-visible {
+.dd:focus-visible, .dd-list li:focus-visible, .pager button:focus-visible,
+.pager select:focus-visible {
   outline: 2px solid var(--pine-teal); outline-offset: 2px;
 }
 
@@ -300,6 +313,21 @@ body {
 }
 
 /* ---- responsive ---- */
+/* Desktop (>1100px): pin the whole panel to the viewport. The top rows
+   keep their natural height; the inquiry card takes what is left over
+   (never less than 220px) and its table scrolls inside the card. Narrow
+   viewports fall through to the stacked layouts below, where the page
+   scrolls naturally. */
+@media (min-width: 1101px) {
+  body { display: flex; flex-direction: column; height: 100dvh; }
+  .grid {
+    flex: 1; min-height: 0;
+    grid-template-rows: auto auto auto minmax(220px, 1fr);
+  }
+  .grid > .card { min-height: 0; }
+  .area-venues { overflow-y: auto; }
+}
+
 /* Laptop band: compress rail rows (drop the venue/tier meta) so the
    right column never overflows its 3-column track. */
 @media (max-width: 1400px) and (min-width: 1101px) {
