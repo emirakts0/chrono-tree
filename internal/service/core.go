@@ -213,10 +213,6 @@ func (c *Core) specFrom(a alertstore.Alert) (engine.AlertSpec, bool) {
 		Expires:        a.Expires,
 		AutoDeactivate: a.AutoDeactivate,
 		Dims:           engine.Dims(vv, tv),
-		Meta: engine.AlertMeta{
-			ID: a.ID, Symbol: sym.Name, PriceType: a.PriceType, Direction: a.Direction,
-			TargetPrice: a.TargetPrice, CreatedAt: a.CreatedAt,
-		},
 	}, true
 }
 
@@ -341,10 +337,6 @@ func (c *Core) UpsertAlert(ctx context.Context, req *chronov1.UpsertAlertRequest
 		Expires:        req.GetExpiresUnixNanos(),
 		AutoDeactivate: req.GetAutoDeactivate(),
 		Dims:           engine.Dims(vv, tv),
-		Meta: engine.AlertMeta{
-			ID: id, Symbol: sym.Name, PriceType: pt, Direction: dir,
-			TargetPrice: engine.Price(base), CreatedAt: rec.CreatedAt,
-		},
 	}
 	if err := c.eng.Upsert(spec); err != nil {
 		// Roll the store back to the pre-upsert truth.
