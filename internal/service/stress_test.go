@@ -15,7 +15,7 @@ import (
 	chronov1 "github.com/emir/chrono-tree/api/gen/chrono/v1"
 	"github.com/emir/chrono-tree/internal/alertstore"
 	"github.com/emir/chrono-tree/internal/catalog"
-	"github.com/emir/chrono-tree/price"
+	"github.com/emir/chrono-tree/internal/price"
 )
 
 // TestStressFeedAndPublish: parallel upserts and a 5k/s tick stream for

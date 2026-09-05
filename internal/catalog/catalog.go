@@ -11,7 +11,7 @@ import (
 	"math"
 	"strconv"
 
-	"github.com/emir/chrono-tree/price"
+	"github.com/emir/chrono-tree/internal/price"
 )
 
 // Dim names, positionally significant: slot 0 = venue, slot 1 = tier

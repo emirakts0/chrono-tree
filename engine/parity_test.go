@@ -7,7 +7,7 @@ import (
 
 	"go.uber.org/goleak"
 
-	"github.com/emir/chrono-tree/price"
+	"github.com/emir/chrono-tree/internal/price"
 )
 
 // TestOracleStringPriceParity proves the engine has no hidden conversion

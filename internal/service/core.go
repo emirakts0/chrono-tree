@@ -21,7 +21,7 @@ import (
 	"github.com/emir/chrono-tree/internal/catalog"
 	"github.com/emir/chrono-tree/internal/pub"
 	"github.com/emir/chrono-tree/internal/stats"
-	"github.com/emir/chrono-tree/price"
+	"github.com/emir/chrono-tree/internal/price"
 )
 
 // Metrics is the observability hook; implementations must be safe for

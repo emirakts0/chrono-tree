@@ -122,7 +122,7 @@ for {
 ```
 go test ./... -race -count=1
 ok  github.com/emir/chrono-tree/engine  4.306s
-ok  github.com/emir/chrono-tree/price   0.074s
+ok  github.com/emir/chrono-tree/internal/price   0.074s
 ```
 
 Coverage beyond unit tests:

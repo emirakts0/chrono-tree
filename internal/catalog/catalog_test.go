@@ -4,7 +4,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/emir/chrono-tree/price"
+	"github.com/emir/chrono-tree/internal/price"
 )
 
 func TestDefaultDeterministic(t *testing.T) {

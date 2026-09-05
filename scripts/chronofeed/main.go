@@ -42,7 +42,7 @@ import (
 	"github.com/emir/chrono-tree/engine"
 	"github.com/emir/chrono-tree/internal/alertstore"
 	"github.com/emir/chrono-tree/internal/catalog"
-	"github.com/emir/chrono-tree/price"
+	"github.com/emir/chrono-tree/internal/price"
 )
 
 const (
