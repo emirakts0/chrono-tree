@@ -13,6 +13,9 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
+
+	bolt "go.etcd.io/bbolt"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -46,6 +49,8 @@ func main() {
 	seedN := seedCmd.Int("n", 1000, "alerts to seed")
 	seedSeed := seedCmd.Uint64("seed", 1, "RNG seed")
 	seedWorkers := seedCmd.Int("workers", 8, "concurrent upsert streams")
+	compactCmd := flag.NewFlagSet("compact", flag.ExitOnError)
+	compactOut := compactCmd.String("out", "", "output path (default: <db>.compact)")
 	// Global flags come before the subcommand: Parse stops at the first
 	// non-flag argument, which is the subcommand name.
 	flag.Parse()
@@ -53,11 +58,31 @@ func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, nil)))
 
 	if flag.NArg() < 1 {
-		fmt.Fprintln(os.Stderr, "usage: chronoctl [flags] <alert|seed> ...")
+		fmt.Fprintln(os.Stderr, "usage: chronoctl [flags] <alert|seed|compact> ...")
 		os.Exit(2)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// compact is offline: it never touches a server.
+	if flag.Arg(0) == "compact" {
+		if err := compactCmd.Parse(flag.Args()[1:]); err != nil {
+			os.Exit(2)
+		}
+		if compactCmd.NArg() != 1 {
+			fmt.Fprintln(os.Stderr, "usage: chronoctl compact [-out path] <db-path>")
+			os.Exit(2)
+		}
+		out := *compactOut
+		if out == "" {
+			out = compactCmd.Arg(0) + ".compact"
+		}
+		if err := runCompact(compactCmd.Arg(0), out); err != nil {
+			slog.Error("compact", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	conn, err := dial(*server)
 	if err != nil {
@@ -112,6 +137,46 @@ func dirOf(s string) (chronov1.Direction, error) {
 		return chronov1.Direction_DIRECTION_BELOW, nil
 	}
 	return 0, fmt.Errorf("unknown direction %q", s)
+}
+
+// runCompact rewrites a bbolt file with bolt.Compact: read-only source,
+// fresh temp destination, atomic rename. Offline only — never run
+// against a file chronod holds (the source flock is respected by the
+// read-only open; a live writer would be an operator error anyway).
+func runCompact(dbPath, outPath string) error {
+	src, err := bolt.Open(dbPath, 0o600, &bolt.Options{ReadOnly: true, Timeout: 5 * time.Second})
+	if err != nil {
+		return fmt.Errorf("open source: %w", err)
+	}
+	defer func() { _ = src.Close() }()
+	tmp := outPath + ".tmp"
+	dst, err := bolt.Open(tmp, 0o600, &bolt.Options{Timeout: 5 * time.Second})
+	if err != nil {
+		return fmt.Errorf("open dest: %w", err)
+	}
+	if err := bolt.Compact(dst, src, 1<<16); err != nil {
+		_ = dst.Close()
+		return fmt.Errorf("compact: %w", err)
+	}
+	if err := dst.Close(); err != nil {
+		return err
+	}
+	before, after := fileSizes(dbPath, tmp)
+	if err := os.Rename(tmp, outPath); err != nil {
+		return fmt.Errorf("rename: %w", err)
+	}
+	fmt.Printf("%s: %d -> %d bytes\n", outPath, before, after)
+	return nil
+}
+
+func fileSizes(paths ...string) (int64, int64) {
+	var out [2]int64
+	for i, p := range paths {
+		if st, err := os.Stat(p); err == nil {
+			out[i] = st.Size()
+		}
+	}
+	return out[0], out[1]
 }
 
 func runAlert(ctx context.Context, c Clients, pair, venue, tier, dir, ptype, priceStr string) error {
