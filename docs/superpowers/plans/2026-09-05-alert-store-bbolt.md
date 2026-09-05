@@ -2521,7 +2521,6 @@ func benchSeed(b *testing.B, s *Store, n int) []Alert {
 	b.Helper()
 	alerts := make([]Alert, n)
 	for i := range n {
-		copy(alerts[i].ID[:], []byte{byte(i >> 24), byte(i >> 16), byte(i >> 8), byte(i), 0x99})
 		alerts[i] = Alert{
 			Symbol: []string{"BTCUSDT", "ETHUSDT", "SOLUSDT"}[i%3], Decimals: 8,
 			Venue: []string{"ATLAS", "NOVA", "ZENITH"}[i%3], Tier: []string{"TOP", "MID"}[i%2],
@@ -2533,6 +2532,9 @@ func benchSeed(b *testing.B, s *Store, n int) []Alert {
 			alerts[i].State = StateTriggered
 			alerts[i].FiredPrice, alerts[i].FiredAt = engine.Price(i), int64(i)
 		}
+		// AFTER the literal: an unnamed field in the composite would zero
+		// a pre-copied ID, collapsing all records onto the zero key.
+		copy(alerts[i].ID[:], []byte{byte(i >> 24), byte(i >> 16), byte(i >> 8), byte(i), 0x99})
 	}
 	const chunk = 10000
 	for start := 0; start < n; start += chunk {
