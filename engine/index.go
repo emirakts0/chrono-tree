@@ -186,7 +186,7 @@ func (e *Engine) Upsert(a AlertSpec) error {
 		// queueing a second one would retire the slot twice and hand the SAME
 		// index to two future alerts. The existing owner's removal plus the
 		// ref-idx guard in applyBatch still clean the tree entry and the
-		// refs/meta/live bookkeeping below exactly once.
+		// refs/live bookkeeping below exactly once.
 		s := e.slots.get(ref.e.idx)
 		for {
 			w := s.Load()
@@ -265,7 +265,7 @@ func (e *Engine) submitExpiry(x expEntry) error {
 }
 
 // removeIfLive CASes the alert's slot from ACTIVE/PAUSED to want and returns
-// its removal mutation. refs/meta/live cleanup happens in applyBatch.
+// its removal mutation. refs/live cleanup happens in applyBatch.
 func (e *Engine) removeIfLive(id AlertID, want Status) (mutation, error) {
 	e.mu.Lock()
 	ref, ok := e.refs[id]
