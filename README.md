@@ -72,14 +72,17 @@ chronod's HTTP status surface: `/healthz`, `/readyz`, `/stats` (encoding/json/v2
 `/metrics` (Prometheus), `/debug/pprof/` — plus the live monitoring dashboard:
 `/` (embedded bento-grid SPA), `/api/stream` (SSE: 1s snapshots, 10-slot trigger batches via NATS loopback, 2-minute metric history on connect), `/api/alerts` (read-only inquiry).
 
-### `internal/feed`
+### `scripts/chronofeed`
 
-The synthetic market behind chronofeed: a seeded, heat-weighted random walk
-over the catalog's symbols and dims.
+The demo/test driver (not a service binary): seeds a ±5% alert-price
+ladder into the bbolt store, then streams a synthetic mean-reverting
+market into chronod — one client-stream per venue. The walk reverts to
+the same reference prices the ladder is built from, so triggers fire at
+a steady pace instead of one burst.
 
 ### `cmd/`
 
-Three binaries - `chronod`, `chronofeed`, `chronoctl` - see Services below.
+One server binary - `chronod` - plus the `scripts/chronofeed` demo driver; see Services below.
 
 ## Usage
 
@@ -164,7 +167,8 @@ Both paths are allocation-free. `BenchmarkMatchSparse10M` exists behind
 
 ## Services
 
-Three binaries wrap the engine (spec: `docs/superpowers/specs/2026-09-04-service-design.md`):
+One server binary wraps the engine (spec: `docs/superpowers/specs/2026-09-04-service-design.md`),
+plus a demo script:
 
 - `chronod` — hosts the engine: `chrono.v1` gRPC on `:9090` (alerts, tick
   ingestion, catalog; gRPC health + reflection), HTTP status on `:8080`
@@ -173,18 +177,21 @@ Three binaries wrap the engine (spec: `docs/superpowers/specs/2026-09-04-service
   `chrono.triggers.{venue}.{tier}` (JSON payloads, `Nats-Msg-Id`/`Symbol`
   headers); chronod refuses to start without NATS and drops-and-counts
   publishes during outages.
-- `chronofeed` — synthetic crypto market: ~500 pairs (realistic majors down
-  to sub-cent memecoins), heat-weighted random walk, 3 fictional venues ×
-  2 book tiers as the engine's two dims, one client-stream per venue,
-  `-rate 20000` default.
-- `chronoctl` — alert creation: `alert` (register one alert, print its ID),
-  `seed` (register N dim-scoped alerts plus a per-venue BTCUSDT fan-out set).
+- `scripts/chronofeed` (demo driver, not a service) — seeds a ladder of
+  fake alerts into the bbolt store (skipped when the store already has
+  alerts), then streams a synthetic market: ~500 pairs (realistic majors
+  down to sub-cent memecoins) in a mean-reverting random walk around each
+  pair's reference price, 3 fictional venues × 2 book tiers as the
+  engine's two dims, one client-stream per venue, `-rate 20000` default.
+  Rates and alerts are consistent by construction: rungs sit ±`-band`
+  around the reference the walk reverts to, so alerts trigger steadily as
+  the fake rate flows. Alerts are terminal once triggered — `-alerts` is
+  the trigger budget; delete the db file to reseed.
 
 ```sh
 nats-server &                    # or: docker run -p 4222:4222 nats
-go run ./cmd/chronod &
-go run ./cmd/chronofeed -rate 20000 &
-go run ./cmd/chronoctl seed -n 1000
+go run ./scripts/chronofeed -db demo.bbolt &   # seeds the ladder, waits for chronod
+go run ./cmd/chronod -db demo.bbolt            # replays the ladder, starts serving
 nats sub 'chrono.triggers.>'     # watch triggers fire
 xdg-open http://localhost:8080/  # live bento dashboard
 curl -s localhost:8080/stats | jq

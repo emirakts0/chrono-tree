@@ -65,11 +65,16 @@ func TestIntegrationEndToEnd(t *testing.T) {
 	natsURL := pubtest.Start(t)
 
 	root := repoRoot(t)
+	// Dedicated temp db: the daemon must not inherit whatever chrono.bbolt
+	// lies around in the repo root, and the feeder must not win the
+	// open-race and seed its ladder into the daemon's store (the test
+	// brings its own alert below, and asserts on the FIRST trigger).
+	dbPath := filepath.Join(t.TempDir(), "it.bbolt")
 	daemon := exec.CommandContext(ctx, "go", "run", "./cmd/chronod",
-		"-grpc-addr", grpcAddr, "-http-addr", httpAddr, "-nats-url", natsURL)
+		"-grpc-addr", grpcAddr, "-http-addr", httpAddr, "-nats-url", natsURL, "-db", dbPath)
 	daemon.Dir = root
-	feeder := exec.CommandContext(ctx, "go", "run", "./cmd/chronofeed",
-		"-server", grpcAddr, "-rate", "20000", "-seed", "1")
+	feeder := exec.CommandContext(ctx, "go", "run", "./scripts/chronofeed",
+		"-server", grpcAddr, "-rate", "20000", "-seed", "1", "-db", dbPath, "-alerts", "0")
 	feeder.Dir = root
 	// `go run` execs the real binary as a child; kill the whole process
 	// group so no daemon survives the test.

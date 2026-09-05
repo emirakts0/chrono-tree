@@ -39,17 +39,17 @@ var webFS embed.FS
 var distFS, _ = fs.Sub(webFS, "web/dist")
 
 type Server struct {
-	core     *service.Core
-	stats    *stats.Stats
-	reg      *prometheus.Registry
-	hub      *sseHub
-	ring     triggerRing
-	hist     *history
-	sys      *sysSampler
+	core      *service.Core
+	stats     *stats.Stats
+	reg       *prometheus.Registry
+	hub       *sseHub
+	ring      triggerRing
+	hist      *history
+	sys       *sysSampler
 	latestSys atomic.Pointer[sysSample] // last sample; /metrics reads, never samples
-	stopTick chan struct{}
-	stopOnce sync.Once
-	shutting atomic.Bool
+	stopTick  chan struct{}
+	stopOnce  sync.Once
+	shutting  atomic.Bool
 }
 
 // New builds the status server. dbPath is the alert-store file whose

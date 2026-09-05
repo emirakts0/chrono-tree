@@ -2,6 +2,8 @@ package alertstore
 
 import (
 	"path/filepath"
+	"reflect"
+	"sort"
 	"testing"
 	"time"
 
@@ -79,6 +81,59 @@ func expectedIndexes(alerts []Alert) map[string][]string {
 		out["idx_created"] = append(out["idx_created"], string(idxKey(nil, a.CreatedAt, a.ID)))
 	}
 	return out
+}
+
+// TestPutBatch: one tx writes many records with full index maintenance,
+// and a replacement member swaps its old index entries exactly like Put.
+func TestPutBatch(t *testing.T) {
+	// Index buckets come back key-sorted (newest-first via invTS), while
+	// expectedIndexes lists in record order — compare as multisets.
+	sorted := func(m map[string][]string) map[string][]string {
+		out := map[string][]string{}
+		for k, v := range m {
+			s := append([]string{}, v...)
+			sort.Strings(s)
+			out[k] = s
+		}
+		return out
+	}
+	s, _ := openStore(t)
+
+	batch := make([]Alert, 0, 50)
+	for i := range 50 {
+		a := sampleAlert()
+		copy(a.ID[:], []byte{byte(i), 0xBB})
+		a.CreatedAt = int64(2000 + i)
+		batch = append(batch, a)
+	}
+	if err := s.PutBatch(batch); err != nil {
+		t.Fatalf("PutBatch: %v", err)
+	}
+	for _, want := range batch {
+		got, found, err := s.Get(want.ID)
+		if err != nil || !found || got != want {
+			t.Fatalf("Get %v = (%v, %v, %v), want (%v, true, nil)", want.ID, got, found, err, want)
+		}
+	}
+	if snap, want := sorted(s.indexSnapshot(t)), sorted(expectedIndexes(batch)); !reflect.DeepEqual(snap, want) {
+		t.Fatal("indexes after PutBatch do not match the records exactly")
+	}
+
+	// Replace half the batch with a different state/symbol in one tx:
+	// old index entries must die, not orphan.
+	repl := make([]Alert, len(batch)/2)
+	for i := range repl {
+		repl[i] = batch[i]
+		repl[i].State = StateCancelled
+		repl[i].Symbol = "ETHUSDT"
+	}
+	if err := s.PutBatch(repl); err != nil {
+		t.Fatalf("PutBatch replace: %v", err)
+	}
+	full := append(append([]Alert{}, repl...), batch[len(repl):]...)
+	if snap, want := sorted(s.indexSnapshot(t)), sorted(expectedIndexes(full)); !reflect.DeepEqual(snap, want) {
+		t.Fatal("indexes after PutBatch replace do not match the records exactly")
+	}
 }
 
 func TestPutGetDelete(t *testing.T) {

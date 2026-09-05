@@ -72,6 +72,32 @@ func (s *Store) Put(a Alert) error {
 	})
 }
 
+// PutBatch writes many alerts in one write tx — the bulk-seed path.
+// Same replace semantics as Put per member: an existing record's index
+// entries are removed before its replacement lands. Idempotent under
+// bolt's Batch re-run contract (same keys, same values every run).
+func (s *Store) PutBatch(as []Alert) error {
+	return s.db.Batch(func(tx *bolt.Tx) error {
+		alerts := tx.Bucket(bktAlerts)
+		for i := range as {
+			a := &as[i]
+			if raw := alerts.Get(a.ID[:]); raw != nil {
+				prev, err := decodeAlert(raw)
+				if err != nil {
+					return err
+				}
+				if err := deleteIndexes(tx, &prev); err != nil {
+					return err
+				}
+			}
+			if err := putIndexed(tx, a); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 func (s *Store) Get(id engine.AlertID) (Alert, bool, error) {
 	var a Alert
 	var found bool
