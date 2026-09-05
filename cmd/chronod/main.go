@@ -39,20 +39,20 @@ func main() {
 	grpcAddr := flag.String("grpc-addr", ":9090", "gRPC listen address")
 	httpAddr := flag.String("http-addr", ":8080", "HTTP status listen address")
 	natsURL := flag.String("nats-url", "nats://localhost:4222", "NATS server URL (trigger publishing)")
-	alertsPath := flag.String("alerts-path", "alerts.bbolt", "path to the persistent alert store")
+	dbPath := flag.String("db", "chrono.bbolt", "alert store path (bbolt); source of truth across restarts")
 	flag.Parse()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	if err := run(ctx, *grpcAddr, *httpAddr, *natsURL, *alertsPath); err != nil {
+	if err := run(ctx, *grpcAddr, *httpAddr, *natsURL, *dbPath); err != nil {
 		slog.Error("chronod exit", "err", err)
 		os.Exit(1)
 	}
 	slog.Info("chronod stopped")
 }
 
-func run(ctx context.Context, grpcAddr, httpAddr, natsURL, alertsPath string) error {
+func run(ctx context.Context, grpcAddr, httpAddr, natsURL, dbPath string) error {
 	// NATS is a boot dependency: unreachable broker is a fatal error.
 	// Later outages reconnect forever; publishes during them drop-and-count.
 	publisher, err := pub.NewNATS(natsURL)
@@ -65,13 +65,18 @@ func run(ctx context.Context, grpcAddr, httpAddr, natsURL, alertsPath string) er
 	reg := prometheus.NewRegistry()
 	pm := server.NewPromMetrics(reg)
 	st := stats.New(now)
-	store, err := alertstore.Open(alertsPath)
+	// The alert store is the source of truth: opened before the engine,
+	// closed after it. A corrupt or locked file is fatal — no engine
+	// without its catalog. (Timeout inside Open prevents flock hangs.)
+	store, err := alertstore.Open(dbPath)
 	if err != nil {
 		return fmt.Errorf("alert store: %w", err)
 	}
+	// Backspot ordering note: this defer registers BEFORE core.Close's,
+	// so it runs AFTER it (LIFO) — the store always outlives the pump.
+	defer func() { _ = store.Close() }()
 	core := service.NewCore(engine.DefaultConfig(), catalog.Default(), pm, st, publisher, store)
-	defer store.Close() // registered first → runs last, after core.Close
-	defer core.Close()  // stops the pump, then the engine (idempotent)
+	defer core.Close() // stops the pump, then the engine (idempotent)
 
 	statusSrv := server.New(core, st, reg)
 	defer statusSrv.Close() // stop the 1s tick engine at exit (idempotent)
@@ -133,7 +138,10 @@ func run(ctx context.Context, grpcAddr, httpAddr, natsURL, alertsPath string) er
 		gs.Stop()
 	}
 
-	core.Close()                              // stops the pump, then the engine (idempotent; the defer is a backstop)
+	core.Close() // stops the pump, then the engine (idempotent; the defer is a backstop)
+	if err := store.Close(); err != nil {
+		slog.Warn("alert store close", "err", err)
+	}
 	if err := publisher.Close(); err != nil { // bounded 3s drain inside
 		slog.Warn("nats drain", "err", err)
 	}
