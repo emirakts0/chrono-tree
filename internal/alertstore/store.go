@@ -147,17 +147,25 @@ func (s *Store) Cancel(id engine.AlertID) (bool, error) {
 
 // CancelBatch flips each active alert to cancelled in one write tx.
 // Bolt's single writer makes the read-check-flip inside the tx atomic
-// against MarkTriggeredBatch — whichever lands first wins.
+// against MarkTriggeredBatch — whichever lands first wins. A terminal
+// or unknown member is skipped, never aborts the batch. Resetting
+// flipped as the first statement makes the fn idempotent per bbolt's
+// Batch contract (a coalesced batch that fails re-runs members solo;
+// each run's count is the truth, not their sum).
 func (s *Store) CancelBatch(ids []engine.AlertID) (int, error) {
 	flipped := 0
 	err := s.db.Batch(func(tx *bolt.Tx) error {
+		flipped = 0 // Batch may re-run this fn after a coalesced failure; each run's count is the truth
 		alerts := tx.Bucket(bktAlerts)
 		for _, id := range ids {
 			a, ok, err := getInTx(alerts, id)
-			if err != nil || !ok || a.State != StateActive {
+			if err != nil {
 				return err
 			}
-			if err := flipState(tx, alerts, &a, StateCancelled, 0, 0); err != nil {
+			if !ok || a.State != StateActive {
+				continue
+			}
+			if err := flipState(tx, &a, StateCancelled, 0, 0); err != nil {
 				return err
 			}
 			flipped++
@@ -176,19 +184,27 @@ type Fired struct {
 
 // MarkTriggeredBatch flips each fired alert active→triggered, writing
 // fired price/time — iff it is still active when the tx runs (a cancel
-// racing the publish wins; the flip is skipped). Re-writing the four
-// value indexes per flip is idempotent: same key, nil value.
+// racing the publish wins; the flip is skipped). A terminal or unknown
+// member is skipped, never aborts the batch. Re-writing the four value
+// indexes per flip is idempotent: same key, nil value. Resetting
+// flipped as the first statement makes the fn idempotent per bbolt's
+// Batch contract (a coalesced batch that fails re-runs members solo;
+// each run's count is the truth, not their sum).
 func (s *Store) MarkTriggeredBatch(fired []Fired) (int, error) {
 	flipped := 0
 	err := s.db.Batch(func(tx *bolt.Tx) error {
+		flipped = 0 // Batch may re-run this fn after a coalesced failure; each run's count is the truth
 		alerts := tx.Bucket(bktAlerts)
 		for i := range fired {
 			f := &fired[i]
 			a, ok, err := getInTx(alerts, f.ID)
-			if err != nil || !ok || a.State != StateActive {
+			if err != nil {
 				return err
 			}
-			if err := flipState(tx, alerts, &a, StateTriggered, f.Price, f.At); err != nil {
+			if !ok || a.State != StateActive {
+				continue
+			}
+			if err := flipState(tx, &a, StateTriggered, f.Price, f.At); err != nil {
 				return err
 			}
 			flipped++
@@ -211,8 +227,9 @@ func getInTx(alerts *bolt.Bucket, id engine.AlertID) (Alert, bool, error) {
 }
 
 // flipState rewrites one record in a new state, swapping only its
-// idx_state entry (value indexes carry no state).
-func flipState(tx *bolt.Tx, alerts *bolt.Bucket, a *Alert, to State, firedPrice engine.Price, firedAt int64) error {
+// idx_state entry — the one index the function reaches via tx; the
+// value indexes carry no state, so they are not swapped.
+func flipState(tx *bolt.Tx, a *Alert, to State, firedPrice engine.Price, firedAt int64) error {
 	if err := tx.Bucket(bktIdxState).Delete(idxKey(statePrefix(a.State), a.CreatedAt, a.ID)); err != nil {
 		return err
 	}

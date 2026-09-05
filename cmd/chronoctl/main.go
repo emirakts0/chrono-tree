@@ -154,6 +154,9 @@ func runCompact(dbPath, outPath string) error {
 	if err != nil {
 		return fmt.Errorf("open dest: %w", err)
 	}
+	// No-op after the successful rename below; removes the leftover on
+	// every failure path.
+	defer func() { _ = os.Remove(tmp) }()
 	if err := bolt.Compact(dst, src, 1<<16); err != nil {
 		_ = dst.Close()
 		return fmt.Errorf("compact: %w", err)

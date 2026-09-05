@@ -82,6 +82,9 @@ func appendAlert(b []byte, a *Alert) []byte {
 	return b
 }
 
+// appendString length-prefixes s with a uint16: values are catalog-
+// bounded (≤65535 bytes); a longer value would silently truncate the
+// prefix and corrupt the record, and the catalog vocabulary bounds it.
 func appendString(b []byte, s string) []byte {
 	var l [2]byte
 	binary.BigEndian.PutUint16(l[:], uint16(len(s)))

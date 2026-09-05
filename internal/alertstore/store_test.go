@@ -127,8 +127,13 @@ func TestPutGetDelete(t *testing.T) {
 	if _, found, _ := s.Get(put.ID); found {
 		t.Fatal("Get after Delete should miss")
 	}
-	if snap = s.indexSnapshot(t); len(snap["idx_state"]) != 0 || len(snap["idx_created"]) != 0 {
-		t.Fatalf("Delete left index entries behind: %v", snap)
+	// Delete must leave every index bucket empty, not just the two we
+	// used to spot-check.
+	snap = s.indexSnapshot(t)
+	for name, keys := range snap {
+		if len(keys) != 0 {
+			t.Fatalf("bucket %s kept %d entries after Delete: %v", name, len(keys), keys)
+		}
 	}
 }
 
@@ -139,6 +144,50 @@ func contains(s []string, v string) bool {
 		}
 	}
 	return false
+}
+
+// TestBatchSkipDoesNotAbortFollowingMembers pins the batch contract: a
+// terminal or unknown member is skipped, and the flip continues with the
+// remaining members (the old code returned a nil error from the whole
+// closure on the first skip, silently dropping every later member).
+func TestBatchSkipDoesNotAbortFollowingMembers(t *testing.T) {
+	s, _ := openStore(t)
+	alerts := putN(t, s, 4)
+
+	// alerts[0] becomes triggered before the cancel batch runs.
+	if n, err := s.MarkTriggeredBatch([]Fired{{ID: alerts[0].ID, Price: 1, At: 1}}); err != nil || n != 1 {
+		t.Fatalf("setup MarkTriggeredBatch = (%d, %v), want (1, nil)", n, err)
+	}
+	// Leading triggered member must not stop a2/a3 from flipping.
+	n, err := s.CancelBatch([]engine.AlertID{alerts[0].ID, alerts[1].ID, alerts[2].ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("CancelBatch flipped %d, want 2 (skip aborted the batch)", n)
+	}
+	// Leading cancelled member and an unknown member, then one active.
+	n, err = s.MarkTriggeredBatch([]Fired{
+		{ID: alerts[1].ID, Price: 2, At: 2},         // cancelled: skipped
+		{ID: engine.AlertID{0xFF}, Price: 2, At: 2}, // unknown: skipped
+		{ID: alerts[3].ID, Price: 2, At: 2},         // active: flips
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("MarkTriggeredBatch flipped %d, want 1 (skip aborted the batch)", n)
+	}
+
+	for i, want := range []State{StateTriggered, StateCancelled, StateCancelled, StateTriggered} {
+		a, found, err := s.Get(alerts[i].ID)
+		if err != nil || !found {
+			t.Fatalf("Get[%d] = (%v, %v, %v)", i, a, found, err)
+		}
+		if a.State != want {
+			t.Fatalf("alerts[%d].State = %v, want %v", i, a.State, want)
+		}
+	}
 }
 
 func TestOpenLockedFileTimesOut(t *testing.T) {
@@ -241,29 +290,35 @@ func TestConcurrentReadWrite(t *testing.T) {
 	s, _ := openStore(t)
 	alerts := putN(t, s, 64)
 	ids := make([]engine.AlertID, len(alerts))
+	fired := make([]Fired, len(alerts))
 	for i := range alerts {
 		ids[i] = alerts[i].ID
+		fired[i] = Fired{ID: ids[i], Price: 1, At: 1}
 	}
 	done := make(chan struct{})
-	go func() { // writer: flip everything triggered, then re-Put active, forever
-		flip := true
+	go func() { // writer: cancel → re-activate a subset → trigger, forever
 		for {
 			select {
 			case <-done:
 				return
 			default:
 			}
-			if flip {
-				fired := make([]Fired, len(ids))
-				for i := range ids {
-					fired[i] = Fired{ID: ids[i], Price: 1, At: 1}
+			_, _ = s.CancelBatch(ids)
+			// Re-Put the even ids as active so the next MarkTriggeredBatch
+			// cycle performs real active→triggered flips instead of no-opping
+			// on terminal states forever (this Put-replace also exercises the
+			// index-swap path under concurrency).
+			for i := range alerts {
+				if i%2 != 0 {
+					continue
 				}
-				_, _ = s.MarkTriggeredBatch(fired)
-			} else {
-				putN(t, s, 0) // no-op; re-Put path exercised by CancelBatch below
-				_, _ = s.CancelBatch(ids)
+				a := alerts[i]
+				a.State = StateActive
+				if err := s.Put(a); err != nil {
+					return
+				}
 			}
-			flip = !flip
+			_, _ = s.MarkTriggeredBatch(fired)
 		}
 	}()
 	deadline := time.Now().Add(2 * time.Second)

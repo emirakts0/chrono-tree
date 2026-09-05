@@ -19,7 +19,7 @@ func benchSeed(b *testing.B, s *Store, n int) []Alert {
 			Venue: []string{"ATLAS", "NOVA", "ZENITH"}[i%3], Tier: []string{"TOP", "MID"}[i%2],
 			PriceType: engine.PriceAsk, Direction: engine.Direction(i % 2),
 			TargetPrice: engine.Price(i), CreatedAt: int64(1_700_000_000_000_000_000 + i),
-			State:       StateActive,
+			State: StateActive,
 		}
 		if i%10 == 0 { // 10% of the population is triggered: the inquiry worst case
 			alerts[i].State = StateTriggered
