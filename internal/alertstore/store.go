@@ -113,6 +113,115 @@ func (s *Store) Delete(id engine.AlertID) error {
 	})
 }
 
+// BatchGet resolves many IDs in one read tx — the pump's bulk
+// enrichment fetch. Unknown IDs are absent from the map.
+func (s *Store) BatchGet(ids []engine.AlertID) (map[engine.AlertID]Alert, error) {
+	out := make(map[engine.AlertID]Alert, len(ids))
+	err := s.db.View(func(tx *bolt.Tx) error {
+		alerts := tx.Bucket(bktAlerts)
+		for _, id := range ids {
+			raw := alerts.Get(id[:])
+			if raw == nil {
+				continue
+			}
+			a, err := decodeAlert(raw)
+			if err != nil {
+				return err
+			}
+			out[id] = a
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// Cancel flips active→cancelled. False for unknown or terminal alerts —
+// terminal stays terminal.
+func (s *Store) Cancel(id engine.AlertID) (bool, error) {
+	n, err := s.CancelBatch([]engine.AlertID{id})
+	return n == 1, err
+}
+
+// CancelBatch flips each active alert to cancelled in one write tx.
+// Bolt's single writer makes the read-check-flip inside the tx atomic
+// against MarkTriggeredBatch — whichever lands first wins.
+func (s *Store) CancelBatch(ids []engine.AlertID) (int, error) {
+	flipped := 0
+	err := s.db.Batch(func(tx *bolt.Tx) error {
+		alerts := tx.Bucket(bktAlerts)
+		for _, id := range ids {
+			a, ok, err := getInTx(alerts, id)
+			if err != nil || !ok || a.State != StateActive {
+				return err
+			}
+			if err := flipState(tx, alerts, &a, StateCancelled, 0, 0); err != nil {
+				return err
+			}
+			flipped++
+		}
+		return nil
+	})
+	return flipped, err
+}
+
+// Fired is one engine trigger to be marked on its alert record.
+type Fired struct {
+	ID    engine.AlertID
+	Price engine.Price
+	At    int64 // unix nanos
+}
+
+// MarkTriggeredBatch flips each fired alert active→triggered, writing
+// fired price/time — iff it is still active when the tx runs (a cancel
+// racing the publish wins; the flip is skipped). Re-writing the four
+// value indexes per flip is idempotent: same key, nil value.
+func (s *Store) MarkTriggeredBatch(fired []Fired) (int, error) {
+	flipped := 0
+	err := s.db.Batch(func(tx *bolt.Tx) error {
+		alerts := tx.Bucket(bktAlerts)
+		for i := range fired {
+			f := &fired[i]
+			a, ok, err := getInTx(alerts, f.ID)
+			if err != nil || !ok || a.State != StateActive {
+				return err
+			}
+			if err := flipState(tx, alerts, &a, StateTriggered, f.Price, f.At); err != nil {
+				return err
+			}
+			flipped++
+		}
+		return nil
+	})
+	return flipped, err
+}
+
+func getInTx(alerts *bolt.Bucket, id engine.AlertID) (Alert, bool, error) {
+	raw := alerts.Get(id[:])
+	if raw == nil {
+		return Alert{}, false, nil
+	}
+	a, err := decodeAlert(raw)
+	if err != nil {
+		return Alert{}, false, err
+	}
+	return a, true, nil
+}
+
+// flipState rewrites one record in a new state, swapping only its
+// idx_state entry (value indexes carry no state).
+func flipState(tx *bolt.Tx, alerts *bolt.Bucket, a *Alert, to State, firedPrice engine.Price, firedAt int64) error {
+	if err := tx.Bucket(bktIdxState).Delete(idxKey(statePrefix(a.State), a.CreatedAt, a.ID)); err != nil {
+		return err
+	}
+	a.State = to
+	a.FiredPrice = firedPrice
+	a.FiredAt = firedAt
+	return putIndexed(tx, a)
+}
+
 func putIndexed(tx *bolt.Tx, a *Alert) error {
 	var buf []byte // grown by appendAlert; tiny, avoids a package-level scratch
 	buf = appendAlert(buf, a)
