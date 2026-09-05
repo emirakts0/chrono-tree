@@ -885,6 +885,7 @@ func TestExpiryRegistrySlotReuse(t *testing.T) {
 	// collision window is wide open when B registers.
 	cfg.ReaperInterval = 200 * time.Millisecond
 	e := New(cfg)
+	defer e.Close() // any Fatalf below must not leak engine goroutines into later tests
 	// A: never-expiring; gets slot X plus a sentinel registration.
 	if err := e.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, 425)); err != nil {
 		t.Fatal(err)
@@ -897,8 +898,23 @@ func TestExpiryRegistrySlotReuse(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.Sync()
-	// Wait past the recycle grace so slot X returns to the free list.
-	time.Sleep(600 * time.Millisecond)
+	// Wait for the reaper to return slot X to the free list. The grace is
+	// 2× interval (400ms), but recycling only happens on a reaper tick, and
+	// the qualifying tick's phase plus scheduling under load can push the
+	// recycle past any fixed sleep — poll the condition instead.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		e.slots.mu.Lock()
+		freed := slices.Contains(e.slots.free, aIdx)
+		e.slots.mu.Unlock()
+		if freed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("slot %d not recycled within 5s", aIdx)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	// B: never-expiring; must recycle slot X and register with a NEW gen.
 	if err := e.Upsert(testSpec(2, "USDTRY", PriceBid, DirGTE, 430)); err != nil {
 		t.Fatal(err)
@@ -910,9 +926,16 @@ func TestExpiryRegistrySlotReuse(t *testing.T) {
 	if bIdx != aIdx {
 		t.Fatalf("setup failed: B got slot %d, wanted recycled %d", bIdx, aIdx)
 	}
-	// Let the reaper drain B's registration, then stop it: after Close the
-	// expiry table is quiescent and safe to inspect from the test.
-	time.Sleep(250 * time.Millisecond)
+	// Let the reaper drain B's registration (channel length is safe to poll;
+	// the table itself stays reaper-owned until Close quiesces it), then
+	// stop it: after Close the expiry table is quiescent and safe to inspect.
+	deadline = time.Now().Add(5 * time.Second)
+	for len(e.expQ) > 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("B registration not drained from expQ within 5s")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	e.Close()
 	bGen := e.slots.gen(bIdx)
 	found := 0
