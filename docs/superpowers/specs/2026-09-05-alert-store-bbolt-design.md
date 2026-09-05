@@ -100,7 +100,7 @@ cmd/chronoctl/         — new "compact" subcommand (offline bbolt.Compact)
 
 The map's RWMutex choreography disappears: bolt serializes writers, so "re-read state inside the write tx" is the atomic check-and-flip. No lock ordering between service and store.
 
-**Failure semantics:** if `MarkTriggeredBatch` fails, the flip is skipped and logged (health-transition style, like the NATS publisher). The trigger was already published; the record stays `active` and may re-fire on a later tick — at-least-once duplication is visible, silent loss is not.
+**Failure semantics:** if `MarkTriggeredBatch` fails, the flip is skipped and logged (health-transition style, like the NATS publisher). The trigger was already published; the record stays `active` and re-enters the engine via replay at the next restart (the engine drops its own refs at fire time) — at-least-once duplication is visible, silent loss is not.
 
 ## 7. Read paths
 

@@ -106,7 +106,8 @@ func TestPublishDropWhenPublisherFails(t *testing.T) {
 		t.Fatal("failing publisher should not record triggers")
 	}
 	// The alert stays active: only published triggers are marked fired,
-	// so a delivery failure leaves it armed — it re-fires on a later tick
+	// so a delivery failure leaves the record active — the engine has
+	// dropped its refs, so it re-enters via replay at the next restart
 	// (visible duplication beats silent loss).
 	if got := e.core.AlertsByState()["active"]; got != 1 {
 		t.Fatalf("active state count = %d, want 1", got)

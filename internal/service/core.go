@@ -552,8 +552,9 @@ func (c *Core) pump() {
 // resolves every alert, each active alert's trigger is published, then
 // ONE write tx flips the published ones to triggered (writing
 // fired_price/fired_at). A store failure at either end leaves the
-// alerts active — they re-fire on a later tick: visible duplication
-// beats silent loss.
+// records active — the engine has already dropped its refs at fire
+// time, so they re-enter via replay at the next restart: visible
+// duplication beats silent loss.
 func (c *Core) deliverBatch(batch []engine.Trigger) {
 	ids := make([]engine.AlertID, len(batch))
 	for i := range batch {
@@ -564,8 +565,9 @@ func (c *Core) deliverBatch(batch []engine.Trigger) {
 	if err != nil {
 		for range batch {
 			c.stats.TriggersFired.Add(1)
+			c.stats.FireRate.Add(1, now)
 		}
-		slog.Warn("trigger enrichment failed; batch lost, alerts stay active", "err", err)
+		slog.Warn("trigger enrichment failed; batch lost, records stay active until restart", "err", err)
 		return
 	}
 	var fired []alertstore.Fired
@@ -609,7 +611,7 @@ func (c *Core) deliverBatch(batch []engine.Trigger) {
 	}
 	flipped, err := c.store.MarkTriggeredBatch(fired)
 	if err != nil {
-		slog.Warn("mark triggered failed; alerts stay active and may re-fire", "err", err)
+		slog.Warn("mark triggered failed; records stay active until restart", "err", err)
 		return
 	}
 	c.active.Add(-int64(flipped))
