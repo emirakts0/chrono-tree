@@ -65,7 +65,7 @@ func TestStreamContractBatched(t *testing.T) {
 	if !ok {
 		t.Fatalf("hello.history missing: %v", hello)
 	}
-	for _, k := range []string{"t", "f", "l", "v"} {
+	for _, k := range []string{"t", "f", "l", "c", "m", "v"} {
 		if _, ok := hist[k]; !ok {
 			t.Fatalf("hello.history.%s missing: %v", k, hist)
 		}
@@ -85,7 +85,7 @@ func TestStreamContractBatched(t *testing.T) {
 		case "snapshot":
 			sawSnapshot = true
 			snap := f["snapshot"].(map[string]any)
-			for _, k := range []string{"ticks", "ticks_per_sec", "triggers_fired", "alerts_by_state", "nats_connected", "venue_ticks", "engine"} {
+			for _, k := range []string{"ticks", "ticks_per_sec", "triggers_fired", "alerts_by_state", "nats_connected", "venue_ticks", "engine", "sys"} {
 				if _, ok := snap[k]; !ok {
 					t.Fatalf("snapshot.%s missing", k)
 				}
@@ -157,13 +157,15 @@ func TestTriggerRingConcurrent(t *testing.T) {
 }
 
 // TestHistorySampling: 130 samples cap at 120; venue rates are deltas of
-// cumulative counters (first sample 0).
+// cumulative counters (first sample 0); the sys series (cpu/rss) ride
+// the same cap.
 func TestHistorySampling(t *testing.T) {
 	h := newHistory()
 	v := statusView{
 		TicksPerSec:    100,
 		TriggersPerSec: 2,
 		Engine:         engineView{Live: 7},
+		Sys:            sysView{HostCPUPercent: 12.5, RSSBytes: 4096},
 		VenueTicks:     map[string]uint64{"ATLAS": 1000},
 	}
 	for i := 0; i < 130; i++ {
@@ -174,6 +176,12 @@ func TestHistorySampling(t *testing.T) {
 	view := h.view()
 	if len(view.T) != 120 || len(view.F) != 120 || len(view.L) != 120 {
 		t.Fatalf("lengths = %d/%d/%d, want 120/120/120", len(view.T), len(view.F), len(view.L))
+	}
+	if len(view.C) != 120 || len(view.M) != 120 {
+		t.Fatalf("sys lengths = %d/%d, want 120/120", len(view.C), len(view.M))
+	}
+	if view.C[0] != 12.5 || view.M[0] != 4096 {
+		t.Fatalf("c/m = %v/%v, want 12.5/4096", view.C[0], view.M[0])
 	}
 	if view.T[0] != 100 || view.F[0] != 2 {
 		t.Fatalf("t/f = %v/%v, want 100/2", view.T[0], view.F[0])

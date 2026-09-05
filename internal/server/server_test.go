@@ -23,16 +23,18 @@ import (
 	"github.com/emir/chrono-tree/internal/stats"
 )
 
-// openStore opens a throwaway store for one test; its cleanup registers
-// before any core.Close cleanup, so the store closes after the core.
-func openStore(t *testing.T) *alertstore.Store {
+// openStore opens a throwaway store for one test and returns its path
+// (the sys metrics report on it); its cleanup registers before any
+// core.Close cleanup, so the store closes after the core.
+func openStore(t *testing.T) (*alertstore.Store, string) {
 	t.Helper()
-	s, err := alertstore.Open(filepath.Join(t.TempDir(), "alerts.bbolt"))
+	path := filepath.Join(t.TempDir(), "alerts.bbolt")
+	s, err := alertstore.Open(path)
 	if err != nil {
 		t.Fatalf("alertstore.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	return s
+	return s, path
 }
 
 // fakeFeedStream drives StreamTicks without a gRPC server.
@@ -56,10 +58,10 @@ func newServer(t *testing.T) *Server {
 	t.Helper()
 	now := time.Now()
 	reg := prometheus.NewRegistry()
-	store := openStore(t)
+	store, dbPath := openStore(t)
 	core := service.NewCore(engine.DefaultConfig(), catalog.Default(), service.NoopMetrics{}, stats.New(now), pub.Noop{}, store)
 	t.Cleanup(core.Close)
-	s := New(core, stats.New(now), reg)
+	s := New(core, stats.New(now), reg, dbPath)
 	t.Cleanup(s.Close)
 	return s
 }
@@ -118,10 +120,10 @@ func TestReadyzStaleUnderSynctest(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		now := time.Now()
 		reg := prometheus.NewRegistry()
-		store := openStore(t)
+		store, dbPath := openStore(t)
 		core := service.NewCore(engine.DefaultConfig(), catalog.Default(), service.NoopMetrics{}, stats.New(now), pub.Noop{}, store)
 		defer core.Close()
-		s := New(core, stats.New(now), reg)
+		s := New(core, stats.New(now), reg, dbPath)
 		defer s.Close()
 		ts := httptest.NewTestServer(t, s.Handler())
 		defer ts.Close()
@@ -164,9 +166,18 @@ func TestStatsJSON(t *testing.T) {
 	}
 	for _, key := range []string{"uptime_sec", "alerts_by_state", "feed_ever_connected", "venue_ticks",
 		"ticks", "ticks_per_sec", "triggers_fired", "triggers_published", "triggers_publish_dropped",
-		"nats_connected", "engine"} {
+		"nats_connected", "engine", "sys"} {
 		if _, ok := body[key]; !ok {
 			t.Fatalf("stats missing %q: %v", key, body)
+		}
+	}
+	sys, ok := body["sys"].(map[string]any)
+	if !ok {
+		t.Fatalf("sys is %T, want an object", body["sys"])
+	}
+	for _, key := range []string{"rss_bytes", "host_cpu_percent", "db_bytes"} {
+		if _, ok := sys[key]; !ok {
+			t.Fatalf("stats.sys missing %q: %v", key, sys)
 		}
 	}
 }
@@ -207,10 +218,10 @@ func TestMetricsEndpoint(t *testing.T) {
 	now := time.Now()
 	reg := prometheus.NewRegistry()
 	pm := NewPromMetrics(reg)
-	store := openStore(t)
+	store, dbPath := openStore(t)
 	core := service.NewCore(engine.DefaultConfig(), catalog.Default(), pm, stats.New(now), pub.Noop{}, store)
 	t.Cleanup(core.Close)
-	s := New(core, stats.New(now), reg)
+	s := New(core, stats.New(now), reg, dbPath)
 	t.Cleanup(s.Close) // stop the tick goroutine
 	ts := httptest.NewServer(s.Handler())
 	defer ts.Close()
@@ -229,6 +240,9 @@ func TestMetricsEndpoint(t *testing.T) {
 		"chrono_ticks_total", "chrono_triggers_fired_total", "chrono_triggers_published_total",
 		"chrono_triggers_publish_dropped_total", "chrono_ticks_dropped_total", "chrono_alerts_active",
 		"chrono_nats_connected", "chrono_feed_connected", "chrono_tick_batch_size", "chrono_tick_latency_seconds",
+		"chrono_process_resident_bytes", "chrono_go_heap_bytes", "chrono_host_mem_used_bytes",
+		"chrono_host_mem_total_bytes", "chrono_host_cpu_percent", "chrono_process_cpu_percent",
+		"chrono_cpu_cores", "chrono_alertstore_bytes", "chrono_disk_free_bytes",
 	} {
 		if !strings.Contains(text, name) {
 			t.Fatalf("metrics missing %s", name)

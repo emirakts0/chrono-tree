@@ -45,12 +45,16 @@ type Server struct {
 	hub      *sseHub
 	ring     triggerRing
 	hist     *history
+	sys      *sysSampler
+	latestSys atomic.Pointer[sysSample] // last sample; /metrics reads, never samples
 	stopTick chan struct{}
 	stopOnce sync.Once
 	shutting atomic.Bool
 }
 
-func New(core *service.Core, st *stats.Stats, reg *prometheus.Registry) *Server {
+// New builds the status server. dbPath is the alert-store file whose
+// size and filesystem the sys metrics report; "" disables those fields.
+func New(core *service.Core, st *stats.Stats, reg *prometheus.Registry, dbPath string) *Server {
 	reg.MustRegister(prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 		Name: "chrono_nats_connected", Help: "1 while the NATS publisher connection is up.",
 	}, func() float64 {
@@ -61,10 +65,47 @@ func New(core *service.Core, st *stats.Stats, reg *prometheus.Registry) *Server 
 	}))
 	s := &Server{
 		core: core, stats: st, reg: reg, hub: newSSEHub(),
-		hist: newHistory(), stopTick: make(chan struct{}),
+		hist: newHistory(), sys: newSysSampler(dbPath), stopTick: make(chan struct{}),
 	}
+	registerSysGauges(reg, &s.latestSys)
 	go s.runTick(s.stopTick)
 	return s
+}
+
+// registerSysGauges exposes the cached sys sample as Prometheus gauges.
+// They read latestSys (never sampling) so a scrape cannot perturb the
+// 1 Hz sampler's CPU delta windows. The daemon runs a private registry
+// without the Go collector or node_exporter — these are the only
+// process/host gauges it has.
+func registerSysGauges(reg *prometheus.Registry, latest *atomic.Pointer[sysSample]) {
+	g := func(name, help string, f func(*sysSample) float64) {
+		reg.MustRegister(prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Name: name, Help: help,
+		}, func() float64 {
+			if s := latest.Load(); s != nil {
+				return f(s)
+			}
+			return 0
+		}))
+	}
+	g("chrono_process_resident_bytes", "Resident set size of chronod (engine + services).",
+		func(s *sysSample) float64 { return float64(s.RSSBytes) })
+	g("chrono_go_heap_bytes", "In-use Go heap (runtime.HeapAlloc).",
+		func(s *sysSample) float64 { return float64(s.HeapBytes) })
+	g("chrono_host_mem_used_bytes", "Host RAM in use.",
+		func(s *sysSample) float64 { return float64(s.HostMemUsed) })
+	g("chrono_host_mem_total_bytes", "Host RAM total.",
+		func(s *sysSample) float64 { return float64(s.HostMemTotal) })
+	g("chrono_host_cpu_percent", "Host CPU utilization across all cores, 0-100.",
+		func(s *sysSample) float64 { return s.HostCPUPercent })
+	g("chrono_process_cpu_percent", "chronod CPU use, percent of one core (can exceed 100).",
+		func(s *sysSample) float64 { return s.ProcCPUPercent })
+	g("chrono_cpu_cores", "Logical CPU cores available.",
+		func(s *sysSample) float64 { return float64(s.Cores) })
+	g("chrono_alertstore_bytes", "Alert-store (bbolt) file size.",
+		func(s *sysSample) float64 { return float64(max(s.DBBytes, 0)) })
+	g("chrono_disk_free_bytes", "Free space on the alert store's filesystem.",
+		func(s *sysSample) float64 { return float64(s.DiskFreeBytes) })
 }
 
 // Close stops the 1s tick goroutine. Idempotent.
@@ -166,11 +207,28 @@ type statusView struct {
 	TriggersPublished      uint64            `json:"triggers_published"`
 	TriggersPublishDropped uint64            `json:"triggers_publish_dropped"`
 	Engine                 engineView        `json:"engine"`
+	Sys                    sysView           `json:"sys"`
 }
 
 type engineView struct {
 	Live            uint64 `json:"live"`
 	DroppedTriggers uint64 `json:"dropped_triggers"`
+}
+
+// sysView is the resource-usage section of the snapshot. Same shape as
+// sysSample; a distinct type keeps the wire contract free of sampler
+// internals.
+type sysView struct {
+	RSSBytes       uint64  `json:"rss_bytes"`
+	HeapBytes      uint64  `json:"heap_bytes"`
+	HostMemUsed    uint64  `json:"host_mem_used_bytes"`
+	HostMemTotal   uint64  `json:"host_mem_total_bytes"`
+	HostCPUPercent float64 `json:"host_cpu_percent"`
+	ProcCPUPercent float64 `json:"proc_cpu_percent"`
+	Cores          int     `json:"cpu_cores"`
+	DBBytes        int64   `json:"db_bytes"`
+	DiskFreeBytes  uint64  `json:"disk_free_bytes"`
+	DiskTotalBytes uint64  `json:"disk_total_bytes"`
 }
 
 // statusSnapshot builds the current /stats document.
@@ -197,6 +255,9 @@ func (s *Server) statusSnapshot() statusView {
 	if last := s.core.FeedLastSeen(); !last.IsZero() {
 		view.FeedLastSeenMsAgo = time.Since(last).Milliseconds()
 	}
+	sv := s.sys.sample()
+	s.latestSys.Store(&sv)
+	view.Sys = sysView(sv)
 	return view
 }
 
@@ -239,6 +300,7 @@ const histSamples = 120
 type history struct {
 	mu      sync.Mutex
 	t, f, l []float64            // ticks/s, triggers/s, engine.live
+	c, m    []float64            // host cpu %, process rss bytes
 	v       map[string][]float64 // per-venue ticks/s
 	lastV   map[string]uint64    // cumulative venue_ticks at last sample
 }
@@ -247,11 +309,13 @@ func newHistory() *history {
 	return &history{v: make(map[string][]float64), lastV: make(map[string]uint64)}
 }
 
-// historyView is the wire shape; keys are short (480 numbers per hello).
+// historyView is the wire shape; keys are short (720 numbers per hello).
 type historyView struct {
 	T []float64            `json:"t"`
 	F []float64            `json:"f"`
 	L []float64            `json:"l"`
+	C []float64            `json:"c"`
+	M []float64            `json:"m"`
 	V map[string][]float64 `json:"v"`
 }
 
@@ -274,6 +338,8 @@ func (h *history) sample(v statusView) {
 	h.t = appendCapped(h.t, v.TicksPerSec)
 	h.f = appendCapped(h.f, v.TriggersPerSec)
 	h.l = appendCapped(h.l, float64(v.Engine.Live))
+	h.c = appendCapped(h.c, v.Sys.HostCPUPercent)
+	h.m = appendCapped(h.m, float64(v.Sys.RSSBytes))
 	for venue, total := range v.VenueTicks {
 		rate := float64(total - h.lastV[venue])
 		h.lastV[venue] = total
@@ -286,11 +352,14 @@ func (h *history) view() historyView {
 	defer h.mu.Unlock()
 	out := historyView{
 		T: make([]float64, len(h.t)), F: make([]float64, len(h.f)),
-		L: make([]float64, len(h.l)), V: make(map[string][]float64, len(h.v)),
+		L: make([]float64, len(h.l)), C: make([]float64, len(h.c)),
+		M: make([]float64, len(h.m)), V: make(map[string][]float64, len(h.v)),
 	}
 	copy(out.T, h.t)
 	copy(out.F, h.f)
 	copy(out.L, h.l)
+	copy(out.C, h.c)
+	copy(out.M, h.m)
 	for venue, s := range h.v {
 		out.V[venue] = append([]float64(nil), s...)
 	}

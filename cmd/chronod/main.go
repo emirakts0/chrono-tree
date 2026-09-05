@@ -78,7 +78,7 @@ func run(ctx context.Context, grpcAddr, httpAddr, natsURL, dbPath string) error 
 	core := service.NewCore(engine.DefaultConfig(), catalog.Default(), pm, st, publisher, store)
 	defer core.Close() // stops the pump, then the engine (idempotent)
 
-	statusSrv := server.New(core, st, reg)
+	statusSrv := server.New(core, st, reg, dbPath)
 	defer statusSrv.Close() // stop the 1s tick engine at exit (idempotent)
 
 	// Dashboard live feed: re-consume our own published triggers. The

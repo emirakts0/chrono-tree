@@ -13,6 +13,18 @@ export interface Snapshot {
   triggers_published: number;
   triggers_publish_dropped: number;
   engine: { live: number; dropped_triggers: number };
+  sys: {
+    rss_bytes: number;
+    heap_bytes: number;
+    host_mem_used_bytes: number;
+    host_mem_total_bytes: number;
+    host_cpu_percent: number;
+    proc_cpu_percent: number;
+    cpu_cores: number;
+    db_bytes: number;
+    disk_free_bytes: number;
+    disk_total_bytes: number;
+  };
 }
 
 export interface Trigger {
@@ -31,6 +43,8 @@ export interface History {
   t: number[]; // ticks/s
   f: number[]; // triggers/s
   l: number[]; // engine.live
+  c: number[]; // host cpu %
+  m: number[]; // process rss bytes
   v: Record<string, number[]>; // per-venue ticks/s
 }
 
@@ -49,6 +63,8 @@ export const state = {
     ticks: [] as number[],   // ticks/s, seeded from hello.history.t
     fires: [] as number[],   // triggers/s, seeded from hello.history.f
     live: [] as number[],    // engine.live, seeded from hello.history.l
+    cpu: [] as number[],     // host cpu %, seeded from hello.history.c
+    rss: [] as number[],     // process rss bytes, seeded from hello.history.m
     venues: {} as Record<string, number[]>,
   },
 };
@@ -68,6 +84,8 @@ export function seedHistory(h: History): void {
   state.series.ticks = [...h.t];
   state.series.fires = [...h.f];
   state.series.live = [...h.l];
+  state.series.cpu = [...h.c];
+  state.series.rss = [...h.m];
   state.series.venues = Object.fromEntries(
     Object.entries(h.v).map(([venue, s]) => [venue, [...s]]),
   );
@@ -87,6 +105,10 @@ export function pushSample(s: Snapshot): void {
   capPush(state.series.ticks, s.ticks_per_sec);
   capPush(state.series.fires, s.triggers_per_sec);
   capPush(state.series.live, s.engine.live);
+  if (s.sys) {
+    capPush(state.series.cpu, s.sys.host_cpu_percent);
+    capPush(state.series.rss, s.sys.rss_bytes);
+  }
   for (const [venue, total] of Object.entries(s.venue_ticks)) {
     pushVenueSample(venue, total);
   }

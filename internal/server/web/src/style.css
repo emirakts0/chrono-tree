@@ -151,6 +151,12 @@ body {
   padding: 3px 8px; border-radius: 4px;
 }
 #engine .row .mono { font-size: 15px; }
+/* host-resources section below the divider: cpu/rss rows carry an
+   inline trend (last 40 samples) next to the value. */
+#engine .hr { border-top: 1px solid rgba(191,179,173,.4); margin: 6px 0 2px; }
+#engine .row .vmeta { display: inline-block; width: 90px; margin-left: 10px; vertical-align: middle; color: var(--linen-ink); }
+#engine .row .vmeta:empty { display: none; }
+#engine .row .meta { text-transform: none; letter-spacing: 0; background: none; padding: 0; }
 
 /* ---- trigger rail: dark observation slit ---- */
 .card.rail { background: var(--graphite); color: var(--linen); min-height: 0; }
