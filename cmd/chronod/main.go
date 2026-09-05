@@ -24,6 +24,7 @@ import (
 
 	chronov1 "github.com/emir/chrono-tree/api/gen/chrono/v1"
 	"github.com/emir/chrono-tree/engine"
+	"github.com/emir/chrono-tree/internal/alertstore"
 	"github.com/emir/chrono-tree/internal/catalog"
 	"github.com/emir/chrono-tree/internal/pub"
 	"github.com/emir/chrono-tree/internal/server"
@@ -38,19 +39,20 @@ func main() {
 	grpcAddr := flag.String("grpc-addr", ":9090", "gRPC listen address")
 	httpAddr := flag.String("http-addr", ":8080", "HTTP status listen address")
 	natsURL := flag.String("nats-url", "nats://localhost:4222", "NATS server URL (trigger publishing)")
+	alertsPath := flag.String("alerts-path", "alerts.bbolt", "path to the persistent alert store")
 	flag.Parse()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	if err := run(ctx, *grpcAddr, *httpAddr, *natsURL); err != nil {
+	if err := run(ctx, *grpcAddr, *httpAddr, *natsURL, *alertsPath); err != nil {
 		slog.Error("chronod exit", "err", err)
 		os.Exit(1)
 	}
 	slog.Info("chronod stopped")
 }
 
-func run(ctx context.Context, grpcAddr, httpAddr, natsURL string) error {
+func run(ctx context.Context, grpcAddr, httpAddr, natsURL, alertsPath string) error {
 	// NATS is a boot dependency: unreachable broker is a fatal error.
 	// Later outages reconnect forever; publishes during them drop-and-count.
 	publisher, err := pub.NewNATS(natsURL)
@@ -63,8 +65,13 @@ func run(ctx context.Context, grpcAddr, httpAddr, natsURL string) error {
 	reg := prometheus.NewRegistry()
 	pm := server.NewPromMetrics(reg)
 	st := stats.New(now)
-	core := service.NewCore(engine.DefaultConfig(), catalog.Default(), pm, st, publisher)
-	defer core.Close()
+	store, err := alertstore.Open(alertsPath)
+	if err != nil {
+		return fmt.Errorf("alert store: %w", err)
+	}
+	core := service.NewCore(engine.DefaultConfig(), catalog.Default(), pm, st, publisher, store)
+	defer store.Close() // registered first → runs last, after core.Close
+	defer core.Close()  // stops the pump, then the engine (idempotent)
 
 	statusSrv := server.New(core, st, reg)
 	defer statusSrv.Close() // stop the 1s tick engine at exit (idempotent)

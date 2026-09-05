@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"net"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 
 	chronov1 "github.com/emir/chrono-tree/api/gen/chrono/v1"
 	"github.com/emir/chrono-tree/engine"
+	"github.com/emir/chrono-tree/internal/alertstore"
 	"github.com/emir/chrono-tree/internal/catalog"
 	"github.com/emir/chrono-tree/internal/pub"
 	"github.com/emir/chrono-tree/internal/service"
@@ -24,7 +26,12 @@ func TestMain(m *testing.M) { goleak.VerifyTestMain(m) }
 func newCore(t *testing.T) (*service.Core, *grpc.ClientConn) {
 	t.Helper()
 	now := time.Now()
-	core := service.NewCore(engine.DefaultConfig(), catalog.Default(), service.NoopMetrics{}, stats.New(now), pub.Noop{})
+	store, err := alertstore.Open(filepath.Join(t.TempDir(), "alerts.bbolt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() }) // registered first → runs last, after core.Close
+	core := service.NewCore(engine.DefaultConfig(), catalog.Default(), service.NoopMetrics{}, stats.New(now), pub.Noop{}, store)
 	t.Cleanup(core.Close)
 	lis := bufconn.Listen(1 << 20)
 	srv := grpc.NewServer()

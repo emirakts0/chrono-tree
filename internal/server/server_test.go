@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -15,11 +16,24 @@ import (
 
 	chronov1 "github.com/emir/chrono-tree/api/gen/chrono/v1"
 	"github.com/emir/chrono-tree/engine"
+	"github.com/emir/chrono-tree/internal/alertstore"
 	"github.com/emir/chrono-tree/internal/catalog"
 	"github.com/emir/chrono-tree/internal/pub"
 	"github.com/emir/chrono-tree/internal/service"
 	"github.com/emir/chrono-tree/internal/stats"
 )
+
+// openStore opens a throwaway store for one test; its cleanup registers
+// before any core.Close cleanup, so the store closes after the core.
+func openStore(t *testing.T) *alertstore.Store {
+	t.Helper()
+	s, err := alertstore.Open(filepath.Join(t.TempDir(), "alerts.bbolt"))
+	if err != nil {
+		t.Fatalf("alertstore.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	return s
+}
 
 // fakeFeedStream drives StreamTicks without a gRPC server.
 type fakeFeedStream struct {
@@ -42,7 +56,8 @@ func newServer(t *testing.T) *Server {
 	t.Helper()
 	now := time.Now()
 	reg := prometheus.NewRegistry()
-	core := service.NewCore(engine.DefaultConfig(), catalog.Default(), service.NoopMetrics{}, stats.New(now), pub.Noop{})
+	store := openStore(t)
+	core := service.NewCore(engine.DefaultConfig(), catalog.Default(), service.NoopMetrics{}, stats.New(now), pub.Noop{}, store)
 	t.Cleanup(core.Close)
 	s := New(core, stats.New(now), reg)
 	t.Cleanup(s.Close)
@@ -103,7 +118,8 @@ func TestReadyzStaleUnderSynctest(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		now := time.Now()
 		reg := prometheus.NewRegistry()
-		core := service.NewCore(engine.DefaultConfig(), catalog.Default(), service.NoopMetrics{}, stats.New(now), pub.Noop{})
+		store := openStore(t)
+		core := service.NewCore(engine.DefaultConfig(), catalog.Default(), service.NoopMetrics{}, stats.New(now), pub.Noop{}, store)
 		defer core.Close()
 		s := New(core, stats.New(now), reg)
 		defer s.Close()
@@ -191,7 +207,8 @@ func TestMetricsEndpoint(t *testing.T) {
 	now := time.Now()
 	reg := prometheus.NewRegistry()
 	pm := NewPromMetrics(reg)
-	core := service.NewCore(engine.DefaultConfig(), catalog.Default(), pm, stats.New(now), pub.Noop{})
+	store := openStore(t)
+	core := service.NewCore(engine.DefaultConfig(), catalog.Default(), pm, stats.New(now), pub.Noop{}, store)
 	t.Cleanup(core.Close)
 	s := New(core, stats.New(now), reg)
 	t.Cleanup(s.Close) // stop the tick goroutine

@@ -63,6 +63,12 @@ func TestPublishesEnrichedTrigger(t *testing.T) {
 	if got := msg.Header.Get("Nats-Msg-Id"); got != resp.GetAlertId() {
 		t.Fatalf("Nats-Msg-Id = %q", got)
 	}
+	// The state flip is a separate store write after the publish — poll
+	// for it rather than racing the pump's MarkTriggeredBatch.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && e.core.AlertsByState()["triggered"] != 1 {
+		time.Sleep(time.Millisecond)
+	}
 	if got := e.core.AlertsByState()["triggered"]; got != 1 {
 		t.Fatalf("triggered state count = %d, want 1", got)
 	}
@@ -99,9 +105,13 @@ func TestPublishDropWhenPublisherFails(t *testing.T) {
 	if len(e.rec.triggers()) != 0 {
 		t.Fatal("failing publisher should not record triggers")
 	}
-	// The alert still flipped to triggered: a delivery failure must not
-	// rewind alert state.
-	if got := e.core.AlertsByState()["triggered"]; got != 1 {
-		t.Fatalf("triggered state count = %d, want 1", got)
+	// The alert stays active: only published triggers are marked fired,
+	// so a delivery failure leaves it armed — it re-fires on a later tick
+	// (visible duplication beats silent loss).
+	if got := e.core.AlertsByState()["active"]; got != 1 {
+		t.Fatalf("active state count = %d, want 1", got)
+	}
+	if got := e.core.AlertsByState()["triggered"]; got != 0 {
+		t.Fatalf("triggered state count = %d, want 0", got)
 	}
 }

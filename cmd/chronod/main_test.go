@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -22,7 +23,9 @@ func TestRunNATSUnavailableIsFatal(t *testing.T) {
 	defer cancel()
 	// Port 1 never answers; run must return promptly with an error.
 	done := make(chan error, 1)
-	go func() { done <- run(ctx, freeAddr(t), freeAddr(t), "nats://127.0.0.1:1") }()
+	go func() {
+		done <- run(ctx, freeAddr(t), freeAddr(t), "nats://127.0.0.1:1", filepath.Join(t.TempDir(), "alerts.bbolt"))
+	}()
 	select {
 	case err := <-done:
 		if err == nil {
@@ -38,7 +41,7 @@ func TestRunServesHTTP(t *testing.T) {
 	grpcAddr, httpAddr := freeAddr(t), freeAddr(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- run(ctx, grpcAddr, httpAddr, natsURL) }()
+	go func() { done <- run(ctx, grpcAddr, httpAddr, natsURL, filepath.Join(t.TempDir(), "alerts.bbolt")) }()
 
 	deadline := time.Now().Add(10 * time.Second)
 	ok := false

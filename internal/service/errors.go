@@ -16,6 +16,11 @@ func invalidf(format string, args ...any) error {
 	return status.Errorf(codes.InvalidArgument, format, args...)
 }
 
+// internalf builds an Internal status — the store broke.
+func internalf(format string, args ...any) error {
+	return status.Errorf(codes.Internal, format, args...)
+}
+
 // mapEngineErr maps control-plane engine errors to gRPC statuses. One
 // place, so handlers stay one-liners.
 func mapEngineErr(err error) error {

@@ -4,15 +4,11 @@
 package service
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
-	"slices"
-	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -21,6 +17,7 @@ import (
 
 	chronov1 "github.com/emir/chrono-tree/api/gen/chrono/v1"
 	"github.com/emir/chrono-tree/engine"
+	"github.com/emir/chrono-tree/internal/alertstore"
 	"github.com/emir/chrono-tree/internal/catalog"
 	"github.com/emir/chrono-tree/internal/pub"
 	"github.com/emir/chrono-tree/internal/stats"
@@ -54,8 +51,9 @@ func (NoopMetrics) TriggerPublishDropped()              {}
 func (NoopMetrics) AlertsActive(int)                    {}
 func (NoopMetrics) FeedConnected(bool)                  {}
 
-// AlertState is the service-side lifecycle view.
-type AlertState string
+// AlertState is the service-side lifecycle view (string form for the
+// monitoring surface; storage uses alertstore.State).
+type AlertState = string
 
 const (
 	StateActive    AlertState = "active"
@@ -63,22 +61,17 @@ const (
 	StateCancelled AlertState = "cancelled"
 )
 
-// Alert is the service-side catalog entry: everything needed to enrich a
-// raw engine Trigger into a chrono.v1.Trigger, kept AFTER the engine drops
-// its own refs (fire removes them) — that removal race is why this map
-// exists.
-type Alert struct {
-	ID          engine.AlertID
-	Symbol      string
-	Decimals    uint8
-	Venue, Tier string
-	PriceType   engine.PriceType
-	Direction   engine.Direction
-	TargetPrice engine.Price
-	ValidFrom   int64
-	Expires     int64
-	State       AlertState
-	CreatedAt   time.Time
+// storeState maps the wire/monitoring state name to the store state.
+func storeState(s string) (alertstore.State, bool) {
+	switch s {
+	case StateActive:
+		return alertstore.StateActive, true
+	case StateTriggered:
+		return alertstore.StateTriggered, true
+	case StateCancelled:
+		return alertstore.StateCancelled, true
+	}
+	return 0, false
 }
 
 // Core implements both chrono.v1 services.
@@ -92,9 +85,13 @@ type Core struct {
 	stats   *stats.Stats
 	now     func() time.Time
 
-	mu          sync.RWMutex
-	alerts      map[engine.AlertID]*Alert
-	stateCounts map[AlertState]int // under mu; O(1) state tallies
+	store *alertstore.Store
+
+	// State gauges for /stats and Prometheus — tallies, not a log:
+	// maintained alongside store writes, never queried from here.
+	active    atomic.Int64
+	triggered atomic.Int64
+	cancelled atomic.Int64
 
 	pumpCtx    context.Context
 	pumpCancel context.CancelFunc
@@ -109,23 +106,28 @@ type Core struct {
 	venueTicks map[string]*atomic.Uint64 // venue → accepted ticks; fixed keys, written at construction
 }
 
-// NewCore builds the engine with the catalog's dim vocabulary. The
+// NewCore builds the engine with the catalog's dim vocabulary, replays
+// the store's active set into it, and starts the trigger pump. The
 // publisher receives every enriched trigger; nil falls back to pub.Noop
-// (a nil would otherwise panic at the first deliver, far from the cause).
-func NewCore(cfg engine.Config, cat *catalog.Catalog, m Metrics, st *stats.Stats, p pub.Publisher) *Core {
+// (a nil would otherwise panic at the first deliver, far from the
+// cause). A nil store is a programming error — same class as a nil
+// catalog — and panics here, before any listener exists.
+func NewCore(cfg engine.Config, cat *catalog.Catalog, m Metrics, st *stats.Stats, p pub.Publisher, store *alertstore.Store) *Core {
 	if p == nil {
 		p = pub.Noop{}
 	}
+	if store == nil {
+		panic("service: alertstore is required")
+	}
 	cfg.Dims = cat.Dims() // the catalog owns the vocabulary
 	c := &Core{
-		Cat:         cat,
-		eng:         engine.New(cfg),
-		metrics:     m,
-		stats:       st,
-		pub:         p,
-		now:         func() time.Time { return time.Now() },
-		alerts:      make(map[engine.AlertID]*Alert),
-		stateCounts: make(map[AlertState]int),
+		Cat:     cat,
+		eng:     engine.New(cfg),
+		store:   store,
+		metrics: m,
+		stats:   st,
+		pub:     p,
+		now:     func() time.Time { return time.Now() },
 	}
 	// Healthy until a publish fails: "recovered" must only ever log after
 	// an actual failure, never on the process's first publish.
@@ -134,10 +136,88 @@ func NewCore(cfg engine.Config, cat *catalog.Catalog, m Metrics, st *stats.Stats
 	for _, v := range cat.DimValues(catalog.DimVenue) {
 		c.venueTicks[v] = &atomic.Uint64{}
 	}
+	c.replay()
 	c.pumpCtx, c.pumpCancel = context.WithCancel(context.Background())
 	c.pumpDone = make(chan struct{})
 	go c.pump()
 	return c
+}
+
+// replay restores the persisted active set into the fresh engine:
+// alerts that expired while down flip to cancelled in one batched write;
+// the rest re-enter the engine (valid_from still applies — the engine
+// gates matching on it). Runs before the pump exists, so nothing can
+// fire mid-replay. A store that cannot be read is fatal at construction:
+// source of truth or nothing.
+func (c *Core) replay() {
+	now := c.now()
+	var restored, expired, skipped int
+	var expiredIDs []engine.AlertID
+	err := c.store.EachActive(func(a alertstore.Alert) error {
+		if a.Expires != 0 && a.Expires <= now.UnixNano() {
+			expired++
+			expiredIDs = append(expiredIDs, a.ID)
+			return nil
+		}
+		spec, ok := c.specFrom(a)
+		if !ok {
+			skipped++ // catalog drifted from the record; loud count, not a boot failure
+			return nil
+		}
+		if err := c.eng.Upsert(spec); err != nil {
+			return fmt.Errorf("replay upsert %s: %w", alertIDString(a.ID), err)
+		}
+		restored++
+		return nil
+	})
+	if err != nil {
+		panic(fmt.Sprintf("service: alert store replay: %v", err))
+	}
+	if len(expiredIDs) > 0 {
+		if _, err := c.store.CancelBatch(expiredIDs); err != nil {
+			panic(fmt.Sprintf("service: expire while replaying: %v", err))
+		}
+	}
+	c.eng.Sync()
+	if a, tr, cn, err := c.store.Counts(); err != nil {
+		panic(fmt.Sprintf("service: alert store counts: %v", err))
+	} else {
+		c.active.Store(int64(a))
+		c.triggered.Store(int64(tr))
+		c.cancelled.Store(int64(cn))
+	}
+	slog.Info("alert store replay",
+		"restored", restored, "expired", expired, "skipped", skipped)
+}
+
+// specFrom rebuilds the engine submission for a persisted record.
+// Dims are re-interned through the catalog (the engine owns uint16
+// values; the store owns names).
+func (c *Core) specFrom(a alertstore.Alert) (engine.AlertSpec, bool) {
+	sym, ok := c.Cat.Symbol(a.Symbol)
+	if !ok {
+		return engine.AlertSpec{}, false
+	}
+	vv, ok := c.Cat.Value(catalog.DimVenue, a.Venue)
+	if !ok {
+		return engine.AlertSpec{}, false
+	}
+	tv, ok := c.Cat.Value(catalog.DimTier, a.Tier)
+	if !ok {
+		return engine.AlertSpec{}, false
+	}
+	return engine.AlertSpec{
+		ID: a.ID, Symbol: sym.Name, PriceType: a.PriceType, Direction: a.Direction,
+		TargetPrice:    a.TargetPrice,
+		ValidFrom:      a.ValidFrom,
+		Expires:        a.Expires,
+		AutoDeactivate: a.AutoDeactivate,
+		Dims:           engine.Dims(vv, tv),
+		Meta: engine.AlertMeta{
+			ID: a.ID, Symbol: sym.Name, PriceType: a.PriceType, Direction: a.Direction,
+			TargetPrice: a.TargetPrice, CreatedAt: a.CreatedAt,
+		},
+	}, true
 }
 
 // Close stops the pump first (it is the only Triggers() consumer, and the
@@ -152,18 +232,16 @@ func (c *Core) Close() {
 func (c *Core) Engine() *engine.Engine { return c.eng }
 
 func (c *Core) AlertCount() int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return len(c.alerts)
+	return int(c.active.Load() + c.triggered.Load() + c.cancelled.Load())
 }
 
 func (c *Core) AlertsByState() map[string]int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
 	out := map[string]int{}
-	for s, n := range c.stateCounts {
-		if n > 0 {
-			out[string(s)] = n
+	for s, n := range map[string]*atomic.Int64{
+		StateActive: &c.active, StateTriggered: &c.triggered, StateCancelled: &c.cancelled,
+	} {
+		if v := n.Load(); v > 0 {
+			out[s] = int(v)
 		}
 	}
 	return out
@@ -238,23 +316,23 @@ func (c *Core) UpsertAlert(ctx context.Context, req *chronov1.UpsertAlertRequest
 		id = newAlertID()
 	}
 
-	// Service catalog first (pump enrichment must never miss), remembering
-	// the previous entry so an engine failure restores it.
-	entry := &Alert{
+	// Store first (pump enrichment must never miss), remembering the
+	// previous record so an engine failure restores it.
+	prev, found, err := c.store.Get(id)
+	if err != nil {
+		return nil, internalf("alert store: %v", err)
+	}
+	rec := alertstore.Alert{
 		ID: id, Symbol: sym.Name, Decimals: sym.Decimals,
 		Venue: req.GetVenue(), Tier: req.GetTier(),
 		PriceType: pt, Direction: dir, TargetPrice: engine.Price(base),
 		ValidFrom: req.GetValidFromUnixNanos(), Expires: req.GetExpiresUnixNanos(),
-		State: StateActive, CreatedAt: c.now(),
+		State: alertstore.StateActive, AutoDeactivate: req.GetAutoDeactivate(),
+		CreatedAt: c.now().UnixNano(),
 	}
-	c.mu.Lock()
-	prev := c.alerts[id]
-	c.alerts[id] = entry
-	if prev != nil {
-		c.stateCounts[prev.State]--
+	if err := c.store.Put(rec); err != nil {
+		return nil, internalf("alert store: %v", err)
 	}
-	c.stateCounts[StateActive]++
-	c.mu.Unlock()
 
 	spec := engine.AlertSpec{
 		ID: id, Symbol: sym.Name, PriceType: pt, Direction: dir,
@@ -265,55 +343,65 @@ func (c *Core) UpsertAlert(ctx context.Context, req *chronov1.UpsertAlertRequest
 		Dims:           engine.Dims(vv, tv),
 		Meta: engine.AlertMeta{
 			ID: id, Symbol: sym.Name, PriceType: pt, Direction: dir,
-			TargetPrice: engine.Price(base), CreatedAt: entry.CreatedAt.UnixNano(),
+			TargetPrice: engine.Price(base), CreatedAt: rec.CreatedAt,
 		},
 	}
 	if err := c.eng.Upsert(spec); err != nil {
-		c.mu.Lock()
-		if prev != nil {
-			c.alerts[id] = prev
-		} else {
-			delete(c.alerts, id)
+		// Roll the store back to the pre-upsert truth.
+		if found {
+			if err2 := c.store.Put(prev); err2 != nil {
+				slog.Error("alert store rollback failed", "id", alertIDString(id), "err", err2)
+			}
+		} else if err2 := c.store.Delete(id); err2 != nil {
+			slog.Error("alert store rollback failed", "id", alertIDString(id), "err", err2)
 		}
-		c.stateCounts[StateActive]--
-		if prev != nil {
-			c.stateCounts[prev.State]++
-		}
-		c.mu.Unlock()
 		return nil, mapEngineErr(err)
 	}
 	c.eng.Sync()
-	c.metrics.AlertsActive(c.countState(StateActive))
+	if found {
+		c.decState(prev.State)
+	}
+	c.active.Add(1)
+	c.metrics.AlertsActive(int(c.active.Load()))
 	return &chronov1.UpsertAlertResponse{AlertId: alertIDString(id)}, nil
 }
 
-// countState is O(1): tallies are maintained incrementally at every
-// state transition. (A full-map scan here made seeding O(N^2) — at a
-// million alerts every Upsert walked the whole catalog.)
-func (c *Core) countState(s AlertState) int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.stateCounts[s]
+// decState decrements the gauge for a state the catalog left.
+func (c *Core) decState(s alertstore.State) {
+	switch s {
+	case alertstore.StateActive:
+		c.active.Add(-1)
+	case alertstore.StateTriggered:
+		c.triggered.Add(-1)
+	case alertstore.StateCancelled:
+		c.cancelled.Add(-1)
+	}
 }
 
-// CancelAlert retires an alert. Terminal alerts answer NotFound (the
-// engine has already dropped its refs).
+// CancelAlert retires an alert: the store flips active→cancelled, then
+// the engine drops its refs. Terminal/unknown alerts answer NotFound.
+// A trigger racing the cancel loses the state flip (MarkTriggered sees
+// a terminal record and skips) — the engine may still publish one
+// in-flight trigger, same observable behavior as the map era.
 func (c *Core) CancelAlert(ctx context.Context, req *chronov1.CancelAlertRequest) (*chronov1.CancelAlertResponse, error) {
 	id, err := parseAlertID(req.GetAlertId())
 	if err != nil {
 		return nil, invalidf("%v", err)
 	}
-	if err := c.eng.Cancel(id); err != nil {
-		return nil, mapEngineErr(err)
+	flipped, err := c.store.Cancel(id)
+	if err != nil {
+		return nil, internalf("alert store: %v", err)
 	}
-	c.mu.Lock()
-	if a, ok := c.alerts[id]; ok {
-		c.stateCounts[a.State]--
-		c.stateCounts[StateCancelled]++
-		a.State = StateCancelled
+	if !flipped {
+		return nil, status.Error(codes.NotFound, "alert not found")
 	}
-	c.mu.Unlock()
-	c.metrics.AlertsActive(c.countState(StateActive))
+	if err := c.eng.Cancel(id); err != nil &&
+		!errors.Is(err, engine.ErrNotFound) && !errors.Is(err, engine.ErrInvalidTransition) {
+		return nil, mapEngineErr(err) // fired-and-removed meanwhile: expected, ignored above
+	}
+	c.active.Add(-1)
+	c.cancelled.Add(1)
+	c.metrics.AlertsActive(int(c.active.Load()))
 	return &chronov1.CancelAlertResponse{}, nil
 }
 
@@ -441,8 +529,8 @@ func (c *Core) GetCatalog(ctx context.Context, _ *chronov1.CatalogRequest) (*chr
 	return &chronov1.CatalogReply{Symbols: syms, Dims: dims}, nil
 }
 
-// pump drains the engine's trigger ring and publishes enriched triggers
-// to NATS. It is the ONLY Triggers() consumer.
+// pump drains the engine's trigger ring and hands each batch to
+// deliverBatch. It is the ONLY Triggers() consumer.
 func (c *Core) pump() {
 	defer close(c.pumpDone)
 	buf := make([]engine.Trigger, 64)
@@ -456,65 +544,76 @@ func (c *Core) pump() {
 			}
 			continue
 		}
-		now := c.now()
-		for i := range buf[:n] {
-			c.deliver(&buf[i], now)
-		}
+		c.deliverBatch(buf[:n])
 	}
 }
 
-// deliver enriches one engine trigger from the service catalog and
-// publishes it. The catalog entry survives the engine's own fire-time
-// refs cleanup — that removal race is why the service catalog exists.
-func (c *Core) deliver(tr *engine.Trigger, now time.Time) {
-	c.mu.RLock()
-	a := c.alerts[tr.ID]
-	var state AlertState
-	if a != nil {
-		state = a.State
+// deliverBatch enriches a drained ring batch in bulk: one read tx
+// resolves every alert, each active alert's trigger is published, then
+// ONE write tx flips the published ones to triggered (writing
+// fired_price/fired_at). A store failure at either end leaves the
+// alerts active — they re-fire on a later tick: visible duplication
+// beats silent loss.
+func (c *Core) deliverBatch(batch []engine.Trigger) {
+	ids := make([]engine.AlertID, len(batch))
+	for i := range batch {
+		ids[i] = batch[i].ID
 	}
-	c.mu.RUnlock()
-	c.stats.TriggersFired.Add(1)
-	c.stats.FireRate.Add(1, now)
-	if a == nil || state != StateActive {
-		// Fired for an alert we no longer consider active (cancelled
-		// concurrently, or a terminal replacement race). Count, don't ship.
-		return
-	}
-	c.mu.Lock()
-	if a.State != StateActive {
-		c.mu.Unlock()
-		return // cancelled/replaced between the read above and here
-	}
-	c.stateCounts[StateActive]--
-	c.stateCounts[StateTriggered]++
-	a.State = StateTriggered
-	c.mu.Unlock()
-	out := pub.Trigger{
-		AlertID:          alertIDString(tr.ID),
-		Symbol:           a.Symbol,
-		Venue:            a.Venue,
-		Tier:             a.Tier,
-		FiredPrice:       price.Format(int64(tr.Price), a.Decimals),
-		FiredAtUnixNanos: tr.TS,
-		Direction:        directionOf(a.Direction),
-		TargetPrice:      price.Format(int64(a.TargetPrice), a.Decimals),
-	}
-	c.metrics.TriggerFired(a.Symbol, a.Venue, a.Tier)
-	if err := c.pub.Publish(out); err != nil {
-		// Drop-and-count: the pump never blocks, never retries (spec §4).
-		c.stats.TriggersPublishDropped.Add(1)
-		c.metrics.TriggerPublishDropped()
-		if c.pubHealthy.CompareAndSwap(true, false) {
-			slog.Warn("trigger publish failing; dropping until NATS recovers", "err", err)
+	recs, err := c.store.BatchGet(ids)
+	now := c.now()
+	if err != nil {
+		for range batch {
+			c.stats.TriggersFired.Add(1)
 		}
+		slog.Warn("trigger enrichment failed; batch lost, alerts stay active", "err", err)
 		return
 	}
-	if !c.pubHealthy.Swap(true) {
-		slog.Info("trigger publishing recovered")
+	var fired []alertstore.Fired
+	for i := range batch {
+		tr := &batch[i]
+		c.stats.TriggersFired.Add(1)
+		c.stats.FireRate.Add(1, now)
+		a, ok := recs[tr.ID]
+		if !ok || a.State != alertstore.StateActive {
+			continue // unknown or no-longer-active: count, don't ship
+		}
+		out := pub.Trigger{
+			AlertID:          alertIDString(tr.ID),
+			Symbol:           a.Symbol,
+			Venue:            a.Venue,
+			Tier:             a.Tier,
+			FiredPrice:       price.Format(int64(tr.Price), a.Decimals),
+			FiredAtUnixNanos: tr.TS,
+			Direction:        directionOf(a.Direction),
+			TargetPrice:      price.Format(int64(a.TargetPrice), a.Decimals),
+		}
+		c.metrics.TriggerFired(a.Symbol, a.Venue, a.Tier)
+		if err := c.pub.Publish(out); err != nil {
+			// Drop-and-count: the pump never blocks, never retries (spec §4).
+			c.stats.TriggersPublishDropped.Add(1)
+			c.metrics.TriggerPublishDropped()
+			if c.pubHealthy.CompareAndSwap(true, false) {
+				slog.Warn("trigger publish failing; dropping until NATS recovers", "err", err)
+			}
+			continue
+		}
+		if !c.pubHealthy.Swap(true) {
+			slog.Info("trigger publishing recovered")
+		}
+		c.stats.TriggersPublished.Add(1)
+		c.metrics.TriggerPublished()
+		fired = append(fired, alertstore.Fired{ID: a.ID, Price: engine.Price(tr.Price), At: tr.TS})
 	}
-	c.stats.TriggersPublished.Add(1)
-	c.metrics.TriggerPublished()
+	if len(fired) == 0 {
+		return
+	}
+	flipped, err := c.store.MarkTriggeredBatch(fired)
+	if err != nil {
+		slog.Warn("mark triggered failed; alerts stay active and may re-fire", "err", err)
+		return
+	}
+	c.active.Add(-int64(flipped))
+	c.triggered.Add(int64(flipped))
 }
 
 func directionOf(d engine.Direction) string {
@@ -528,7 +627,7 @@ func directionOf(d engine.Direction) string {
 // the chrono_nats_connected gauge. Observability only — never readiness.
 func (c *Core) NATSConnected() bool { return c.pub.Connected() }
 
-// AlertView is the read-only shape of a catalog alert for the monitoring
+// AlertView is the read-only shape of a stored alert for the monitoring
 // surface. Prices are decimal strings, ready to render.
 type AlertView struct {
 	ID                 string `json:"id"`
@@ -542,6 +641,8 @@ type AlertView struct {
 	ValidFromUnixNanos int64  `json:"valid_from_unix_nanos"`
 	ExpiresUnixNanos   int64  `json:"expires_unix_nanos"`
 	CreatedAtUnixNanos int64  `json:"created_at_unix_nanos"`
+	FiredPrice         string `json:"fired_price"`         // "" until triggered
+	FiredAtUnixNanos   int64  `json:"fired_at_unix_nanos"` // 0 until triggered
 }
 
 // AlertFilter selects catalog alerts for the inquiry API. Empty string
@@ -566,7 +667,7 @@ func priceTypeString(pt engine.PriceType) string {
 	}
 }
 
-func (a *Alert) view() AlertView {
+func viewOf(a *alertstore.Alert) AlertView {
 	return AlertView{
 		ID:                 alertIDString(a.ID),
 		Symbol:             a.Symbol,
@@ -575,11 +676,20 @@ func (a *Alert) view() AlertView {
 		PriceType:          priceTypeString(a.PriceType),
 		Direction:          directionOf(a.Direction),
 		TargetPrice:        price.Format(int64(a.TargetPrice), a.Decimals),
-		State:              string(a.State),
+		State:              a.State.String(),
 		ValidFromUnixNanos: a.ValidFrom,
 		ExpiresUnixNanos:   a.Expires,
-		CreatedAtUnixNanos: a.CreatedAt.UnixNano(),
+		CreatedAtUnixNanos: a.CreatedAt,
+		FiredPrice:         firedPriceString(a),
+		FiredAtUnixNanos:   a.FiredAt,
 	}
+}
+
+func firedPriceString(a *alertstore.Alert) string {
+	if a.State != alertstore.StateTriggered {
+		return ""
+	}
+	return price.Format(int64(a.FiredPrice), a.Decimals)
 }
 
 // GetAlert resolves one alert by its string id (the form UpsertAlert
@@ -589,65 +699,45 @@ func (c *Core) GetAlert(id string) (AlertView, bool) {
 	if err != nil {
 		return AlertView{}, false
 	}
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	a, ok := c.alerts[raw]
-	if !ok {
+	a, found, err := c.store.Get(raw)
+	if err != nil || !found {
 		return AlertView{}, false
 	}
-	return a.view(), true
+	return viewOf(&a), true
 }
 
 // ListAlerts returns one page of the filtered catalog, newest first,
-// plus the total match count.
+// plus the total match count. Unknown state/direction strings match
+// nothing (empty page), preserving the previous contract.
 func (c *Core) ListAlerts(f AlertFilter) ([]AlertView, int) {
-	dirOK := true
-	var dir engine.Direction
+	sf := alertstore.Filter{
+		Symbol: f.Symbol, Venue: f.Venue, Tier: f.Tier,
+		Limit: f.Limit, Offset: f.Offset,
+	}
+	if f.State != "" {
+		st, ok := storeState(f.State)
+		if !ok {
+			return nil, 0
+		}
+		sf.State, sf.HasState = st, true
+	}
 	switch f.Direction {
 	case "":
 	case "ABOVE":
-		dir = engine.DirGTE
+		sf.Direction, sf.HasDirection = engine.DirGTE, true
 	case "BELOW":
-		dir = engine.DirLTE
+		sf.Direction, sf.HasDirection = engine.DirLTE, true
 	default:
-		dirOK = false
+		return nil, 0
 	}
-	c.mu.RLock()
-	views := make([]AlertView, 0, len(c.alerts))
-	for _, a := range c.alerts {
-		if !dirOK {
-			break
-		}
-		if f.State != "" && string(a.State) != f.State {
-			continue
-		}
-		if f.Symbol != "" && a.Symbol != f.Symbol {
-			continue
-		}
-		if f.Venue != "" && a.Venue != f.Venue {
-			continue
-		}
-		if f.Tier != "" && a.Tier != f.Tier {
-			continue
-		}
-		if f.Direction != "" && a.Direction != dir {
-			continue
-		}
-		views = append(views, a.view())
+	items, total, err := c.store.Query(sf)
+	if err != nil {
+		slog.Error("alert query failed", "err", err)
+		return nil, 0
 	}
-	c.mu.RUnlock()
-
-	slices.SortStableFunc(views, func(a, b AlertView) int {
-		if c := cmp.Compare(b.CreatedAtUnixNanos, a.CreatedAtUnixNanos); c != 0 {
-			return c // newest first
-		}
-		return strings.Compare(b.ID, a.ID) // deterministic tiebreak; map order is random
-	})
-	total := len(views)
-	start := min(max(f.Offset, 0), total)
-	end := total
-	if f.Limit > 0 {
-		end = min(start+f.Limit, total)
+	views := make([]AlertView, 0, len(items))
+	for i := range items {
+		views = append(views, viewOf(&items[i]))
 	}
-	return views[start:end], total
+	return views, total
 }

@@ -10,6 +10,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	chronov1 "github.com/emir/chrono-tree/api/gen/chrono/v1"
+	"github.com/emir/chrono-tree/internal/alertstore"
 	"github.com/emir/chrono-tree/internal/catalog"
 )
 
@@ -264,10 +265,10 @@ func TestGetAlert(t *testing.T) {
 	}
 }
 
-// TestAlertsByStateIncremental pins the stateCounts tallies against a full
-// catalog scan across every transition kind: insert, replace, cancel,
-// trigger. (The counters made seeding O(N) instead of O(N^2); drift here
-// would silently skew /stats and the dashboard's alert book.)
+// TestAlertsByStateIncremental pins the atomic state gauges against the
+// store's own index counts across every transition kind: insert, replace,
+// cancel, trigger. (Drift here would silently skew /stats and the
+// dashboard's alert book.)
 func TestAlertsByStateIncremental(t *testing.T) {
 	e := newEnv(t)
 	upsert := func() string {
@@ -279,11 +280,17 @@ func TestAlertsByStateIncremental(t *testing.T) {
 	}
 
 	scan := func() map[string]int {
-		e.core.mu.RLock()
-		defer e.core.mu.RUnlock()
 		out := map[string]int{}
-		for _, a := range e.core.alerts {
-			out[string(a.State)]++
+		for s, st := range map[string]alertstore.State{
+			"active": alertstore.StateActive, "triggered": alertstore.StateTriggered, "cancelled": alertstore.StateCancelled,
+		} {
+			_, total, err := e.core.store.Query(alertstore.Filter{State: st, HasState: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if total > 0 {
+				out[s] = total
+			}
 		}
 		return out
 	}

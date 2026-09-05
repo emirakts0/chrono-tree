@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 
 	chronov1 "github.com/emir/chrono-tree/api/gen/chrono/v1"
 	"github.com/emir/chrono-tree/engine"
+	"github.com/emir/chrono-tree/internal/alertstore"
 	"github.com/emir/chrono-tree/internal/catalog"
 	"github.com/emir/chrono-tree/internal/pub"
 	"github.com/emir/chrono-tree/internal/pub/pubtest"
@@ -22,11 +24,12 @@ import (
 )
 
 type testEnv struct {
-	core *Core
-	cc   *grpc.ClientConn
-	srv  *grpc.Server
-	rec  *recordingPub // non-nil for the fast unit env
-	nats string        // non-empty for the NATS-backed env
+	core  *Core
+	store *alertstore.Store // non-nil for store-backed envs; restart tests close it early
+	cc    *grpc.ClientConn
+	srv   *grpc.Server
+	rec   *recordingPub // non-nil for the fast unit env
+	nats  string        // non-empty for the NATS-backed env
 }
 
 // recordingPub captures published triggers for unit tests, and can be
@@ -73,10 +76,33 @@ func newNATSEnv(t *testing.T) *testEnv {
 	return newEnvWithPub(t, p, url)
 }
 
+// openStore opens a throwaway store for one test.
+func openStore(t *testing.T) *alertstore.Store {
+	t.Helper()
+	s, err := alertstore.Open(filepath.Join(t.TempDir(), "alerts.bbolt"))
+	if err != nil {
+		t.Fatalf("alertstore.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	return s
+}
+
 func newEnvWithPub(t *testing.T, p pub.Publisher, natsURL string) *testEnv {
 	t.Helper()
 	cat := catalog.Default()
-	core := NewCore(engine.DefaultConfig(), cat, NoopMetrics{}, stats.New(time.Now()), p)
+	store := openStore(t) // store cleanup registered FIRST → runs LAST, after core.Close
+	core := NewCore(engine.DefaultConfig(), cat, NoopMetrics{}, stats.New(time.Now()), p, store)
+	t.Cleanup(core.Close)
+	e := newEnvWithCore(t, core, p)
+	e.store, e.nats = store, natsURL
+	return e
+}
+
+// newEnvWithCore wires bufconn gRPC around an already-built core and
+// registers the same cleanups as newEnvWithPub (minus core/store, which
+// the caller owns).
+func newEnvWithCore(t *testing.T, core *Core, p pub.Publisher) *testEnv {
+	t.Helper()
 	lis := bufconn.Listen(1 << 20)
 	srv := grpc.NewServer(grpc.ChainUnaryInterceptor(NewValidateInterceptor()))
 	chronov1.RegisterAlertServiceServer(srv, core)
@@ -91,13 +117,12 @@ func newEnvWithPub(t *testing.T, p pub.Publisher, natsURL string) *testEnv {
 	t.Cleanup(func() {
 		_ = cc.Close()
 		srv.Stop()
-		core.Close()
 	})
 	var rec *recordingPub
 	if r, ok := p.(*recordingPub); ok {
 		rec = r
 	}
-	return &testEnv{core: core, cc: cc, srv: srv, rec: rec, nats: natsURL}
+	return &testEnv{core: core, cc: cc, srv: srv, rec: rec}
 }
 
 // natsClient connects a subscriber to the env's embedded NATS server

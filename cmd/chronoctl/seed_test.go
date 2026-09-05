@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"net"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 
 	chronov1 "github.com/emir/chrono-tree/api/gen/chrono/v1"
 	"github.com/emir/chrono-tree/engine"
+	"github.com/emir/chrono-tree/internal/alertstore"
 	"github.com/emir/chrono-tree/internal/catalog"
 	"github.com/emir/chrono-tree/internal/pub"
 	"github.com/emir/chrono-tree/internal/service"
@@ -23,9 +25,22 @@ import (
 
 func TestMain(m *testing.M) { goleak.VerifyTestMain(m) }
 
+// openStore opens a throwaway store for one test; its cleanup registers
+// before any core.Close cleanup, so the store closes after the core.
+func openStore(t *testing.T) *alertstore.Store {
+	t.Helper()
+	s, err := alertstore.Open(filepath.Join(t.TempDir(), "alerts.bbolt"))
+	if err != nil {
+		t.Fatalf("alertstore.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	return s
+}
+
 func TestRunSeedRegistersAlerts(t *testing.T) {
 	now := time.Now()
-	core := service.NewCore(engine.DefaultConfig(), catalog.Default(), service.NoopMetrics{}, stats.New(now), pub.Noop{})
+	store := openStore(t)
+	core := service.NewCore(engine.DefaultConfig(), catalog.Default(), service.NoopMetrics{}, stats.New(now), pub.Noop{}, store)
 	t.Cleanup(core.Close)
 	lis := bufconn.Listen(1 << 20)
 	srv := grpc.NewServer()
