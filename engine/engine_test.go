@@ -309,7 +309,7 @@ func TestFlusherAppliesMutations(t *testing.T) {
 	if got := e.states[sid].snap.Load().trees[ti].Len(); got != 0 {
 		t.Fatalf("after remove Len=%d, want 0", got)
 	}
-	// mutRemove cleanup: refs/meta deleted, live decremented, slot retired.
+	// mutRemove cleanup: refs deleted, live decremented, slot retired.
 	if _, ok := e.refs[ent.id]; ok {
 		t.Fatal("refs entry survived removal")
 	}
