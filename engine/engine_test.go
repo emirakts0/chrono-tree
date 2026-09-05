@@ -381,7 +381,6 @@ func testSpec(id byte, sym string, pt PriceType, dir Direction, price Price) Ale
 	return AlertSpec{
 		ID: AlertID{id}, Symbol: sym, PriceType: pt, Direction: dir,
 		TargetPrice: price, ValidFrom: 1, AutoDeactivate: true,
-		Meta: AlertMeta{ID: AlertID{id}, Symbol: sym},
 	}
 }
 

@@ -63,7 +63,6 @@ type AlertSpec struct {
 	Expires        int64 // unix nanos; 0 = never
 	AutoDeactivate bool
 	Dims           [dimMax]uint16 // width real values; trailing slots normalized by the engine
-	Meta           AlertMeta      // cold data, stored verbatim
 }
 
 func (a *AlertSpec) validate() error {
@@ -83,21 +82,6 @@ func (a *AlertSpec) validate() error {
 		return errors.New("chrono-tree: expires at or before valid-from")
 	}
 	return nil
-}
-
-// AlertMeta is the cold record: everything the notification pipeline needs
-// after a trigger fires. Never touched by Match.
-type AlertMeta struct {
-	ID          AlertID
-	Symbol      string
-	UserID      string
-	Segment     string
-	Channels    []string
-	Notes       string
-	CreatedAt   int64 // unix nanos
-	PriceType   PriceType
-	Direction   Direction
-	TargetPrice Price
 }
 
 // Stats is a point-in-time engine snapshot for observability.
@@ -164,9 +148,8 @@ type Engine struct {
 	expiry   btype.Table[expEntry] // owned by the reaper only
 	parked   []*snapshot           // flusher-owned: retired snapshots pinned by readers, released once drained
 
-	mu   sync.Mutex // guards refs, meta, live
+	mu   sync.Mutex // guards refs, live
 	refs map[AlertID]*alertRef
-	meta map[AlertID]*AlertMeta
 	live uint64
 
 	done    chan struct{}
@@ -197,7 +180,6 @@ func New(cfg Config) *Engine {
 		expQ:     make(chan expEntry, cfg.MutationQueueDepth),
 		triggers: NewTriggerQueue(cfg.RingSize),
 		refs:     make(map[AlertID]*alertRef),
-		meta:     make(map[AlertID]*AlertMeta),
 		done:     make(chan struct{}),
 	}
 	e.flushWG.Add(1)

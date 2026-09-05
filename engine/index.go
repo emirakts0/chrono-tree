@@ -124,14 +124,13 @@ func (e *Engine) applyBatch(batch []mutation) {
 		case mutRemove:
 			p.next.trees[treeIndex(m.e.priceType(), m.e.direction())].Delete(m.e)
 			// Slot bookkeeping: retire the slot (gen-gated, so a duplicate
-			// removal parks it at most once), and clean refs/meta/live only
+			// removal parks it at most once), and clean refs/live only
 			// if the live ref still matches this exact entry (a same-ID upsert
 			// may have already replaced it).
 			e.slots.retireGen(m.e.idx, m.gen)
 			e.mu.Lock()
 			if r, ok := e.refs[m.e.id]; ok && r.e.idx == m.e.idx {
 				delete(e.refs, m.e.id)
-				delete(e.meta, m.e.id)
 				e.live--
 			}
 			e.mu.Unlock()
@@ -204,7 +203,6 @@ func (e *Engine) Upsert(a AlertSpec) error {
 			// Lost a concurrent transition (pause/resume); re-read and retry.
 		}
 		delete(e.refs, a.ID)
-		delete(e.meta, a.ID)
 		e.live--
 	} else if e.live >= e.cfg.MaxAlerts {
 		e.mu.Unlock()
@@ -230,10 +228,8 @@ func (e *Engine) Upsert(a AlertSpec) error {
 		idx:       idx,
 		flags:     makeFlags(a.PriceType, a.Direction, a.AutoDeactivate),
 	}
-	meta := a.Meta
 	e.mu.Lock()
 	e.refs[a.ID] = &alertRef{sid: sid, e: ent}
-	e.meta[a.ID] = &meta
 	e.live++
 	e.mu.Unlock()
 
