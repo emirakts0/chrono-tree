@@ -769,7 +769,7 @@ func TestBatchGet(t *testing.T) {
 		t.Fatalf("BatchGet returned %d, want 2 (unknown id skipped)", len(got))
 	}
 	for i := range alerts {
-		if i == 2 {
+		if i == 0 || i == 2 { // never requested (ids holds 1 and 3)
 			continue
 		}
 		if a, ok := got[alerts[i].ID]; !ok || a != alerts[i] {
