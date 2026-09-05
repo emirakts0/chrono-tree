@@ -72,7 +72,7 @@ func run(ctx context.Context, grpcAddr, httpAddr, natsURL, dbPath string) error 
 	if err != nil {
 		return fmt.Errorf("alert store: %w", err)
 	}
-	// Backspot ordering note: this defer registers BEFORE core.Close's,
+	// Backstop ordering note: this defer registers BEFORE core.Close's,
 	// so it runs AFTER it (LIFO) — the store always outlives the pump.
 	defer func() { _ = store.Close() }()
 	core := service.NewCore(engine.DefaultConfig(), catalog.Default(), pm, st, publisher, store)
@@ -139,6 +139,8 @@ func run(ctx context.Context, grpcAddr, httpAddr, natsURL, dbPath string) error 
 	}
 
 	core.Close() // stops the pump, then the engine (idempotent; the defer is a backstop)
+	// Pump drained, engine down; the backstop defer above is now a no-op
+	// (Close on a closed bolt DB returns ErrDatabaseNotOpen, ignored).
 	if err := store.Close(); err != nil {
 		slog.Warn("alert store close", "err", err)
 	}
