@@ -263,3 +263,83 @@ func TestGetAlert(t *testing.T) {
 		t.Fatal("malformed id should not resolve")
 	}
 }
+
+// TestAlertsByStateIncremental pins the stateCounts tallies against a full
+// catalog scan across every transition kind: insert, replace, cancel,
+// trigger. (The counters made seeding O(N) instead of O(N^2); drift here
+// would silently skew /stats and the dashboard's alert book.)
+func TestAlertsByStateIncremental(t *testing.T) {
+	e := newEnv(t)
+	upsert := func() string {
+		resp, err := e.alerts().UpsertAlert(context.Background(), validUpsert())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp.GetAlertId()
+	}
+
+	scan := func() map[string]int {
+		e.core.mu.RLock()
+		defer e.core.mu.RUnlock()
+		out := map[string]int{}
+		for _, a := range e.core.alerts {
+			out[string(a.State)]++
+		}
+		return out
+	}
+	check := func(stage string) {
+		t.Helper()
+		got := e.core.AlertsByState()
+		want := scan()
+		if len(got) != len(want) {
+			t.Fatalf("%s: %d states, scan has %d (%v vs %v)", stage, len(got), len(want), got, want)
+		}
+		for k, v := range want {
+			if got[k] != v {
+				t.Fatalf("%s: state %q = %d, scan says %d", stage, k, got[k], v)
+			}
+		}
+	}
+
+	a1 := upsert()
+	req := validUpsert()
+	req.Symbol = "ETHUSDT"
+	if _, err := e.alerts().UpsertAlert(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	check("after inserts")
+
+	// Replace: same id upserted again re-enters as active.
+	rep := validUpsert()
+	rep.AlertId = []byte(nil)
+	idRaw, err := parseAlertID(a1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep.AlertId = idRaw[:]
+	if _, err := e.alerts().UpsertAlert(context.Background(), rep); err != nil {
+		t.Fatal(err)
+	}
+	check("after replace")
+
+	if _, err := e.alerts().CancelAlert(context.Background(), &chronov1.CancelAlertRequest{AlertId: a1}); err != nil {
+		t.Fatal(err)
+	}
+	check("after cancel")
+
+	// Fire ETHUSDT via a tick; counters must follow to triggered.
+	venues := catalog.Default().DimValues(catalog.DimVenue)
+	if _, err := runTicks(t, e, &chronov1.TickBatch{Ticks: []*chronov1.Tick{
+		tick("ETHUSDT", "65000.00", "65001.00", venues[0], "TOP"),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if e.core.AlertsByState()["triggered"] == 1 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	check("after trigger")
+}

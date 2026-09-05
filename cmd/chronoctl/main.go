@@ -11,6 +11,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 
 	"google.golang.org/grpc"
@@ -44,6 +45,7 @@ func main() {
 	seedCmd := flag.NewFlagSet("seed", flag.ExitOnError)
 	seedN := seedCmd.Int("n", 1000, "alerts to seed")
 	seedSeed := seedCmd.Uint64("seed", 1, "RNG seed")
+	seedWorkers := seedCmd.Int("workers", 8, "concurrent upsert streams")
 	// Global flags come before the subcommand: Parse stops at the first
 	// non-flag argument, which is the subcommand name.
 	flag.Parse()
@@ -78,7 +80,7 @@ func main() {
 		if err := seedCmd.Parse(flag.Args()[1:]); err != nil {
 			os.Exit(2)
 		}
-		if err := runSeed(ctx, c, os.Stdout, *seedSeed, *seedN); err != nil {
+		if err := runSeed(ctx, c, os.Stdout, *seedSeed, *seedN, *seedWorkers); err != nil {
 			slog.Error("seed", "err", err)
 			os.Exit(1)
 		}
@@ -136,19 +138,13 @@ func runAlert(ctx context.Context, c Clients, pair, venue, tier, dir, ptype, pri
 // across random pairs/venues/tiers, plus one deliberate per-venue
 // fan-out set on BTCUSDT, then returns. Triggers are observed on NATS
 // (`nats sub chrono.triggers.>`), never through this client.
-func runSeed(ctx context.Context, c Clients, out io.Writer, seed uint64, nAlerts int) error {
+func runSeed(ctx context.Context, c Clients, out io.Writer, seed uint64, nAlerts, workers int) error {
 	cat := catalog.Default()
 	syms := cat.Symbols()
 	rng := rand.New(rand.NewChaCha8(*feed.SeedBytes(seed)))
 
-	seedOne := func(sym catalog.Symbol, venue, tier string) error {
-		ref, err := price.Parse(sym.Reference, sym.Decimals)
-		if err != nil {
-			return err
-		}
-		f := 0.98 + 0.04*rng.Float64() // ±2% of reference
-		target := int64(float64(ref)*f + 0.5)
-		_, err = c.Alerts.UpsertAlert(ctx, &chronov1.UpsertAlertRequest{
+	seedOne := func(sym catalog.Symbol, venue, tier string, target int64) error {
+		_, err := c.Alerts.UpsertAlert(ctx, &chronov1.UpsertAlertRequest{
 			Symbol: sym.Name, PriceType: chronov1.PriceType_PRICE_TYPE_ASK,
 			Direction:   chronov1.Direction_DIRECTION_ABOVE,
 			TargetPrice: price.Format(target, sym.Decimals),
@@ -158,9 +154,67 @@ func runSeed(ctx context.Context, c Clients, out io.Writer, seed uint64, nAlerts
 	}
 
 	venues, tiers := cat.DimValues(catalog.DimVenue), cat.DimValues(catalog.DimTier)
-	for i := 0; i < nAlerts; i++ {
-		sym := syms[rng.IntN(len(syms))]
-		if err := seedOne(sym, venues[rng.IntN(len(venues))], tiers[rng.IntN(len(tiers))]); err != nil {
+	if workers < 1 {
+		workers = 1
+	}
+	// The RNG is not goroutine-safe, so specs are generated sequentially in
+	// bounded batches (determinism unchanged) and dispatched across workers:
+	// per-alert UpsertAlert latency (a mutation-queue Sync each) only
+	// pipelines when several are in flight.
+	type spec struct {
+		sym    catalog.Symbol
+		venue  string
+		tier   string
+		target int64
+	}
+	batch := make([]spec, 0, 4096)
+	done := uint64(0)
+	nextProgress := uint64(50_000)
+	errCh := make(chan error, workers)
+	dispatch := func() error {
+		var wg sync.WaitGroup
+		wg.Add(len(batch))
+		for i := range batch {
+			s := &batch[i]
+			go func() {
+				defer wg.Done()
+				if err := seedOne(s.sym, s.venue, s.tier, s.target); err != nil {
+					select {
+					case errCh <- err:
+					default:
+					}
+				}
+			}()
+		}
+		wg.Wait()
+		done += uint64(len(batch))
+		if done >= nextProgress {
+			fmt.Fprintf(os.Stderr, "seeding: %d/%d\n", done, nAlerts)
+			for done >= nextProgress {
+				nextProgress += 50_000
+			}
+		}
+		select {
+		case err := <-errCh:
+			return err
+		default:
+			return nil
+		}
+	}
+	for generated := 0; generated < nAlerts; {
+		batch = batch[:0]
+		for len(batch) < 4096 && generated < nAlerts {
+			sym := syms[rng.IntN(len(syms))]
+			venue, tier := venues[rng.IntN(len(venues))], tiers[rng.IntN(len(tiers))]
+			ref, err := price.Parse(sym.Reference, sym.Decimals)
+			if err != nil {
+				return err
+			}
+			f := 0.98 + 0.04*rng.Float64() // ±2% of reference
+			batch = append(batch, spec{sym: sym, venue: venue, tier: tier, target: int64(float64(ref)*f + 0.5)})
+			generated++
+		}
+		if err := dispatch(); err != nil {
 			return err
 		}
 	}
@@ -173,7 +227,12 @@ func runSeed(ctx context.Context, c Clients, out io.Writer, seed uint64, nAlerts
 		}
 	}
 	for _, v := range venues {
-		if err := seedOne(btc, v, catalog.Tiers[0]); err != nil {
+		ref, err := price.Parse(btc.Reference, btc.Decimals)
+		if err != nil {
+			return err
+		}
+		f := 0.98 + 0.04*rng.Float64()
+		if err := seedOne(btc, v, catalog.Tiers[0], int64(float64(ref)*f+0.5)); err != nil {
 			return err
 		}
 	}

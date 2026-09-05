@@ -45,7 +45,7 @@ func TestRunSeedRegistersAlerts(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	var out bytes.Buffer
-	if err := runSeed(ctx, c, &out, 7, 30); err != nil {
+	if err := runSeed(ctx, c, &out, 7, 30, 8); err != nil {
 		t.Fatalf("runSeed: %v", err)
 	}
 	if got := core.AlertCount(); got != 33 { // 30 random + 3-venue BTCUSDT fan-out
