@@ -92,8 +92,9 @@ type Core struct {
 	stats   *stats.Stats
 	now     func() time.Time
 
-	mu     sync.RWMutex
-	alerts map[engine.AlertID]*Alert
+	mu          sync.RWMutex
+	alerts      map[engine.AlertID]*Alert
+	stateCounts map[AlertState]int // under mu; O(1) state tallies
 
 	pumpCtx    context.Context
 	pumpCancel context.CancelFunc
@@ -117,13 +118,14 @@ func NewCore(cfg engine.Config, cat *catalog.Catalog, m Metrics, st *stats.Stats
 	}
 	cfg.Dims = cat.Dims() // the catalog owns the vocabulary
 	c := &Core{
-		Cat:     cat,
-		eng:     engine.New(cfg),
-		metrics: m,
-		stats:   st,
-		pub:     p,
-		now:     func() time.Time { return time.Now() },
-		alerts:  make(map[engine.AlertID]*Alert),
+		Cat:         cat,
+		eng:         engine.New(cfg),
+		metrics:     m,
+		stats:       st,
+		pub:         p,
+		now:         func() time.Time { return time.Now() },
+		alerts:      make(map[engine.AlertID]*Alert),
+		stateCounts: make(map[AlertState]int),
 	}
 	// Healthy until a publish fails: "recovered" must only ever log after
 	// an actual failure, never on the process's first publish.
@@ -159,8 +161,10 @@ func (c *Core) AlertsByState() map[string]int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	out := map[string]int{}
-	for _, a := range c.alerts {
-		out[string(a.State)]++
+	for s, n := range c.stateCounts {
+		if n > 0 {
+			out[string(s)] = n
+		}
 	}
 	return out
 }
@@ -246,6 +250,10 @@ func (c *Core) UpsertAlert(ctx context.Context, req *chronov1.UpsertAlertRequest
 	c.mu.Lock()
 	prev := c.alerts[id]
 	c.alerts[id] = entry
+	if prev != nil {
+		c.stateCounts[prev.State]--
+	}
+	c.stateCounts[StateActive]++
 	c.mu.Unlock()
 
 	spec := engine.AlertSpec{
@@ -267,6 +275,10 @@ func (c *Core) UpsertAlert(ctx context.Context, req *chronov1.UpsertAlertRequest
 		} else {
 			delete(c.alerts, id)
 		}
+		c.stateCounts[StateActive]--
+		if prev != nil {
+			c.stateCounts[prev.State]++
+		}
 		c.mu.Unlock()
 		return nil, mapEngineErr(err)
 	}
@@ -275,16 +287,13 @@ func (c *Core) UpsertAlert(ctx context.Context, req *chronov1.UpsertAlertRequest
 	return &chronov1.UpsertAlertResponse{AlertId: alertIDString(id)}, nil
 }
 
+// countState is O(1): tallies are maintained incrementally at every
+// state transition. (A full-map scan here made seeding O(N^2) — at a
+// million alerts every Upsert walked the whole catalog.)
 func (c *Core) countState(s AlertState) int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	n := 0
-	for _, a := range c.alerts {
-		if a.State == s {
-			n++
-		}
-	}
-	return n
+	return c.stateCounts[s]
 }
 
 // CancelAlert retires an alert. Terminal alerts answer NotFound (the
@@ -299,6 +308,8 @@ func (c *Core) CancelAlert(ctx context.Context, req *chronov1.CancelAlertRequest
 	}
 	c.mu.Lock()
 	if a, ok := c.alerts[id]; ok {
+		c.stateCounts[a.State]--
+		c.stateCounts[StateCancelled]++
 		a.State = StateCancelled
 	}
 	c.mu.Unlock()
@@ -475,6 +486,8 @@ func (c *Core) deliver(tr *engine.Trigger, now time.Time) {
 		c.mu.Unlock()
 		return // cancelled/replaced between the read above and here
 	}
+	c.stateCounts[StateActive]--
+	c.stateCounts[StateTriggered]++
 	a.State = StateTriggered
 	c.mu.Unlock()
 	out := pub.Trigger{
