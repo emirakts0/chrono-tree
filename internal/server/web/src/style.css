@@ -97,10 +97,13 @@ body {
 #spark svg { width: 100%; height: 46px; color: var(--coffee-bean); margin-top: 6px; }
 
 /* ---- alert book tiles ---- */
+.card.area-book { display: flex; flex-direction: column; }
+.area-book .trio { flex: 1; }
 .trio { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
 .tile {
   border-radius: 12px; padding: 14px 10px; text-align: center;
-  display: flex; flex-direction: column; align-items: center;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  height: 100%;
 }
 .tile .big { font-size: 30px; }
 .tile .glyph { display: inline-flex; margin-bottom: 4px; }
@@ -129,23 +132,10 @@ body {
 
 /* ---- venues ---- */
 #venues .row {
-  display: grid; grid-template-columns: minmax(110px, 1fr) 70px minmax(120px, 2fr) 90px; gap: 10px;
+  display: grid; grid-template-columns: minmax(110px, 1fr) 1fr 90px; gap: 10px;
   align-items: center; padding: 6px 0; font-size: 14px;
 }
 .vname { font-weight: 600; overflow-wrap: anywhere; }
-.bar {
-  position: relative; height: 8px; border-radius: 999px;
-  background: rgba(30,25,23,.14); overflow: visible;
-}
-.bar i {
-  display: block; height: 100%; background: var(--pine-teal); border-radius: 999px;
-}
-/* current-rate marker: light-green ringed in coffee-bean so it never sits on bare linen */
-.bar i.mark {
-  position: absolute; top: 50%; left: 0; translate: -50% -50%;
-  width: 3px; height: 14px; border-radius: 2px;
-  background: var(--light-green); box-shadow: 0 0 0 1px var(--coffee-bean);
-}
 #venues .vmeta { color: var(--linen-ink); }
 
 /* ---- engine card ---- */
@@ -158,7 +148,7 @@ body {
 #engine .row > span:first-child {
   font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
   color: var(--linen-ink); background: rgba(30,25,23,.06);
-  padding: 3px 8px; border-radius: 6px;
+  padding: 3px 8px; border-radius: 4px;
 }
 #engine .row .mono { font-size: 15px; }
 
@@ -172,15 +162,44 @@ body {
   align-items: center; padding: 8px 4px; font-size: 14px;
   border-bottom: 1px solid rgba(243,239,231,.08);
   animation: slidein .25s ease;
+  cursor: default;
 }
+.stream .trg > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @keyframes slidein { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; } }
 .stream .sym { font-weight: 600; color: var(--soft-linen); }
 .stream .meta { color: var(--silver); font-size: 12px; }
 .time { color: var(--linen-ink); font-size: 12px; }
 .rail .time { color: var(--light-green); }
-.rail .empty { color: var(--silver); }
+.rail .empty {
+  color: var(--silver); font-size: 15px; text-align: center; padding: 12px;
+  height: 100%; display: flex; align-items: center; justify-content: center;
+}
+
+/* hover detail popup for clipped stream rows */
+.tip {
+  position: fixed; z-index: 60; pointer-events: none; opacity: 0;
+  transition: opacity .12s ease;
+  background: var(--linen); color: var(--coffee-bean);
+  border: 1px solid var(--hairline); border-radius: 10px;
+  box-shadow: 0 12px 28px rgba(0,0,0,.3);
+  padding: 9px 12px; font-size: 12.5px; max-width: 360px;
+}
+.tip .tip-head { font-weight: 700; margin-bottom: 3px; }
+.tip .tip-row { color: var(--linen-ink); }
+.tip .tip-row .mono { color: var(--coffee-bean); }
+
+/* theme scrollbars (vertical + horizontal) */
+* { scrollbar-width: thin; scrollbar-color: rgba(30,25,23,.32) transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: rgba(30,25,23,.28); border-radius: 999px;
+  border: 3px solid transparent; background-clip: content-box;
+}
+.card.rail, .card.rail ::-webkit-scrollbar-thumb { scrollbar-color: rgba(191,179,173,.4) transparent; }
+.card.rail ::-webkit-scrollbar-thumb { background: rgba(191,179,173,.4); border: 3px solid transparent; background-clip: content-box; }
 .badge {
-  font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; text-align: center;
+  font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 4px; text-align: center;
 }
 .badge.up { background: var(--molten-lava); color: #fff; }
 .badge.down { background: var(--linen); color: var(--coffee-bean); }
@@ -191,17 +210,21 @@ body {
   font: inherit; font-size: 13px; padding: 7px 10px; border-radius: 9px;
   border: 1px solid var(--coffee-bean); background: #fff0; color: var(--coffee-bean);
 }
-.filters button {
+.filters .dd {
+  background: var(--pine-teal); color: var(--soft-linen); border: 0; font-weight: 600;
+}
+.filters .dd:focus-visible { outline-color: var(--brick-ember); }
+.filters button[type="submit"] {
   display: inline-flex; align-items: center; gap: 6px;
   background: var(--brick-ember); color: #fff; border: 0; font-weight: 600; cursor: pointer;
 }
-.filters button svg { width: 13px; height: 13px; display: block; }
+.filters button[type="submit"] svg { width: 13px; height: 13px; display: block; }
 .ddhost { position: relative; display: inline-flex; }
 .dd {
   display: inline-flex; align-items: center; justify-content: space-between; gap: 8px;
   min-width: 118px; cursor: pointer;
   font: inherit; font-size: 13px; padding: 7px 10px; border-radius: 9px;
-  border: 1px solid var(--coffee-bean); background: var(--linen); color: var(--coffee-bean);
+  border: 1px solid var(--coffee-bean); background: #fff0; color: var(--coffee-bean);
 }
 .dd .chev { font-style: normal; font-size: 10px; opacity: .55; }
 .dd-list {
@@ -222,7 +245,7 @@ body {
 }
 .tbl td { padding: 8px; border-bottom: 1px solid var(--hairline); }
 .tbl td.meta { color: var(--linen-ink); font-size: 12px; }
-.chip { font-size: 11px; padding: 2px 8px; border-radius: 999px; }
+.chip { font-size: 11px; padding: 2px 8px; border-radius: 4px; }
 .chip.state-active { background: var(--pine-teal); color: var(--light-green); }
 .chip.state-triggered { background: var(--brick-ember); color: #fff; }
 .chip.state-cancelled { background: var(--linen); color: var(--linen-ink); border: 1px solid var(--hairline); }
@@ -241,21 +264,26 @@ body {
   background: var(--onyx);
   display: grid; place-items: center;
   pointer-events: none;
-  animation: introfade .5s ease 1.3s both;
+  /* The overlay's BACKGROUND dissolves while the mark is mid-drift; the
+     mark itself never fades — it lands on the topbar spot and stays there
+     until playIntro swaps it for the real brand at the same coordinates. */
+  animation: introfade .55s ease .8s both;
 }
-@keyframes introfade { to { opacity: 0; } }
+@keyframes introfade { to { background: transparent; } }
+.introing .brand { visibility: hidden; } /* the drifting mark stands in for it */
 .intro-mark {
   position: absolute; top: 50%; left: 50%;
   color: var(--soft-linen); font-weight: 700; letter-spacing: .08em; font-size: 32px;
+  line-height: 1.45;
   transform: translate(-50%, -50%);
-  animation: introdrift 1.15s cubic-bezier(.55, 0, .15, 1) .1s both;
+  animation: introdrift 1.4s cubic-bezier(.55, 0, .15, 1) .1s both;
 }
 .intro-mark .brand-dot { color: var(--light-green); display: inline-block; animation: heartbeat 1.2s ease infinite; }
 @keyframes introdrift {
   0% { top: 50%; left: 50%; transform: translate(-50%, -50%) scale(1.6); opacity: 0; font-size: 32px; }
-  12% { opacity: 1; }
-  70% { opacity: 1; }
-  100% { top: 14px; left: 20px; transform: translate(0, 0) scale(1); opacity: 0; font-size: 18px; }
+  10% { opacity: 1; }
+  45% { top: 50%; left: 50%; transform: translate(-50%, -50%) scale(1.6); opacity: 1; font-size: 32px; }
+  100% { top: 14px; left: 20px; transform: translate(0, 0) scale(1); opacity: 1; font-size: 18px; }
 }
 
 /* ---- focus ---- */

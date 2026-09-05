@@ -15,7 +15,7 @@ export interface Mounts {
 export function mount(root: HTMLElement): Mounts {
   root.innerHTML = `
   <header class="topbar">
-    <span class="brand">chrono<span class="brand-dot">▸</span></span>
+    <span class="brand">chrono-tree<span class="brand-dot">▸</span></span>
     <span class="status mono">
       <span id="dot-feed"></span> feed
       <span id="dot-nats"></span> nats
@@ -45,6 +45,33 @@ export function mount(root: HTMLElement): Mounts {
       <div class="empty">waiting for the first trigger…</div></div></section>
     <section class="card area-inquiry" id="inquiry"></section>
   </main>`;
+
+  // Hover detail popup for clipped rail rows: one reusable element,
+  // delegated on the stream container (rows re-render on every batch).
+  const tip = document.createElement("div");
+  tip.className = "tip";
+  document.body.appendChild(tip);
+  const streamEl = document.getElementById("stream")!;
+  streamEl.addEventListener("mouseover", (e) => {
+    const row = (e.target as HTMLElement).closest<HTMLElement>(".trg");
+    if (!row?.dataset.tip) return;
+    tip.innerHTML = row.dataset.tip;
+    tip.style.opacity = "1";
+    const r = row.getBoundingClientRect();
+    tip.style.top = `${Math.round(r.top + r.height / 2)}px`;
+    tip.style.transform = "translateY(-50%)";
+    if (r.right + 330 < window.innerWidth) {
+      tip.style.left = `${Math.round(r.right + 10)}px`;
+      tip.style.transform = "translateY(-50%)";
+    } else {
+      tip.style.left = `${Math.round(r.left - 10)}px`;
+      tip.style.transform = "translate(-100%, -50%)";
+    }
+  });
+  streamEl.addEventListener("mouseout", (e) => {
+    if ((e.target as HTMLElement).closest?.(".trg")) tip.style.opacity = "0";
+  });
+
   return { inquiry: document.getElementById("inquiry")! };
 }
 
@@ -87,10 +114,6 @@ export function update(): void {
   const venues = document.getElementById("venues");
   if (venues) {
     const entries = Object.entries(s.venue_ticks).sort((a, b) => b[1] - a[1]);
-    const max = entries[0]?.[1] || 1;
-    // Rate marker: the venue's current ticks/s against the busiest venue's.
-    const rate = (v: string): number => (state.series.venues[v] ?? []).slice(-1)[0] ?? 0;
-    const maxRate = Math.max(1, ...entries.map(([v]) => rate(v)));
     venues.innerHTML =
       entries
         .map(([v, n]) => {
@@ -98,7 +121,6 @@ export function update(): void {
           return `<div class="row">
           <span class="vname">${v} <span class="trendmark ${trendDir(series)}">${trendArrow(series)}</span></span>
           <span class="vmeta">${trend(series.slice(-40))}</span>
-          <span class="bar"><i style="width:${(100 * n) / max}%"></i><i class="mark" style="left:${(100 * rate(v)) / maxRate}%"></i></span>
           <span class="mono">${fmt(n)}</span>
         </div>`;
         })
@@ -127,7 +149,7 @@ export function update(): void {
           ? `<div class="empty">waiting for the first trigger…</div>`
           : state.triggers
               .map(
-                (tr) => `<div class="trg">
+                (tr) => `<div class="trg" data-tip="<b>${tr.symbol} · ${tr.direction}</b><div class=tip-row><span class=mono>${tr.fired_price}</span> (target <span class=mono>${tr.target_price}</span>)</div><div class=tip-row>${tr.venue}/${tr.tier} · <span class=mono>${new Date(tr.fired_at_unix_nanos / 1e6).toLocaleTimeString()}</span></div>">
                 <span class="badge ${tr.direction === "ABOVE" ? "up" : "down"}">${tr.direction}</span>
                 <span class="sym">${tr.symbol}</span>
                 <span class="mono">${tr.fired_price}</span>
