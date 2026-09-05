@@ -1,0 +1,9 @@
+# bbolt alert stores (runtime/demo artifacts)
+*.bbolt
+
+# locally built binaries
+/chronod
+/chronofeed
+
+# IDE
+.idea/
