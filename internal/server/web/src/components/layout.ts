@@ -32,19 +32,12 @@ export function mount(root: HTMLElement): Mounts {
       <div class="duo"><span class="mono" id="ticks">—</span> ticks
         · <span class="mono" id="ticksdropped">—</span> dropped</div>
     </section>
-    <section class="card area-fires fires"><h2>fires</h2>
-      <div class="big mono" id="fired">—</div>
-      <div class="sub">triggers fired · <span id="firesarrow">—</span></div>
-      <div id="firesspark"></div>
-    </section>
     <section class="card area-book"><h2>alert book</h2>
       <div class="trio">
-        <div class="tile t-active"><span class="glyph">${GLYPHS.active}</span><div class="big mono" id="st-active">—</div><div class="sub">active</div></div>
-        <div class="tile t-triggered"><span class="glyph">${GLYPHS.triggered}</span><div class="big mono" id="st-triggered">—</div><div class="sub">triggered</div></div>
+        <div class="tile t-active"><span class="glyph">${GLYPHS.active}</span><div class="big mono" id="st-active">—</div><div class="sub">active</div><div class="tilespark" id="livetrendline"></div></div>
+        <div class="tile t-triggered"><span class="glyph">${GLYPHS.triggered}</span><div class="big mono" id="st-triggered">—</div><div class="sub">triggered</div><div class="tilespark" id="firesspark"></div></div>
         <div class="tile t-cancelled"><span class="glyph">${GLYPHS.cancelled}</span><div class="big mono" id="st-cancelled">—</div><div class="sub">cancelled</div></div>
       </div>
-      <div class="livetrend"><span class="lbl">live alerts</span>
-        <span class="mono" id="live">—</span><span id="livetrendline"></span></div>
     </section>
     <section class="card area-venues"><h2>venues</h2><div id="venues" class="rows"></div></section>
     <section class="card area-engine"><h2>engine</h2><div id="engine" class="rows"></div></section>
@@ -80,21 +73,14 @@ export function update(): void {
   const spark = document.getElementById("spark");
   if (spark) spark.innerHTML = sparkline(state.series.ticks);
 
-  // Fires owns the fired counter + rate trend.
-  set("fired", fmt(s.triggers_fired));
-  const fa = document.getElementById("firesarrow");
-  if (fa) {
-    fa.textContent = trendArrow(state.series.fires);
-    fa.className = `trendmark ${trendDir(state.series.fires)}`;
-  }
-  const fspark = document.getElementById("firesspark");
-  if (fspark) fspark.innerHTML = trend(state.series.fires);
-
-  // Alert book owns state tiles + the engine.live trend (not the engine card).
+  // Alert book owns the state tiles; each populated tile carries its own
+  // trend: the triggered tile the fires rate, the active (live-count) tile
+  // the engine.live trend.
   set("st-active", String(s.alerts_by_state.active ?? 0));
   set("st-triggered", String(s.alerts_by_state.triggered ?? 0));
   set("st-cancelled", String(s.alerts_by_state.cancelled ?? 0));
-  set("live", fmt(s.engine.live));
+  const fspark = document.getElementById("firesspark");
+  if (fspark) fspark.innerHTML = trend(state.series.fires);
   const lt = document.getElementById("livetrendline");
   if (lt) lt.innerHTML = trend(state.series.live);
 

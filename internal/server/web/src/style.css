@@ -48,13 +48,12 @@ body {
   display: grid; gap: 14px; padding: 14px;
   grid-template-columns: repeat(12, 1fr);
   grid-template-areas:
-    "pulse pulse pulse pulse fires fires fires fires book book rail rail"
-    "pulse pulse pulse pulse fires fires fires fires book book rail rail"
+    "pulse pulse pulse pulse book book book book book rail rail rail"
+    "pulse pulse pulse pulse book book book book book rail rail rail"
     "venues venues venues venues venues engine engine engine engine rail rail rail"
     "inquiry inquiry inquiry inquiry inquiry inquiry inquiry inquiry inquiry inquiry inquiry inquiry";
 }
 .area-pulse { grid-area: pulse; }
-.area-fires { grid-area: fires; }
 .area-book { grid-area: book; }
 .area-venues { grid-area: venues; }
 .area-engine { grid-area: engine; }
@@ -71,8 +70,7 @@ body {
 .card:hover { transform: translateY(-2px); }
 @keyframes bloom { from { opacity: 0; transform: translateY(8px); } }
 .area-pulse    { animation-delay: 1.05s; }
-.area-fires    { animation-delay: 1.11s; }
-.area-book     { animation-delay: 1.17s; }
+.area-book     { animation-delay: 1.11s; }
 .area-venues   { animation-delay: 1.23s; }
 .area-engine   { animation-delay: 1.29s; }
 .area-stream   { animation-delay: 1.35s; }
@@ -98,29 +96,6 @@ body {
 /* ---- pulse card ---- */
 #spark svg { width: 100%; height: 46px; color: var(--coffee-bean); margin-top: 6px; }
 
-/* ---- fires card: the ember (signature) ---- */
-.card.fires {
-  position: relative; overflow: hidden;
-  background: var(--pine-teal); color: var(--soft-linen);
-  border-top: 3px solid var(--brick-ember);
-}
-.card.fires::before { /* molten glow behind the big number */
-  content: ""; position: absolute; top: -30%; left: -15%;
-  width: 65%; height: 130%; pointer-events: none;
-  background: radial-gradient(closest-side, rgba(119,11,12,.9), rgba(119,11,12,0));
-}
-.card.fires::after { /* 4%-opacity molten hatch */
-  content: ""; position: absolute; inset: 0; pointer-events: none;
-  background: repeating-linear-gradient(135deg,
-    rgba(119,11,12,.04) 0 2px, transparent 2px 9px);
-}
-.card.fires h2 { color: var(--silver); }
-.card.fires .sub { color: var(--silver); }
-.card.fires .trendmark.up { color: var(--light-green); }
-.card.fires .trendmark.down,
-.card.fires .trendmark.flat { color: var(--silver); }
-#firesspark svg { width: 100%; height: 46px; color: var(--light-green); margin-top: 6px; }
-
 /* ---- alert book tiles ---- */
 .trio { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
 .tile {
@@ -144,9 +119,13 @@ body {
 .tile.t-cancelled { background: var(--linen); color: var(--coffee-bean); border: 1px solid var(--hairline); }
 .tile.t-cancelled .sub { color: var(--linen-ink); }
 .tile.t-cancelled .glyph { color: var(--linen-ink); }
-.livetrend { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
-#livetrendline { flex: 1; }
-#livetrendline svg, .vmeta svg { width: 100%; height: 16px; display: block; }
+/* per-tile trend lines: live-alerts trend in the active tile, fires-rate
+   trend in the triggered tile. light-green only on the pine-teal tile. */
+.tilespark { width: 100%; margin-top: 8px; }
+.tilespark svg { width: 100%; height: 22px; display: block; }
+.t-active .tilespark { color: var(--light-green); }
+.t-triggered .tilespark { color: var(--soft-linen); }
+.vmeta svg { width: 100%; height: 16px; display: block; }
 
 /* ---- venues ---- */
 #venues .row {
@@ -213,8 +192,10 @@ body {
   border: 1px solid var(--coffee-bean); background: #fff0; color: var(--coffee-bean);
 }
 .filters button {
-  background: var(--pine-teal); color: var(--soft-linen); border: 0; font-weight: 600; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--brick-ember); color: #fff; border: 0; font-weight: 600; cursor: pointer;
 }
+.filters button svg { width: 13px; height: 13px; display: block; }
 .ddhost { position: relative; display: inline-flex; }
 .dd {
   display: inline-flex; align-items: center; justify-content: space-between; gap: 8px;
@@ -291,11 +272,17 @@ body {
 }
 
 /* ---- responsive ---- */
+/* Laptop band: compress rail rows (drop the venue/tier meta) so the
+   right column never overflows its 3-column track. */
+@media (max-width: 1400px) and (min-width: 1101px) {
+  .stream .trg { grid-template-columns: 56px minmax(70px, 1fr) minmax(60px, auto) auto; }
+  .stream .meta { display: none; }
+}
 @media (max-width: 1100px) {
   .grid {
     grid-template-columns: repeat(2, 1fr);
     grid-template-areas:
-      "pulse fires"
+      "pulse pulse"
       "book book"
       "rail rail"
       "venues venues"
@@ -307,7 +294,7 @@ body {
 @media (max-width: 720px) {
   .grid {
     grid-template-columns: 1fr;
-    grid-template-areas: "pulse" "fires" "book" "venues" "engine" "rail" "inquiry";
+    grid-template-areas: "pulse" "book" "venues" "engine" "rail" "inquiry";
   }
   .stream .trg { grid-template-columns: 56px 1fr 90px; }
   .stream .meta, .stream .time { display: none; }

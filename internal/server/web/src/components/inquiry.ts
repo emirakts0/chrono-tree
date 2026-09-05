@@ -27,7 +27,7 @@ export function mountInquiry(root: HTMLElement): void {
       <span class="ddhost" data-dd="venue"></span>
       <span class="ddhost" data-dd="tier"></span>
       <span class="ddhost" data-dd="direction"></span>
-      <button type="submit">query</button>
+      <button type="submit"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.8"/><line x1="10.6" y1="10.6" x2="14" y2="14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>query</button>
     </form>
     <table class="tbl"><thead><tr>
       <th>symbol</th><th>dims</th><th>type</th><th>dir</th><th>target</th>
