@@ -133,7 +133,12 @@ func (m *Market) Step() Quote {
 	if half < 1 {
 		half = 1
 	}
-	return Quote{SymIdx: i, TierIdx: m.symI % 2, Bid: b - half, Ask: b + half}
+	// Tier is the symbol index parity — the same i%2 every layout assigns
+	// (alerts i and i+n land on symbol i%n, both tier i%2 for even n).
+	// Not m.symI%2: that reads the counter AFTER the increment, inverting
+	// the parity vs the layouts and breaking dims-matching on any engine
+	// configured with a tier dim (engine.Match requires exact equality).
+	return Quote{SymIdx: i, TierIdx: i % 2, Bid: b - half, Ask: b + half}
 }
 
 // Emitter shapes tick emission toward a target rate: accumulate the

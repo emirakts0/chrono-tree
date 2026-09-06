@@ -63,6 +63,31 @@ func TestMarketRoundRobinAndHold(t *testing.T) {
 	}
 }
 
+// Tier parity: every layout assigns alert tier i%2 with symbol i%n, so the
+// walk's tick for symbol s must carry tier s%2 — otherwise an engine
+// configured with a tier dim never matches (dims must be exactly equal).
+func TestMarketTierMatchesLayouts(t *testing.T) {
+	for _, n := range []int{50, 200, 500} {
+		syms := Symbols(n)
+		for _, hold := range []bool{false, true} {
+			m := NewMarket(syms, 1, hold)
+			seen := map[int]int{}
+			for i := 0; len(seen) < n; i++ {
+				q := m.Step()
+				if prev, ok := seen[q.SymIdx]; ok && prev != q.TierIdx {
+					t.Fatalf("n=%d hold=%v: symbol %d tier flipped %d -> %d", n, hold, q.SymIdx, prev, q.TierIdx)
+				}
+				seen[q.SymIdx] = q.TierIdx
+			}
+			for s, tier := range seen {
+				if tier != s%2 {
+					t.Fatalf("n=%d hold=%v: symbol %d tier %d, want %d", n, hold, s, tier, s%2)
+				}
+			}
+		}
+	}
+}
+
 func TestMarketDeterministic(t *testing.T) {
 	syms := Symbols(32)
 	a, b := NewMarket(syms, 7, false), NewMarket(syms, 7, false)
