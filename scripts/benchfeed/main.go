@@ -238,14 +238,18 @@ func feed(server, statsAddr, scenario, layout string, alerts, symbols, cluster i
 		gapStart := time.Now()
 		deadline := gapStart.Add(120 * time.Second)
 		for time.Now().Before(deadline) {
-			fired := statsFired(statsAddr)
-			if fired >= uint64(cluster) { // the cluster is what fires
+			fired, ringDrop, triggered := statsDrain(statsAddr)
+			// Drain success is the conservation law plus store-flip
+			// catch-up: every cluster alert is accounted for (fired or
+			// ring-dropped — a full ring is a capacity finding, not a
+			// timeout) AND the pump has flipped everything it delivered.
+			if fired+ringDrop >= uint64(cluster) && triggered >= fired {
 				break
 			}
 			time.Sleep(200 * time.Millisecond)
 		}
 		drainMs = time.Since(gapStart).Milliseconds()
-		if statsFired(statsAddr) < uint64(cluster) {
+		if f, d, _ := statsDrain(statsAddr); f+d < uint64(cluster) {
 			drainTimeout = true
 		}
 	}
@@ -294,14 +298,24 @@ func statsSnapshot(addr string) map[string]any {
 	return m
 }
 
-// statsFired reads triggers_fired from /stats (0 if unreachable).
-func statsFired(addr string) uint64 {
+// statsDrain reads the counters the burst-drain criterion needs: fired
+// triggers, engine-side ring drops, and store-flipped (triggered) records.
+func statsDrain(addr string) (fired, ringDropped, triggered uint64) {
 	m := statsSnapshot(addr)
 	if m == nil {
-		return 0
+		return 0, 0, 0
 	}
 	f, _ := m["triggers_fired"].(float64)
-	return uint64(f)
+	fired = uint64(f)
+	if e, ok := m["engine"].(map[string]any); ok {
+		d, _ := e["dropped_triggers"].(float64)
+		ringDropped = uint64(d)
+	}
+	if s, ok := m["alerts_by_state"].(map[string]any); ok {
+		t, _ := s["triggered"].(float64)
+		triggered = uint64(t)
+	}
+	return fired, ringDropped, triggered
 }
 
 func writeJSON(path string, v any) {
