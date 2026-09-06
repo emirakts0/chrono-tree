@@ -8,5 +8,9 @@
 # IDE
 .idea/
 
-# superpowers working docs (specs/plans live on disk, not in git)
-docs/superpowers/
+# working docs: specs/plans/perf campaigns live on disk, not in git
+docs/
+.superpowers
+.claude
+AGENTS.md
+CLAUDE.md

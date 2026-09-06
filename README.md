@@ -144,7 +144,7 @@ nats sub 'chrono.triggers.>'                              # watch triggers fire
 | MatchDimsSparse1M | same as Sparse1M + 2 dims | 874 | 0 | 0 |
 | MatchDimsDenseSkip | same as DenseSkip + 2 dims | 201,614 | 0 | 0 |
 
-**Sustained-load campaign** ([2026-09-06](docs/perf/2026-09-06-campaign/REPORT.md); baseline = 1M alerts / 500 symbols / 20k ticks/s):
+**Sustained-load campaign** (baseline = 1M alerts / 500 symbols / 20k ticks/s):
 
 | scenario | ticks/s | CPU (% 1 core) | RSS peak | fired | ring drops |
 |---|---:|---:|---:|---:|---:|
