@@ -391,11 +391,24 @@ func presentBidAskMid() uint8 {
 	return uint8(1)<<uint(engine.PriceBid) | uint8(1)<<uint(engine.PriceAsk) | uint8(1)<<uint(engine.PriceMid)
 }
 
+// maxNameLen bounds what the tick path may intern, mirroring the
+// UpsertAlert symbol pattern's length. StreamTicks is client-streaming,
+// so the protovalidate interceptor never sees its ticks — without this
+// bound an empty or megabyte-scale name would be interned for the boot
+// and served via GetCatalog//stats.
+const maxNameLen = 20
+
+// nameOK reports whether a tick field may be interned as a name.
+func nameOK(s string) bool { return len(s) > 0 && len(s) <= maxNameLen }
+
 // ingestTick converts one wire tick to an engine tick and Matches it.
 // Unknown symbol/venue/tier are interned on first sight — the feed
-// defines the vocabulary. Errors: price/scale problems (drop this tick
-// only) or dim exhaustion (also per-tick).
+// defines the vocabulary. Errors (all drop this tick only): malformed
+// names, price/scale problems, or dim exhaustion.
 func (c *Core) ingestTick(t *chronov1.Tick, now time.Time) error {
+	if !nameOK(t.GetSymbol()) || !nameOK(t.GetVenue()) || !nameOK(t.GetTier()) {
+		return fmt.Errorf("symbol/venue/tier must be 1..%d bytes", maxNameLen)
+	}
 	sym, ok := c.Cat.Symbol(t.GetSymbol())
 	if !ok {
 		dec, serr := price.ScaleOf(t.GetBid())

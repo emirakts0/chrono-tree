@@ -3,10 +3,12 @@ package service
 import (
 	"context"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
 	chronov1 "github.com/emir/chrono-tree/api/gen/chrono/v1"
+	"github.com/emir/chrono-tree/internal/catalog"
 )
 
 type tickStream struct {
@@ -98,6 +100,35 @@ func TestStreamTicksDropsBadPriceOnly(t *testing.T) {
 	}
 	if e.core.stats.TicksDropped.Load() != 1 {
 		t.Fatal("TicksDropped counter not bumped")
+	}
+}
+
+// TestStreamTicksDropsMalformedNames: the client-streaming path bypasses
+// the protovalidate interceptor, so ingestTick must bound what the feed
+// can intern itself — empty or oversized names are dropped-and-counted
+// like price errors, never interned.
+func TestStreamTicksDropsMalformedNames(t *testing.T) {
+	longVenue := strings.Repeat("V", maxNameLen+1)
+	e := newEnv(t)
+	fs, err := runTicks(t, e, &chronov1.TickBatch{Ticks: []*chronov1.Tick{
+		tick("BTCUSDT", "65000.00", "65000.10", "ATLAS", "TOP"),
+		tick("", "65000.00", "65000.10", "ATLAS", "TOP"),
+		tick("BTCUSDT", "65000.00", "65000.10", longVenue, "TOP"),
+	}})
+	if err != nil {
+		t.Fatalf("StreamTicks: %v", err)
+	}
+	if fs.GetAccepted() != 1 || fs.GetDropped() != 2 {
+		t.Fatalf("FeedStatus = %+v, want 1 accepted 2 dropped", fs)
+	}
+	if got := e.core.stats.TicksDropped.Load(); got != 2 {
+		t.Fatalf("TicksDropped = %d, want 2", got)
+	}
+	if _, ok := e.core.Cat.Symbol(""); ok {
+		t.Fatal("empty symbol interned")
+	}
+	if _, ok := e.core.Cat.Value(catalog.DimVenue, longVenue); ok {
+		t.Fatal("oversized venue interned")
 	}
 }
 
