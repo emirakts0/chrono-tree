@@ -117,19 +117,20 @@ is property-tested against `math/big` over 50,000 cases.
 
 ## A demo on top
 
-`cmd/chronod` is a **demo application** built on the engine — a thin shell
-showing the library in a realistic setting, not the product itself. It wraps
-the engine as a daemon: `chrono.v1` gRPC on `:9090` (alerts, tick ingestion,
-catalog), trigger publishing to NATS (`chrono.triggers.{venue}.{tier}`), a
-bbolt alert store, and an embedded monitoring dashboard on `:8080` — catalog
-validation and exact price conversion at the boundary, then the engine
-unchanged.
+`demo/cmd/chronod` is a **demo application** built on the engine — a thin shell
+showing the library in a realistic setting, not the product itself. The demo is
+its own Go module (`demo/`, using the engine via a local `replace`), so the
+library stays standalone. It wraps the engine as a daemon: `chrono.v1` gRPC on
+`:9090` (alerts, tick ingestion, catalog), trigger publishing to NATS
+(`chrono.triggers.{venue}.{tier}`), a bbolt alert store, and an embedded
+monitoring dashboard on `:8080` — catalog validation and exact price conversion
+at the boundary, then the engine unchanged.
 
 ```sh
-nats-server &                                        # trigger bus
-go run ./scripts/chronofeed -db demo.bbolt &         # seed alerts, stream a synthetic market
-go run ./cmd/chronod -db demo.bbolt                  # serve :9090 · dashboard on :8080
-nats sub 'chrono.triggers.>'                         # watch triggers fire
+nats-server &                                             # trigger bus
+go run ./demo/scripts/chronofeed -db demo.bbolt &         # seed alerts, stream a synthetic market
+go run ./demo/cmd/chronod -db demo.bbolt                  # serve :9090 · dashboard on :8080
+nats sub 'chrono.triggers.>'                              # watch triggers fire
 ```
 
 ## Benchmarks
@@ -143,11 +144,6 @@ nats sub 'chrono.triggers.>'                         # watch triggers fire
 | MatchDimsSparse1M | same as Sparse1M + 2 dims | 874 | 0 | 0 |
 | MatchDimsDenseSkip | same as DenseSkip + 2 dims | 201,614 | 0 | 0 |
 
-`Sparse1M` is the dominant shape under sustained load: cost is set by the
-ticked symbol's trees, not the 1M-alert total. `DenseSkip` prices the deferred
-removal trade-off — ~9 ns per already-fired entry walked past until the
-flusher retires it.
-
 **Sustained-load campaign** ([2026-09-06](docs/perf/2026-09-06-campaign/REPORT.md); baseline = 1M alerts / 500 symbols / 20k ticks/s):
 
 | scenario | ticks/s | CPU (% 1 core) | RSS peak | fired | ring drops |
@@ -159,17 +155,11 @@ flusher retires it.
 | trickle (575 fires/s) | 20,000 | 7.2 | 1,050 MiB | 138,298 | 0 |
 | burst-500k | 20,000 | 7.5 | 1,022 MiB | 500,000 | 0 |
 
-- **Rate**: 10× the tick rate costs 3× the CPU; no knee at 200k ticks/s.
-- **Memory is rate-, symbol- and burst-invariant**: ~1.0 GB in every scenario, set entirely by the 1M-alert index (~630 B/alert; seeding's B-tree node churn is nearly all allocation the process ever does — the steady state is allocation-free).
-- **Bursts are absorbed**: 500k simultaneous triggers pushed and drained in
-  44 ms with zero ring drops. The trigger ring is sized operationally
-  (`-ring` on the demo daemon, 1,048,576 slots by default) so a burst larger
-  than the ring is an operator decision, not a code limit. Full tables and
-  methodology: [campaign report](docs/perf/2026-09-06-campaign/REPORT.md).
-
-Tests: `go test ./... -race -count=1`, plus the oracles above. The perf
-harness carries its own end-to-end gate over real binaries and sockets
-(`go test ./scripts/perf/ -run TestPerfSmoke`, minutes-scale).
+Tests: `go test ./... -race -count=1` (engine + price), plus the oracles
+above; the service suite lives in the demo module — `cd demo && go test ./...`.
+The perf harness carries its own end-to-end gate over real binaries and
+sockets (`cd demo && go test ./scripts/perf/ -run TestPerfSmoke`,
+minutes-scale).
 
 Not yet built: persistence of engine state, TLS/auth, multi-node anything.
 
