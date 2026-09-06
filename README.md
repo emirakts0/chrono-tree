@@ -10,8 +10,6 @@
 
 [![Go](https://img.shields.io/badge/Go-1.27-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![btype](https://img.shields.io/badge/B--Tree-tidwall%2Fbtype-CA2159)](https://github.com/tidwall/btype)
-[![gRPC](https://img.shields.io/badge/gRPC-244B5A?logo=grpc&logoColor=white)](https://grpc.io)
-[![NATS](https://img.shields.io/badge/NATS-27AA3E?logo=nats.io&logoColor=white)](https://nats.io)
 
 </div>
 
@@ -117,13 +115,15 @@ evaluator must produce identical trigger sets, the same scenario run through
 `price.Format`/`Parse` must match direct integer prices exactly, and `price`
 is property-tested against `math/big` over 50,000 cases.
 
-## The service
+## A demo on top
 
-`cmd/chronod` wraps the engine as a daemon: `chrono.v1` gRPC on `:9090`
-(alerts, tick ingestion, catalog), trigger publishing to NATS
-(`chrono.triggers.{venue}.{tier}`), a bbolt alert store, and an embedded
-monitoring dashboard on `:8080`. It is a thin shell — catalog validation and
-exact price conversion at the boundary, then everything above unchanged.
+`cmd/chronod` is a **demo application** built on the engine — a thin shell
+showing the library in a realistic setting, not the product itself. It wraps
+the engine as a daemon: `chrono.v1` gRPC on `:9090` (alerts, tick ingestion,
+catalog), trigger publishing to NATS (`chrono.triggers.{venue}.{tier}`), a
+bbolt alert store, and an embedded monitoring dashboard on `:8080` — catalog
+validation and exact price conversion at the boundary, then the engine
+unchanged.
 
 ```sh
 nats-server &                                        # trigger bus
@@ -161,12 +161,11 @@ flusher retires it.
 
 - **Rate**: 10× the tick rate costs 3× the CPU; no knee at 200k ticks/s.
 - **Memory is rate-, symbol- and burst-invariant**: ~1.0 GB in every scenario, set entirely by the 1M-alert index (~630 B/alert; seeding's B-tree node churn is nearly all allocation the process ever does — the steady state is allocation-free).
-- **Bursts are absorbed** (engine): 500k simultaneous triggers pushed and drained in 44 ms with zero ring drops. The *service* layer's trigger pump initially lagged — ~4.4k triggers/s, dropping 34–87 % of large bursts at the ring. The [burst-absorption fix](docs/perf/2026-09-06-campaign-postopt/) (a pipelined pump and a 1,048,576-slot ring) removed it:
-
-| service burst | ring lost | drain | pump throughput |
-|---|---:|---:|---:|
-| 100k triggers | 34,400 → **0** | 15.1 s → **2.8 s** | ~4.4k → **~35k/s** |
-| 500k triggers | 434,336 → **0** | 14.9 s → **9.1 s** | ~4.4k → **~55k/s** |
+- **Bursts are absorbed**: 500k simultaneous triggers pushed and drained in
+  44 ms with zero ring drops. The trigger ring is sized operationally
+  (`-ring` on the demo daemon, 1,048,576 slots by default) so a burst larger
+  than the ring is an operator decision, not a code limit. Full tables and
+  methodology: [campaign report](docs/perf/2026-09-06-campaign/REPORT.md).
 
 Tests: `go test ./... -race -count=1`, plus the oracles above and an integration smoke over real binaries and sockets (`go test -tags integration ./tests`).
 
