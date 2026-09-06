@@ -94,7 +94,7 @@ enrich overlapping the store flip (`2b072f7`). Full runs: `docs/perf/2026-09-06-
 **Targets were met on both burst scenarios and partially on trickle.** The
 burst-loss finding is gone: `fired + ring_dropped == cluster` now holds with
 `ring_dropped = 0` on both bursts — 100k and 500k clusters delivered whole,
-drains down 5.4× and 1.6× (effective flip throughput ~55k triggers/s vs
+drains down 5.4× and 1.6× (effective flip throughput ~35–55k triggers/s (100k vs 500k burst) vs
 ~4.4k/s before), at the cost of +91/+276 MiB peak RSS (ring slots plus
 delivered/flip buffers; well under the 8 GiB cap). Trickle CPU fell 7.6pp of
 one core (83.3 → 75.7) with identical fire counts — the pump pipeline hides

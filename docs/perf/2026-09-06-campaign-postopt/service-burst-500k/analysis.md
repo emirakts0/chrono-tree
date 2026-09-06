@@ -18,8 +18,7 @@ delivers every trigger: `fired + ring_dropped == cluster` holds exactly with
 12.6× the before-run's effective ~4.4k/s (which only ever delivered ring
 capacity anyway).
 
-Memory is the trade: peak RSS 1,494 → 1,770 MiB (+276 MiB ≈ 1M ring slots at
-~276 B plus 500k delivered/flip buffers, plateau 1,526 MiB). Drain is 9.1 s
+Memory is the trade: peak RSS 1,494 → 1,770 MiB (+276 MiB: the raw ring is only ~40 MiB at 40 B/slot — the rest is allocator headroom and 500k delivered/flip-path transients, plateau 1,526 MiB). Drain is 9.1 s
 of store tx work after the gap tick — latency, not loss, and CPU stays at
 parked levels (23.6%).
 

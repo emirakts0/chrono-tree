@@ -40,7 +40,7 @@ func main() {
 	httpAddr := flag.String("http-addr", ":8080", "HTTP status listen address")
 	natsURL := flag.String("nats-url", "nats://localhost:4222", "NATS server URL (trigger publishing); empty = no broker (noop publisher, no live trigger feed)")
 	dbPath := flag.String("db", "chrono.bbolt", "alert store path (bbolt); source of truth across restarts")
-	ring := flag.Int("ring", 1<<20, "trigger ring capacity, rounded to a power of two (bytes: 32 B/slot ≈ 32 MiB at default); size for the largest simultaneous burst")
+	ring := flag.Int("ring", 1<<20, "trigger ring capacity, rounded to a power of two (40 B/slot ≈ 40 MiB at default); size for the largest simultaneous burst")
 	flag.Parse()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 
