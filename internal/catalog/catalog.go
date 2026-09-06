@@ -10,6 +10,7 @@ import (
 	"hash/fnv"
 	"math"
 	"strconv"
+	"sync"
 
 	"github.com/emir/chrono-tree/internal/price"
 )
@@ -35,8 +36,11 @@ type Symbol struct {
 	Reference string
 }
 
-// Catalog is immutable after construction; safe for concurrent use.
+// Catalog is safe for concurrent use. Reads (Symbol, Value, Name, …) take
+// a shared lock; Ensure* intern on first sight under the write lock. dims
+// is fixed after construction and read without locking.
 type Catalog struct {
+	mu      sync.RWMutex
 	symbols map[string]Symbol
 	order   []Symbol
 	values  map[string]map[string]uint16
@@ -149,15 +153,23 @@ func synthAnchor(name string) string {
 
 // Symbol looks up one pair.
 func (c *Catalog) Symbol(name string) (Symbol, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	s, ok := c.symbols[name]
 	return s, ok
 }
 
 // Symbols returns all pairs in deterministic (construction) order.
-func (c *Catalog) Symbols() []Symbol { return c.order }
+func (c *Catalog) Symbols() []Symbol {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.order
+}
 
 // Decimals returns the quote precision of a pair.
 func (c *Catalog) Decimals(name string) (uint8, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	s, ok := c.symbols[name]
 	return s.Decimals, ok
 }
@@ -167,18 +179,24 @@ func (c *Catalog) Dims() []string { return c.dims }
 
 // Value maps a dim value name to its engine uint16.
 func (c *Catalog) Value(dim, valueName string) (uint16, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	v, ok := c.values[dim][valueName]
 	return v, ok
 }
 
 // Name maps an engine uint16 back to its dim value name.
 func (c *Catalog) Name(dim string, value uint16) (string, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	n, ok := c.names[dim][value]
 	return n, ok
 }
 
 // DimValues returns the ordered value names of a dim.
 func (c *Catalog) DimValues(dim string) []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	out := make([]string, 0, len(c.names[dim]))
 	for i := 0; ; i++ {
 		n, ok := c.names[dim][uint16(i)]
@@ -187,4 +205,55 @@ func (c *Catalog) DimValues(dim string) []string {
 		}
 		out = append(out, n)
 	}
+}
+
+// Empty returns a registry with only the positional dim vocabulary:
+// zero symbols, zero dim values. It learns from the feed at runtime;
+// Default() is the compiled-in simulator dataset, not service law.
+func Empty() *Catalog {
+	c := &Catalog{
+		symbols: map[string]Symbol{},
+		values:  map[string]map[string]uint16{},
+		names:   map[string]map[uint16]string{},
+		dims:    []string{DimVenue, DimTier},
+	}
+	for _, dim := range c.dims {
+		c.values[dim] = map[string]uint16{}
+		c.names[dim] = map[uint16]string{}
+	}
+	return c
+}
+
+// EnsureSymbol returns the entry for name, interning it at decimals on
+// first sight. ok=false ⇔ name is already pinned at different decimals
+// (the returned Symbol carries the pinned entry; the caller must fail,
+// never rescale).
+func (c *Catalog) EnsureSymbol(name string, decimals uint8) (Symbol, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if s, ok := c.symbols[name]; ok {
+		return s, s.Decimals == decimals
+	}
+	s := Symbol{Name: name, Decimals: decimals}
+	c.symbols[name] = s
+	c.order = append(c.order, s)
+	return s, true
+}
+
+// EnsureValue returns the engine uint16 for a dim value, interning it at
+// the next free slot on first sight. ok=false ⇔ the dim is exhausted
+// (65,534 values; DimSentinel 0xFFFF is reserved by the engine).
+func (c *Catalog) EnsureValue(dim, valueName string) (uint16, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if v, ok := c.values[dim][valueName]; ok {
+		return v, true
+	}
+	v := uint16(len(c.names[dim]))
+	if v == 0xFFFF {
+		return 0, false
+	}
+	c.values[dim][valueName] = v
+	c.names[dim][v] = valueName
+	return v, true
 }
