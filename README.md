@@ -165,7 +165,7 @@ flusher retires it.
 
 Tests: `go test ./... -race -count=1`, plus the oracles above and an integration smoke over real binaries and sockets (`go test -tags integration ./tests`).
 
-Not yet built: TLS/auth, multi-node anything. Design docs live in [`docs/superpowers/specs/`](docs/superpowers/specs/).
+Not yet built: persistence of engine state, TLS/auth, multi-node anything.
 
 ---
 
