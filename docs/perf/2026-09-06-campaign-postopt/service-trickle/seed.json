@@ -1,0 +1,9 @@
+{
+  "alerts": 1000000,
+  "cluster": 0,
+  "layout": "trickle",
+  "rate": 20000,
+  "scenario": "trickle",
+  "symbols": 500,
+  "venue": "ATLAS"
+}

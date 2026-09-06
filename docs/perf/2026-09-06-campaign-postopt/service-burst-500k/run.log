@@ -1,0 +1,11 @@
+=== service/burst-500k layout=gap alerts=1000000 symbols=500 rate=20000 cluster=500000 dur=240s ===
+2026/09/06 23:51:03 seeded 200000/1000000 (1.9s)
+2026/09/06 23:51:05 seeded 400000/1000000 (3.9s)
+2026/09/06 23:51:08 seeded 600000/1000000 (6.1s)
+2026/09/06 23:51:10 seeded 800000/1000000 (8.7s)
+2026/09/06 23:51:13 seeded 1000000/1000000 (11.7s)
+2026/09/06 23:51:13 seed done: 1000000 alerts into docs/perf/2026-09-06-campaign-postopt/service-burst-500k/tmp/alerts.bbolt
+2026/09/06 23:51:17 waiting for chronod localhost:19090
+2026/09/06 23:55:27 feed done: sent=4800001 accepted=4800001 dropped=0 saturated=false drain=9071ms
+2026/09/06 23:55:27 collected service/burst-500k: valid=true
+RUN service/burst-500k: VALID

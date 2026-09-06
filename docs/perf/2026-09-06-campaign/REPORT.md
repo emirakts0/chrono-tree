@@ -77,3 +77,28 @@ Delivered volume is flat at ~65.6k regardless of burst size (ring capacity), and
 2. **Burst absorption is the one real gap**: raise `RingSize` beyond 65,536 or make the pump stream; today a 100k burst silently drops 34% at the service boundary while the engine side loses none.
 3. **Trigger delivery is the scaling frontier**: an order of magnitude more fire-rate requires a faster enrich/flip path (batching is already there; concurrency or larger batches next), not a faster matcher.
 4. Re-run this campaign after any engine change: `for s in baseline rate-100k rate-200k sym-1000 sym-2000 trickle burst-100k burst-500k; do bash scripts/perf/run.sh engine $s docs/perf/<date>-campaign && bash scripts/perf/run.sh service $s docs/perf/<date>-campaign; done`
+
+## After the burst-absorption fix (postopt)
+
+Three service scenarios re-run same-day, same box, same gates after two levers
+landed: the trigger ring default grew **65,536 → 1,048,576 slots**
+(`f1eeee0`) and the pump became a **pipelined batch pipeline** — 4096-wide
+enrich overlapping the store flip (`2b072f7`). Full runs: `docs/perf/2026-09-06-campaign-postopt/`.
+
+| scenario | | CPU % 1 core | RSS peak MiB | delivered | ring-dropped | drain |
+|---|---|---|---|---|---|---|
+| trickle | before → after | 83.3 → **75.7** | 1,522 → 1,485 | 138,298 → 138,298 | 0 → 0 | — |
+| burst-100k | before → after | 25.6 → 25.4 | 1,499 → 1,590 | 65,600 → **100,000** | 34,400 → **0** | 15.1 s → **2.8 s** |
+| burst-500k | before → after | 24.2 → 23.6 | 1,494 → 1,770 | 65,664 → **500,000** | 434,336 → **0** | 14.9 s → **9.1 s** |
+
+**Targets were met on both burst scenarios and partially on trickle.** The
+burst-loss finding is gone: `fired + ring_dropped == cluster` now holds with
+`ring_dropped = 0` on both bursts — 100k and 500k clusters delivered whole,
+drains down 5.4× and 1.6× (effective flip throughput ~55k triggers/s vs
+~4.4k/s before), at the cost of +91/+276 MiB peak RSS (ring slots plus
+delivered/flip buffers; well under the 8 GiB cap). Trickle CPU fell 7.6pp of
+one core (83.3 → 75.7) with identical fire counts — the pump pipeline hides
+part of the per-trigger store cost, but delivery remains the service's
+dominant expense (~51pp over parked), so the sustained-firing frontier stands,
+at a better slope. Caveat from before still applies: burst CPU% windows
+include drain, so burst CPU figures are mildly overstated either way.

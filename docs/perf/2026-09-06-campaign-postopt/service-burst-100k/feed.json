@@ -1,0 +1,45 @@
+{
+  "drain_ms": 2822,
+  "drain_timeout": false,
+  "final_stats": {
+    "alerts_by_state": {
+      "active": 900000,
+      "triggered": 100000
+    },
+    "engine": {
+      "dropped_triggers": 0,
+      "live": 994368
+    },
+    "feed_ever_connected": true,
+    "feed_last_seen_ms_ago": 2829,
+    "nats_connected": true,
+    "sys": {
+      "cpu_cores": 12,
+      "db_bytes": 831672320,
+      "disk_free_bytes": 334947475456,
+      "disk_total_bytes": 511479975936,
+      "heap_bytes": 1008934192,
+      "host_cpu_percent": 50,
+      "host_mem_total_bytes": 14491209728,
+      "host_mem_used_bytes": 7427432448,
+      "proc_cpu_percent": 16.46800602118658,
+      "rss_bytes": 1667551232
+    },
+    "ticks": 4800001,
+    "ticks_dropped": 0,
+    "ticks_per_sec": 19080.016666666666,
+    "triggers_fired": 100000,
+    "triggers_per_sec": 33333.333333333336,
+    "triggers_publish_dropped": 0,
+    "triggers_published": 100000,
+    "uptime_sec": 247.190175039,
+    "venue_ticks": {
+      "ATLAS": 4800001
+    }
+  },
+  "load_wall_ms": 240000,
+  "saturated": false,
+  "ticks_accepted": 4800001,
+  "ticks_dropped": 0,
+  "ticks_sent": 4800001
+}

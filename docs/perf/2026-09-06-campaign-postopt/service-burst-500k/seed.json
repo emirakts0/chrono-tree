@@ -1,0 +1,9 @@
+{
+  "alerts": 1000000,
+  "cluster": 500000,
+  "layout": "gap",
+  "rate": 20000,
+  "scenario": "burst-500k",
+  "symbols": 500,
+  "venue": "ATLAS"
+}
