@@ -80,3 +80,41 @@ func TestParseRejectsNeverRounds(t *testing.T) {
 		}
 	}
 }
+
+func TestScaleOf(t *testing.T) {
+	cases := []struct {
+		in   string
+		want uint8
+		err  error
+	}{
+		{"65000", 0, nil},
+		{"65000.00", 2, nil},
+		{".5", 1, nil},
+		{"1.", 0, nil},
+		{"0.00001234", 8, nil},
+		{"-12.3400", 4, nil},
+		{"abc", 0, ErrSyntax},
+		{"1.2.3", 0, ErrSyntax},
+		{"", 0, ErrSyntax},
+		{"0.1234567890123456789", 0, ErrScale},
+	}
+	for _, tc := range cases {
+		got, err := ScaleOf(tc.in)
+		if tc.err != nil {
+			if !errors.Is(err, tc.err) {
+				t.Fatalf("ScaleOf(%q) err = %v, want %v", tc.in, err, tc.err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("ScaleOf(%q): %v", tc.in, err)
+		}
+		if got != tc.want {
+			t.Fatalf("ScaleOf(%q) = %d, want %d", tc.in, got, tc.want)
+		}
+		// Invariant: Parse at the derived scale is exact.
+		if _, err := Parse(tc.in, got); err != nil {
+			t.Fatalf("Parse(%q, %d): %v", tc.in, got, err)
+		}
+	}
+}

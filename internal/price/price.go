@@ -97,6 +97,40 @@ func Parse(s string, decimals uint8) (int64, error) {
 	return v, nil
 }
 
+// ScaleOf returns the number of fractional digits in the decimal string s
+// — the smallest scale at which Parse(s, scale) is exact. Same grammar as
+// Parse (sign, digits, one optional dot); a fraction longer than
+// MaxDecimals is ErrScale, anything else malformed is ErrSyntax.
+func ScaleOf(s string) (uint8, error) {
+	i := 0
+	if i < len(s) && (s[i] == '+' || s[i] == '-') {
+		i++
+	}
+	seenDigit, seenDot := false, false
+	frac := 0
+	for ; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= '0' && c <= '9':
+			seenDigit = true
+			if seenDot {
+				frac++
+			}
+		case c == '.' && !seenDot:
+			seenDot = true
+		default:
+			return 0, ErrSyntax
+		}
+	}
+	if !seenDigit {
+		return 0, ErrSyntax
+	}
+	if frac > MaxDecimals {
+		return 0, ErrScale
+	}
+	return uint8(frac), nil
+}
+
 // FromFloat converts a float64 via its shortest decimal representation that
 // round-trips (strconv 'f' -1). A float whose shortest form needs more
 // fractional digits than the scale — or exceeds int64 scaled — is rejected
