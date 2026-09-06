@@ -38,7 +38,7 @@ const shutdownGrace = 10 * time.Second
 func main() {
 	grpcAddr := flag.String("grpc-addr", ":9090", "gRPC listen address")
 	httpAddr := flag.String("http-addr", ":8080", "HTTP status listen address")
-	natsURL := flag.String("nats-url", "nats://localhost:4222", "NATS server URL (trigger publishing)")
+	natsURL := flag.String("nats-url", "nats://localhost:4222", "NATS server URL (trigger publishing); empty = no broker (noop publisher, no live trigger feed)")
 	dbPath := flag.String("db", "chrono.bbolt", "alert store path (bbolt); source of truth across restarts")
 	flag.Parse()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
@@ -55,9 +55,18 @@ func main() {
 func run(ctx context.Context, grpcAddr, httpAddr, natsURL, dbPath string) error {
 	// NATS is a boot dependency: unreachable broker is a fatal error.
 	// Later outages reconnect forever; publishes during them drop-and-count.
-	publisher, err := pub.NewNATS(natsURL)
-	if err != nil {
-		return fmt.Errorf("nats: %w", err)
+	// An empty URL is the no-broker mode: a noop publisher (publishes
+	// succeed instantly) used by the performance campaign and any
+	// broker-less deployment — the pump and store flips still run.
+	var publisher pub.Publisher
+	if natsURL == "" {
+		publisher = pub.Noop{}
+	} else {
+		var err error
+		publisher, err = pub.NewNATS(natsURL)
+		if err != nil {
+			return fmt.Errorf("nats: %w", err)
+		}
 	}
 	defer func() { _ = publisher.Close() }() // backstop; the shutdown path drains first
 
@@ -83,8 +92,11 @@ func run(ctx context.Context, grpcAddr, httpAddr, natsURL, dbPath string) error 
 
 	// Dashboard live feed: re-consume our own published triggers. The
 	// handler fans out to browsers over SSE; it never blocks us.
-	if err := publisher.SubscribeTriggers(statusSrv.HandleTrigger); err != nil {
-		return fmt.Errorf("subscribe triggers: %w", err)
+	// Noop mode has no stream to subscribe to.
+	if np, ok := publisher.(*pub.NATSPublisher); ok {
+		if err := np.SubscribeTriggers(statusSrv.HandleTrigger); err != nil {
+			return fmt.Errorf("subscribe triggers: %w", err)
+		}
 	}
 
 	httpServer := &http.Server{Addr: httpAddr, Handler: statusSrv.Handler()}
