@@ -257,6 +257,12 @@ func toEngineDirection(d chronov1.Direction) (engine.Direction, bool) {
 // records the alert service-side BEFORE engine.Upsert (so the trigger pump
 // can always enrich), then submits and Syncs — the alert is visible to
 // Match when the response returns.
+//
+// Scale contract: the target price must be written at the symbol's pinned
+// scale exactly (trailing-zero variants are included in the check). For a
+// symbol not yet in the catalog, the target's fractional-digit count pins
+// the scale for the boot — a coarsely-written target (e.g. "65000" → 0
+// decimals) makes every finer tick for that symbol drop until restart.
 func (c *Core) UpsertAlert(ctx context.Context, req *chronov1.UpsertAlertRequest) (*chronov1.UpsertAlertResponse, error) {
 	dec, serr := price.ScaleOf(req.GetTargetPrice())
 	if serr != nil {

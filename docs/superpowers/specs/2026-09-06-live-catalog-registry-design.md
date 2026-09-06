@@ -126,3 +126,9 @@ to the engine's ~470 B/alert.
   themselves replay exactly via persisted `Decimals`).
 - Unbounded registry growth is possible from a chatty feed (accepted: feed
   trusted; protovalidate patterns bound the worst shapes).
+- A coarsely-written target on an unseen symbol pins its scale for the boot,
+  and the pin survives restart: replay re-interns the symbol at the record's
+  persisted `Decimals`, so every finer tick keeps dropping.
+- protovalidate does not cover the streaming tick path — the unary
+  interceptor never sees client-streaming RPCs — so name bounding is done
+  in `ingestTick` instead.
