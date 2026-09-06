@@ -1,0 +1,34 @@
+File: chronod
+Build ID: d10a28d5b005e7e5fa1bb04c49531b3edcc9f9fc
+Type: cpu
+Time: 2026-09-06 21:30:32 +03
+Duration: 30s, Total samples = 3.29s (10.97%)
+Showing nodes accounting for 2.65s, 80.55% of 3.29s total
+Dropped 82 nodes (cum <= 0.02s)
+Showing top 25 nodes out of 182
+      flat  flat%   sum%        cum   cum%
+     0.62s 18.84% 18.84%      0.66s 20.06%  github.com/tidwall/btype.(*Table[go.shape.struct { github.com/emir/chrono-tree/engine.price github.com/emir/chrono-tree/engine.Price; github.com/emir/chrono-tree/engine.id github.com/emir/chrono-tree/engine.AlertID; github.com/emir/chrono-tree/engine.dims [8]uint16; github.com/emir/chrono-tree/engine.validFrom int64; github.com/emir/chrono-tree/engine.expires int64; github.com/emir/chrono-tree/engine.idx uint32; github.com/emir/chrono-tree/engine.flags uint8 }]).initCompare.func2
+     0.40s 12.16% 31.00%      0.40s 12.16%  internal/runtime/syscall/linux.Syscall6
+     0.33s 10.03% 41.03%      0.99s 30.09%  github.com/tidwall/btype.(*tree[go.shape.struct {},go.shape.struct { github.com/emir/chrono-tree/engine.price github.com/emir/chrono-tree/engine.Price; github.com/emir/chrono-tree/engine.id github.com/emir/chrono-tree/engine.AlertID; github.com/emir/chrono-tree/engine.dims [8]uint16; github.com/emir/chrono-tree/engine.validFrom int64; github.com/emir/chrono-tree/engine.expires int64; github.com/emir/chrono-tree/engine.idx uint32; github.com/emir/chrono-tree/engine.flags uint8 }]).search
+     0.33s 10.03% 51.06%      0.33s 10.03%  runtime.nanotime (inline)
+     0.16s  4.86% 55.93%      0.16s  4.86%  runtime.futex
+     0.15s  4.56% 60.49%      0.15s  4.56%  time.runtimeNow
+     0.06s  1.82% 62.31%      0.06s  1.82%  github.com/emir/chrono-tree/internal/price.Parse
+     0.06s  1.82% 64.13%      0.23s  6.99%  google.golang.org/protobuf/internal/impl.(*MessageInfo).unmarshalPointerEager
+     0.05s  1.52% 65.65%      0.40s 12.16%  github.com/tidwall/btype.(*tree[go.shape.struct {},go.shape.struct { github.com/emir/chrono-tree/engine.price github.com/emir/chrono-tree/engine.Price; github.com/emir/chrono-tree/engine.id github.com/emir/chrono-tree/engine.AlertID; github.com/emir/chrono-tree/engine.dims [8]uint16; github.com/emir/chrono-tree/engine.validFrom int64; github.com/emir/chrono-tree/engine.expires int64; github.com/emir/chrono-tree/engine.idx uint32; github.com/emir/chrono-tree/engine.flags uint8 }]).nodeDescend
+     0.04s  1.22% 66.87%      0.04s  1.22%  github.com/emir/chrono-tree/engine.makeEntryCompare.func1
+     0.04s  1.22% 68.09%      0.07s  2.13%  github.com/tidwall/btype.(*Table[go.shape.struct { github.com/emir/chrono-tree/engine.price github.com/emir/chrono-tree/engine.Price; github.com/emir/chrono-tree/engine.id github.com/emir/chrono-tree/engine.AlertID; github.com/emir/chrono-tree/engine.dims [8]uint16; github.com/emir/chrono-tree/engine.validFrom int64; github.com/emir/chrono-tree/engine.expires int64; github.com/emir/chrono-tree/engine.idx uint32; github.com/emir/chrono-tree/engine.flags uint8 }]).Ascend (inline)
+     0.04s  1.22% 69.30%      0.06s  1.82%  internal/sync.(*HashTrieMap[go.shape.interface {},go.shape.interface {}]).Load
+     0.04s  1.22% 70.52%      0.89s 27.05%  runtime.findRunnable
+     0.03s  0.91% 71.43%      1.66s 50.46%  github.com/emir/chrono-tree/internal/service.(*Core).ingestTick
+     0.03s  0.91% 72.34%      0.03s  0.91%  github.com/tidwall/btype.(*tree[go.shape.struct {},go.shape.struct { github.com/emir/chrono-tree/engine.price github.com/emir/chrono-tree/engine.Price; github.com/emir/chrono-tree/engine.id github.com/emir/chrono-tree/engine.AlertID; github.com/emir/chrono-tree/engine.dims [8]uint16; github.com/emir/chrono-tree/engine.validFrom int64; github.com/emir/chrono-tree/engine.expires int64; github.com/emir/chrono-tree/engine.idx uint32; github.com/emir/chrono-tree/engine.flags uint8 }]).Ascend (inline)
+     0.03s  0.91% 73.25%      0.68s 20.67%  github.com/tidwall/btype.(*tree[go.shape.struct {},go.shape.struct { github.com/emir/chrono-tree/engine.price github.com/emir/chrono-tree/engine.Price; github.com/emir/chrono-tree/engine.id github.com/emir/chrono-tree/engine.AlertID; github.com/emir/chrono-tree/engine.dims [8]uint16; github.com/emir/chrono-tree/engine.validFrom int64; github.com/emir/chrono-tree/engine.expires int64; github.com/emir/chrono-tree/engine.idx uint32; github.com/emir/chrono-tree/engine.flags uint8 }]).nodeAscend
+     0.03s  0.91% 74.16%      0.03s  0.91%  google.golang.org/protobuf/encoding/protowire.ConsumeVarint
+     0.03s  0.91% 75.08%      0.03s  0.91%  runtime.nanotime1
+     0.03s  0.91% 75.99%      0.07s  2.13%  runtime.slicebytetostring
+     0.03s  0.91% 76.90%      0.18s  5.47%  runtime.stealWork
+     0.03s  0.91% 77.81%      0.03s  0.91%  runtime.unlock2
+     0.03s  0.91% 78.72%      0.03s  0.91%  sync/atomic.(*Bool).Load (inline)
+     0.02s  0.61% 79.33%      0.02s  0.61%  github.com/emir/chrono-tree/api/gen/chrono/v1.(*Tick).GetSymbol (inline)
+     0.02s  0.61% 79.94%      1.30s 39.51%  github.com/emir/chrono-tree/engine.(*Engine).Match
+     0.02s  0.61% 80.55%      0.08s  2.43%  github.com/prometheus/client_golang/prometheus.(*CounterVec).GetMetricWithLabelValues (inline)

@@ -1,0 +1,11 @@
+=== service/rate-100k layout=parked alerts=1000000 symbols=500 rate=100000 cluster=0 dur=240s ===
+2026/09/06 20:28:47 seeded 200000/1000000 (2.5s)
+2026/09/06 20:28:50 seeded 400000/1000000 (5.1s)
+2026/09/06 20:28:52 seeded 600000/1000000 (7.8s)
+2026/09/06 20:28:55 seeded 800000/1000000 (10.5s)
+2026/09/06 20:28:58 seeded 1000000/1000000 (13.3s)
+2026/09/06 20:28:58 seed done: 1000000 alerts into docs/perf/2026-09-06-campaign/service-rate-100k/tmp/alerts.bbolt
+2026/09/06 20:29:03 waiting for chronod localhost:19090
+2026/09/06 20:33:03 feed done: sent=24000000 accepted=24000000 dropped=0 saturated=false drain=-1ms
+2026/09/06 20:33:03 collected service/rate-100k: valid=true
+RUN service/rate-100k: VALID

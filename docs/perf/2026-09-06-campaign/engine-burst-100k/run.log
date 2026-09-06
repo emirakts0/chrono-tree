@@ -1,0 +1,10 @@
+=== engine/burst-100k layout=gap alerts=1000000 symbols=500 rate=20000 cluster=100000 dur=240s ===
+2026/09/06 20:14:15 seeded 200000/1000000 alerts (0.4s)
+2026/09/06 20:14:15 seeded 400000/1000000 alerts (1.0s)
+2026/09/06 20:14:16 seeded 600000/1000000 alerts (1.7s)
+2026/09/06 20:14:17 seeded 800000/1000000 alerts (2.4s)
+2026/09/06 20:14:17 seeded 1000000/1000000 alerts (3.2s)
+2026/09/06 20:14:17 seed done: 1000000 alerts in 3.2s, RSS 1010 MiB
+2026/09/06 20:18:17 drain window CPU: 0.03s over 12ms
+2026/09/06 20:18:17 scenario engine/burst-100k done: valid=true achieved=20000 tps rss_peak=1012 MiB fired=100000 drain=12ms
+RUN engine/burst-100k: VALID

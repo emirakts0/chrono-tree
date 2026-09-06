@@ -1,0 +1,9 @@
+=== engine/sym-1000 layout=parked alerts=1000000 symbols=1000 rate=20000 cluster=0 dur=240s ===
+2026/09/06 19:51:10 seeded 200000/1000000 alerts (0.4s)
+2026/09/06 19:51:11 seeded 400000/1000000 alerts (1.1s)
+2026/09/06 19:51:12 seeded 600000/1000000 alerts (1.9s)
+2026/09/06 19:51:12 seeded 800000/1000000 alerts (2.6s)
+2026/09/06 19:51:13 seeded 1000000/1000000 alerts (3.4s)
+2026/09/06 19:51:13 seed done: 1000000 alerts in 3.4s, RSS 972 MiB
+2026/09/06 19:55:13 scenario engine/sym-1000 done: valid=true achieved=20000 tps rss_peak=997 MiB fired=0 drain=-1ms
+RUN engine/sym-1000: VALID

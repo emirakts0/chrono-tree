@@ -1,0 +1,9 @@
+=== engine/trickle layout=trickle alerts=1000000 symbols=500 rate=20000 cluster=0 dur=240s ===
+2026/09/06 20:09:27 seeded 200000/1000000 alerts (0.5s)
+2026/09/06 20:09:28 seeded 400000/1000000 alerts (1.2s)
+2026/09/06 20:09:29 seeded 600000/1000000 alerts (2.0s)
+2026/09/06 20:09:30 seeded 800000/1000000 alerts (2.8s)
+2026/09/06 20:09:30 seeded 1000000/1000000 alerts (3.7s)
+2026/09/06 20:09:31 seed done: 1000000 alerts in 3.7s, RSS 1005 MiB
+2026/09/06 20:13:31 scenario engine/trickle done: valid=true achieved=20000 tps rss_peak=1049 MiB fired=138298 drain=-1ms
+RUN engine/trickle: VALID

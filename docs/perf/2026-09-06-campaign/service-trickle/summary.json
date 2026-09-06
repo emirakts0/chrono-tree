@@ -1,0 +1,32 @@
+{
+  "params": {
+    "layer": "service",
+    "scenario": "trickle",
+    "layout": "trickle",
+    "alerts": 1000000,
+    "symbols": 500,
+    "cluster": 0,
+    "rate": 20000
+  },
+  "ticks_sent": 4800000,
+  "ticks_accepted": 4800000,
+  "ticks_dropped": 0,
+  "achieved_rate": 20000,
+  "ns_per_tick": 50000,
+  "saturated": false,
+  "rss_seed_bytes": 1395396608,
+  "rss_plateau_bytes": 1577059669,
+  "rss_peak_bytes": 1595559936,
+  "heap_inuse_bytes": 730708376,
+  "gc_count": 0,
+  "cpu_seconds": 199.98406409697952,
+  "cpu_pct_one_core": 83.32669337374146,
+  "db_bytes": 815206400,
+  "triggers_fired": 138298,
+  "triggers_published": 138298,
+  "triggers_publish_dropped": 0,
+  "ring_dropped": 0,
+  "drain_ms": -1,
+  "wall_ms": 240000,
+  "valid": true
+}

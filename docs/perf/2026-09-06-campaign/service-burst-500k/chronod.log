@@ -1,0 +1,5 @@
+{"time":"2026-09-06T21:28:47.420104288+03:00","level":"INFO","msg":"alert store replay","restored":1000000,"expired":0}
+{"time":"2026-09-06T21:28:47.421855872+03:00","level":"INFO","msg":"http status listening","addr":":18080"}
+{"time":"2026-09-06T21:28:47.423116252+03:00","level":"INFO","msg":"grpc listening","addr":":19090"}
+{"time":"2026-09-06T21:33:02.956735955+03:00","level":"INFO","msg":"shutting down"}
+{"time":"2026-09-06T21:33:02.976620644+03:00","level":"INFO","msg":"chronod stopped"}

@@ -1,0 +1,9 @@
+{
+  "alerts": 1000000,
+  "cluster": 0,
+  "layout": "parked",
+  "rate": 100000,
+  "scenario": "rate-100k",
+  "symbols": 500,
+  "venue": "ATLAS"
+}

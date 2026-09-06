@@ -1,0 +1,11 @@
+=== service/sym-1000 layout=parked alerts=1000000 symbols=1000 rate=20000 cluster=0 dur=240s ===
+2026/09/06 20:38:43 seeded 200000/1000000 (2.8s)
+2026/09/06 20:38:46 seeded 400000/1000000 (5.8s)
+2026/09/06 20:38:50 seeded 600000/1000000 (8.9s)
+2026/09/06 20:38:53 seeded 800000/1000000 (12.1s)
+2026/09/06 20:38:56 seeded 1000000/1000000 (15.3s)
+2026/09/06 20:38:56 seed done: 1000000 alerts into docs/perf/2026-09-06-campaign/service-sym-1000/tmp/alerts.bbolt
+2026/09/06 20:39:01 waiting for chronod localhost:19090
+2026/09/06 20:43:01 feed done: sent=4800000 accepted=4800000 dropped=0 saturated=false drain=-1ms
+2026/09/06 20:43:02 collected service/sym-1000: valid=true
+RUN service/sym-1000: VALID

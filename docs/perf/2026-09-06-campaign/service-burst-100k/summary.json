@@ -1,0 +1,32 @@
+{
+  "params": {
+    "layer": "service",
+    "scenario": "burst-100k",
+    "layout": "gap",
+    "alerts": 1000000,
+    "symbols": 500,
+    "cluster": 100000,
+    "rate": 20000
+  },
+  "ticks_sent": 4800001,
+  "ticks_accepted": 4800001,
+  "ticks_dropped": 0,
+  "achieved_rate": 20000.004166666666,
+  "ns_per_tick": 49999.989583335504,
+  "saturated": false,
+  "rss_seed_bytes": 1408114688,
+  "rss_plateau_bytes": 1533613602,
+  "rss_peak_bytes": 1571868672,
+  "heap_inuse_bytes": 684131296,
+  "gc_count": 0,
+  "cpu_seconds": 61.427170693762406,
+  "cpu_pct_one_core": 25.594654455734332,
+  "db_bytes": 814735360,
+  "triggers_fired": 65600,
+  "triggers_published": 65600,
+  "triggers_publish_dropped": 0,
+  "ring_dropped": 34400,
+  "drain_ms": 15112,
+  "wall_ms": 240000,
+  "valid": true
+}
