@@ -40,19 +40,20 @@ func main() {
 	httpAddr := flag.String("http-addr", ":8080", "HTTP status listen address")
 	natsURL := flag.String("nats-url", "nats://localhost:4222", "NATS server URL (trigger publishing); empty = no broker (noop publisher, no live trigger feed)")
 	dbPath := flag.String("db", "chrono.bbolt", "alert store path (bbolt); source of truth across restarts")
+	ring := flag.Int("ring", 1<<20, "trigger ring capacity, rounded to a power of two (bytes: 32 B/slot ≈ 32 MiB at default); size for the largest simultaneous burst")
 	flag.Parse()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	if err := run(ctx, *grpcAddr, *httpAddr, *natsURL, *dbPath); err != nil {
+	if err := run(ctx, *grpcAddr, *httpAddr, *natsURL, *dbPath, *ring); err != nil {
 		slog.Error("chronod exit", "err", err)
 		os.Exit(1)
 	}
 	slog.Info("chronod stopped")
 }
 
-func run(ctx context.Context, grpcAddr, httpAddr, natsURL, dbPath string) error {
+func run(ctx context.Context, grpcAddr, httpAddr, natsURL, dbPath string, ringSize int) error {
 	// NATS is a boot dependency: unreachable broker is a fatal error.
 	// Later outages reconnect forever; publishes during them drop-and-count.
 	// An empty URL is the no-broker mode: a noop publisher (publishes
@@ -84,7 +85,9 @@ func run(ctx context.Context, grpcAddr, httpAddr, natsURL, dbPath string) error 
 	// Backstop ordering note: this defer registers BEFORE core.Close's,
 	// so it runs AFTER it (LIFO) — the store always outlives the pump.
 	defer func() { _ = store.Close() }()
-	core := service.NewCore(engine.DefaultConfig(), catalog.Empty(), pm, st, publisher, store)
+	cfg := engine.DefaultConfig()
+	cfg.RingSize = ringSize // operational knob: burst absorption ceiling
+	core := service.NewCore(cfg, catalog.Empty(), pm, st, publisher, store)
 	defer core.Close() // stops the pump, then the engine (idempotent)
 
 	statusSrv := server.New(core, st, reg, dbPath)
