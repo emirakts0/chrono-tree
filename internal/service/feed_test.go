@@ -90,7 +90,7 @@ func TestStreamTicksDropsBadPriceOnly(t *testing.T) {
 	e := newEnv(t)
 	fs, err := runTicks(t, e, &chronov1.TickBatch{Ticks: []*chronov1.Tick{
 		tick("BTCUSDT", "65000.00", "65000.10", "ATLAS", "TOP"),
-		tick("BTCUSDT", "65000.005", "65000.10", "ATLAS", "TOP"), // scale conflict: BTCUSDT pinned at 2 by the first tick
+		tick("BTCUSDT", "65000.005", "65000.10", "ATLAS", "TOP"), // 3 decimals at a pinned 2: Parse-level precision loss (BTCUSDT pinned by the first tick)
 	}})
 	if err != nil {
 		t.Fatalf("StreamTicks: %v", err)

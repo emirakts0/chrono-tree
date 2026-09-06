@@ -241,11 +241,15 @@ func (c *Catalog) EnsureSymbol(name string, decimals uint8) (Symbol, bool) {
 }
 
 // EnsureValue returns the engine uint16 for a dim value, interning it at
-// the next free slot on first sight. ok=false ⇔ the dim is exhausted
-// (65,534 values; DimSentinel 0xFFFF is reserved by the engine).
+// the next free slot on first sight. ok=false ⇔ dim is not pre-registered
+// or exhausted (ids 0..0xFFFE, 65,535 values; DimSentinel 0xFFFF is
+// reserved by the engine).
 func (c *Catalog) EnsureValue(dim, valueName string) (uint16, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if _, ok := c.names[dim]; !ok {
+		return 0, false // dim not pre-registered: never invent a slot
+	}
 	if v, ok := c.values[dim][valueName]; ok {
 		return v, true
 	}

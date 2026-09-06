@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	chronov1 "github.com/emir/chrono-tree/api/gen/chrono/v1"
@@ -38,9 +39,16 @@ func TestGetCatalogLearns(t *testing.T) {
 	if !found {
 		t.Fatal("LEARNT not served by GetCatalog")
 	}
+	var venue *chronov1.DimInfo
 	for _, d := range rep.GetDims() {
-		if d.GetName() == "venue" && len(d.GetValues()) == 0 {
-			t.Fatal("venue dim served empty after an ATLAS upsert")
+		if d.GetName() == "venue" {
+			venue = d
 		}
+	}
+	if venue == nil {
+		t.Fatalf("dims = %v, venue dim missing", rep.GetDims())
+	}
+	if !slices.Contains(venue.GetValues(), "ATLAS") {
+		t.Fatalf("venue values = %v, want ATLAS interned", venue.GetValues())
 	}
 }

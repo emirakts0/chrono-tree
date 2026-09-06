@@ -157,7 +157,16 @@ func TestEnsureValueDimExhaustion(t *testing.T) {
 		c.names[DimVenue][uint16(i)] = name
 	}
 	if _, ok := c.EnsureValue(DimVenue, "overflow"); ok {
-		t.Fatal("EnsureValue should fail at 65534 values (DimSentinel reserved)")
+		t.Fatal("EnsureValue should fail at 65,535 values (id 0xFFFF reserved as DimSentinel)")
+	}
+}
+
+// TestEnsureValueUnknownDim: an unregistered dim answers false instead of
+// panicking — the vocabulary (dim names) is construction-fixed.
+func TestEnsureValueUnknownDim(t *testing.T) {
+	c := Empty()
+	if _, ok := c.EnsureValue("nosuchdim", "AAA"); ok {
+		t.Fatal("EnsureValue on an unregistered dim should fail, not intern")
 	}
 }
 

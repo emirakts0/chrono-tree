@@ -461,8 +461,12 @@ func (c *Core) ingestTick(t *chronov1.Tick, now time.Time) error {
 	if ts > 0 {
 		c.metrics.TickLatency(now.Sub(time.Unix(0, ts)))
 	}
-	ctr, _ := c.venueTicks.LoadOrStore(t.GetVenue(), &atomic.Uint64{})
-	ctr.(*atomic.Uint64).Add(1)
+	if anyCtr, ok := c.venueTicks.Load(t.GetVenue()); ok {
+		anyCtr.(*atomic.Uint64).Add(1)
+	} else {
+		ctr, _ := c.venueTicks.LoadOrStore(t.GetVenue(), &atomic.Uint64{})
+		ctr.(*atomic.Uint64).Add(1)
+	}
 	return nil
 }
 
