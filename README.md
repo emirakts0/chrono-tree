@@ -1,223 +1,174 @@
-# chrono-tree
+<h1 align="center">chrono-tree</h1>
 
-In-memory price alert engine for crypto markets. You register alerts like
-"BTCUSDT ask >= 65000" and feed it market ticks; when an alert's condition is
-met it fires exactly once and delivers a trigger through a lock-free queue.
+<p align="center">
+  An in-memory price-alert engine for markets. Register "BTCUSDT ask ≥ 65000",
+  feed it ticks, and matching alerts fire exactly once — sub-microsecond,
+  allocation-free, at millions of concurrent alerts.
+</p>
 
-Prices are `int64` base units, not floats. A price of `"12.34"` at 2 decimals
-is the integer `1234`. This is a hard requirement for crypto: sub-penny tokens
-quote with 8-18 decimals and float64 cannot represent them exactly. All
-decimal-to-binary conversion happens in one place, the `price` package, and it
-never rounds - a value that does not fit exactly is rejected.
+<div align="center">
 
-## Packages
+[![Go](https://img.shields.io/badge/Go-1.27-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![btype](https://img.shields.io/badge/B--Tree-tidwall%2Fbtype-CA2159)](https://github.com/tidwall/btype)
+[![gRPC](https://img.shields.io/badge/gRPC-244B5A?logo=grpc&logoColor=white)](https://grpc.io)
+[![NATS](https://img.shields.io/badge/NATS-27AA3E?logo=nats.io&logoColor=white)](https://nats.io)
 
-### `engine`
+</div>
 
-The matching core. Pure integer arithmetic, scale-agnostic: it never knows
-where the decimal point is.
+## Overview
 
-- Alerts are indexed in B-trees keyed by `(price, alert id)` - one tree per
-  symbol, price type (bid/ask/mid/last) and direction (>= / <=).
-- Up to 8 matching dimensions (`Config.Dims`): alert and tick dim arrays fold
-  into the tree key, so a scan is scoped to one dimension combination —
-  strict exact-match, no wildcards.
-- `Match` runs lock-free on the hot path: a tick descends/ascends the two
-  trees for its symbol and touches only entries in range. No full scans, no
-  allocations.
-- Alert mutations (upsert/cancel/pause) go through a bounded queue and are
-  applied to copy-on-write snapshots, so ticks never block on writers.
-  Old snapshots are retired once readers drain (RCU style).
-- Exactly-once firing: each alert has a state slot; the ACTIVE to TRIGGERED
-  transition is a single CAS. Two ticks hitting the same alert fire it once.
-- Triggers are delivered through a bounded Vyukov MPMC ring buffer
-  (`Triggers()`); if the consumer is slow, drops are counted, not blocked.
-- A background reaper handles expiries, recycles slots of removed alerts and
-  runs an integrity sweep. `Close` shuts everything down (goleak-verified).
+> chrono-tree is a pure Go engine library that holds 1M–10M live price alerts
+> and evaluates them against a continuous tick stream. The hot path never
+> allocates and never takes a lock: a tick descends two B-trees for its symbol,
+> touches only entries in range, and fires winners through a single CAS.
+> Alerts are terminal once triggered — one alert, one trigger.
 
-### `price`
+## Features
 
-The conversion boundary. Stdlib only, exact or error:
+- **Zero-Allocation Matching** — a tick touches only its symbol's trees: ~0.6 µs at 1M alerts, `0 B/op` asserted in tests. Per-tick cost is O(qualifying entries), independent of total alert count.
+- **Exact Integer Prices** — no floats anywhere. Prices are `int64` base units (`"12.34"` at 2 decimals is `1234`); one conversion boundary (`price`) accepts only values representable exactly, which sub-cent tokens with 8–18 decimals require.
+- **Partitioned B-Tree Index** — 8 trees per symbol (4 price types × 2 directions), keyed by `(dims, price, id)`. Every entry a scan visits qualifies by construction — there are no per-entry filters.
+- **Copy-on-Write Snapshots** — mutations are applied to tree copies and published with one atomic store (RCU style). Ticks never block writers; writers never block ticks.
+- **Exactly-Once Firing** — the ACTIVE → TRIGGERED transition is a single CAS on a per-alert slot, so concurrent ticks and stale snapshots cannot double-fire.
+- **Up to 8 Match Dimensions** — caller-owned dimension values (e.g. venue, book tier) fold into the tree key; a fire requires exact equality across all of them.
+- **Bounded Trigger Ring** — a Vyukov MPMC ring delivers triggers; overflow drops-and-counts instead of blocking the matching path.
+- **Background Reaper** — sweeps expiries, recycles alert slots, and runs an integrity pass; shutdown is goleak-verified.
 
-- `Parse(s, decimals)` - decimal string to int64 base units. Digit-by-digit,
-  checked multiply-add, no floating point. A nonzero digit beyond the scale
-  returns `ErrPrecisionLoss`; overflow returns `ErrOverflow`.
-- `FromFloat(f, decimals)` - strict float input. Converts through the
-  shortest round-trip string representation and never rounds: an inexact
-  value is rejected. NaN/Inf rejected.
-- `Format(v, decimals)` - int64 back to a decimal string, pure integer math.
+## Architecture
 
-Scale (how many decimals a symbol quotes with) is the caller's contract; a
-service layer would own a symbol-to-decimals table.
+```mermaid
+flowchart LR
+    T["Market Tick"]
 
-### `internal/catalog`
+    subgraph DP["DATA PLANE · lock-free"]
+        direction TB
+        IN["Symbol Interning<br/>string → uint32, 0 alloc"]
+        SNAP["Snapshot Load<br/>atomic.Pointer"]
+        TREES["8 B-Trees per symbol<br/>4 price types × 2 directions<br/>key: (dims, price, id)"]
+        CAS["Exactly-Once Gate<br/>CAS ACTIVE → TRIGGERED"]
+        RING["Vyukov MPMC Ring<br/>65,536 triggers"]
+        IN --> SNAP --> TREES --> CAS --> RING
+    end
 
-Reference data for the service layer: ~500 synthetic symbols (name, quote
-decimals, reference anchor price) and the engine's two dims as a fixed
-vocabulary - 3 fictional venues × 2 book tiers.
+    subgraph CP["CONTROL PLANE · single writer"]
+        direction TB
+        API["Upsert / Cancel /<br/>Pause"]
+        MQ["Bounded Mutation<br/>Queue"]
+        FL["Flusher · COW publish"]
+        API --> MQ --> FL
+    end
 
-### `internal/service`
+    subgraph HK["HOUSEKEEPING"]
+        RP["Reaper<br/>expiry · slot recycle"]
+    end
 
-The chrono.v1 gRPC services on top of the engine: catalog validation, exact
-price conversion at the boundary, a service-side alert catalog for trigger
-enrichment, and a trigger pump publishing to NATS.
+    OUT["Consumer<br/>Pop / PopBatch"]
 
-### `internal/pub`
+    T -- "Match()" --> IN
+    RING --> OUT
+    FL -. "atomic publish" .-> SNAP
+    RP -. "removals" .-> MQ
 
-NATS publisher: subject mapping, JSON payload, headers (`Noop` for tests).
+    classDef input fill:#FFDE17,stroke:#111,stroke-width:2px,color:#111
+    classDef data fill:#69D2E7,stroke:#111,stroke-width:2px,color:#111
+    classDef control fill:#FF6B6B,stroke:#111,stroke-width:2px,color:#111
+    classDef house fill:#BDE399,stroke:#111,stroke-width:2px,color:#111
+    classDef comp fill:#ffffff,stroke:#111,stroke-width:1px,color:#111
 
-### `internal/server`
+    class T input
+    class IN,SNAP,TREES,CAS,RING data
+    class API,MQ,FL control
+    class RP house
+    class OUT comp
 
-chronod's HTTP status surface: `/healthz`, `/readyz`, `/stats` (encoding/json/v2),
-`/metrics` (Prometheus), `/debug/pprof/` — plus the live monitoring dashboard:
-`/` (embedded bento-grid SPA), `/api/stream` (SSE: 1s snapshots, 10-slot trigger batches via NATS loopback, 2-minute metric history on connect), `/api/alerts` (read-only inquiry).
-
-### `scripts/chronofeed`
-
-The demo/test driver (not a service binary): seeds a ±5% alert-price
-ladder into the bbolt store, then streams a synthetic mean-reverting
-market into chronod — one client-stream per venue. The walk reverts to
-the same reference prices the ladder is built from, so triggers fire at
-a steady pace instead of one burst.
-
-### `cmd/`
-
-One server binary - `chronod` - plus the `scripts/chronofeed` demo driver; see Services below.
-
-## Usage
-
-```go
-e := engine.New(engine.DefaultConfig())
-defer e.Close()
-
-id := engine.AlertID{...} // 16-byte id, e.g. UUIDv7
-
-err := e.Upsert(engine.AlertSpec{
-    ID:          id,
-    Symbol:      "BTCUSDT",
-    PriceType:   engine.PriceAsk,
-    Direction:   engine.DirGTE,
-    TargetPrice: 65000_00000000, // 65000 at 8 decimals
-    ValidFrom:   time.Now().UnixNano(),
-    AutoDeactivate: true,
-})
-e.Sync() // wait until the alert is visible to Match
-
-e.Match(&engine.Tick{
-    Symbol: "BTCUSDT", Ask: 65001_00000000,
-    Present: engine.TickAllPresent(), TS: time.Now().UnixNano(),
-})
-
-for {
-    tr, ok := e.Triggers().Pop()
-    if !ok {
-        break
-    }
-    // tr.ID, tr.Price (base units), tr.TS
-}
+    style DP fill:#E8F7FB,stroke:#111,stroke-width:2px
+    style CP fill:#FFE9E7,stroke:#111,stroke-width:2px
+    style HK fill:#F0FAE9,stroke:#111,stroke-width:2px
 ```
 
-## Tests
+The engine is one package with no network and no I/O. Everything is built
+around a single decision: **readers never mutate shared state.**
 
+**Index.** Each alert is a ~64-byte, pointer-free record stored *by value*
+inside a [`tidwall/btype`](https://github.com/tidwall/btype) table, sorted by
+`(dims, price, id)` — the id breaks ties so equal prices coexist. Each symbol
+owns 8 tables, one per price type (bid/ask/mid/last) × direction (≥/≤). That
+partitioning is what keeps the scan honest: a GTE scan `Descend`s from the tick
+price, an LTE scan `Ascend`s from it, and every entry visited is a candidate —
+symbol, type, direction and dims were all resolved by the tree key, not by
+filtering.
+
+**Publication.** Upserts and cancels go through a bounded mutation queue to a
+single flusher goroutine, which copies the affected symbol's tables, applies
+the batch, and publishes via `atomic.Pointer`; `btype`'s ref-counting reclaims
+retired snapshots once readers drain. Because firing cannot mutate a snapshot,
+"fire" and "remove" are split: the CAS flips the alert's status slot, and the
+removal is enqueued back to the flusher. A fired entry lingering in the tree is
+simply re-skipped.
+
+**Delivery.** Winners land on a bounded MPMC ring (`Pop` / `PopBatch`). A slow
+consumer means counted drops, never backpressure into `Match` — for a feed
+ingestion path, a stale trigger beats a stalled matcher. A background reaper
+handles expiries (lazy inline checks remain the correctness backstop) and
+recycles slots so the slot arena stays dense and cache-friendly.
+
+Correctness is checked against independent oracles: a randomized brute-force
+evaluator must produce identical trigger sets, the same scenario run through
+`price.Format`/`Parse` must match direct integer prices exactly, and `price`
+is property-tested against `math/big` over 50,000 cases.
+
+## The service
+
+`cmd/chronod` wraps the engine as a daemon: `chrono.v1` gRPC on `:9090`
+(alerts, tick ingestion, catalog), trigger publishing to NATS
+(`chrono.triggers.{venue}.{tier}`), a bbolt alert store, and an embedded
+monitoring dashboard on `:8080`. It is a thin shell — catalog validation and
+exact price conversion at the boundary, then everything above unchanged.
+
+```sh
+nats-server &                                        # trigger bus
+go run ./scripts/chronofeed -db demo.bbolt &         # seed alerts, stream a synthetic market
+go run ./cmd/chronod -db demo.bbolt                  # serve :9090 · dashboard on :8080
+nats sub 'chrono.triggers.>'                         # watch triggers fire
 ```
-go test ./... -race -count=1
-ok  github.com/emir/chrono-tree/engine  4.306s
-ok  github.com/emir/chrono-tree/internal/price   0.074s
-```
-
-Coverage beyond unit tests:
-
-- `price` has a 50,000-case property test against `math/big` as an independent
-  oracle: `Parse` must agree exactly with unlimited-precision arithmetic, and
-  must reject what big.Int says is not exactly representable. Round-trip
-  invariants are pinned in both directions (`Parse(Format(v,d),d) == v`).
-- `engine` has a randomized oracle test comparing triggers against a naive
-  brute-force evaluator, plus a string-price parity test: the same scenario
-  run with direct int64 prices and with prices routed through
-  `price.Format`/`price.Parse` must produce identical trigger sets. This
-  proves the engine has no hidden conversion layer.
-- Zero-allocation hot path is asserted with `testing.AllocsPerRun == 0`;
-  concurrency is exercised under the race detector.
 
 ## Benchmarks
 
-```
-go test ./engine -bench . -benchmem -run '^$'
-goos: linux
-goarch: amd64
-cpu: AMD Ryzen 5 5600H with Radeon Graphics
+**Micro-benchmarks** (`go test ./engine -bench . -benchmem -run '^$'`, AMD Ryzen 5 5600H, Linux/amd64):
 
-BenchmarkMatchSparse1M-12    	  1956019	      623.3 ns/op	       0 B/op	       0 allocs/op
-BenchmarkMatchDenseSkip-12    	     5798	     209715 ns/op	       0 B/op	       0 allocs/op
-BenchmarkMatchDimsSparse1M-12    	  1363500	      873.7 ns/op	       0 B/op	       0 allocs/op
-BenchmarkMatchDimsDenseSkip-12    	     5793	     201614 ns/op	       0 B/op	       0 allocs/op
-```
+| benchmark | book | ns/op | B/op | allocs/op |
+|---|---|---:|---:|---:|
+| MatchSparse1M | 1M alerts / 1k symbols, non-firing tick | 623 | 0 | 0 |
+| MatchDenseSkip | 20k already-fired entries crossed | 209,715 | 0 | 0 |
+| MatchDimsSparse1M | same as Sparse1M + 2 dims | 874 | 0 | 0 |
+| MatchDimsDenseSkip | same as DenseSkip + 2 dims | 201,614 | 0 | 0 |
 
-- `Sparse1M`: 1,000,000 alerts over 1000 symbols; a tick that fires nothing.
-  This is the dominant shape under sustained load: ~623 ns per tick,
-  independent of total alert count (only the symbol's trees are touched).
-- `DenseSkip`: 20,000 alerts already triggered on one symbol; measures the
-  per-tick cost of skipping out-of-range entries between price gaps.
-- `DimsSparse1M` / `DimsDenseSkip`: the same shapes with two configured
-  dimensions (`Config.Dims`) — alerts and ticks carry `[8]uint16` dim arrays,
-  and a fire additionally requires exact dim equality.
+`Sparse1M` is the dominant shape under sustained load: cost is set by the
+ticked symbol's trees, not the 1M-alert total. `DenseSkip` prices the deferred
+removal trade-off — ~9 ns per already-fired entry walked past until the
+flusher retires it.
 
-Both paths are allocation-free. `BenchmarkMatchSparse10M` exists behind
-`CHRONO_BENCH_10M=1`.
+**Sustained-load campaign** ([2026-09-06](docs/perf/2026-09-06-campaign/REPORT.md), 16/16 valid runs). Engine layer, in-process driver, 4 min steady load per scenario; baseline = 1M alerts / 500 symbols / 20k ticks/s, each scenario moves one factor:
 
-## Services
+| scenario | ticks/s | CPU (% 1 core) | RSS peak | fired | ring drops |
+|---|---:|---:|---:|---:|---:|
+| baseline | 20,000 | 6.3 | 1,000 MiB | 0 | 0 |
+| rate-100k | 100,000 | 13.3 | 1,000 MiB | 0 | 0 |
+| rate-200k | 200,000 | 19.2 | 995 MiB | 0 | 0 |
+| sym-2000 | 20,000 | 7.8 | 1,017 MiB | 0 | 0 |
+| trickle (575 fires/s) | 20,000 | 7.2 | 1,050 MiB | 138,298 | 0 |
+| burst-500k | 20,000 | 7.5 | 1,022 MiB | 500,000 | 0 |
 
-One server binary wraps the engine (spec: `docs/superpowers/specs/2026-09-04-service-design.md`),
-plus a demo script:
+- **Rate**: 10× the tick rate costs 3× the CPU; no knee at 200k ticks/s.
+- **Memory is rate-, symbol- and burst-invariant**: ~1.0 GB in every scenario, set entirely by the 1M-alert index (~630 B/alert; seeding's B-tree node churn is nearly all allocation the process ever does — the steady state is allocation-free).
+- **Bursts are absorbed**: 500k simultaneous triggers pushed and drained in 44 ms with zero ring drops. In the same campaign, the *service* layer's trigger pump could only drain ~4.4k triggers/s — the honest gap, and the current scaling frontier, is documented in the [report](docs/perf/2026-09-06-campaign/REPORT.md).
 
-- `chronod` — hosts the engine: `chrono.v1` gRPC on `:9090` (alerts, tick
-  ingestion, catalog; gRPC health + reflection), HTTP status on `:8080`
-  (`/healthz`, `/readyz`, `/stats` json/v2, `/metrics` Prometheus,
-  `/debug/pprof/`). Fired triggers are published to NATS on
-  `chrono.triggers.{venue}.{tier}` (JSON payloads, `Nats-Msg-Id`/`Symbol`
-  headers); chronod refuses to start without NATS and drops-and-counts
-  publishes during outages.
-- `scripts/chronofeed` (demo driver, not a service) — seeds a ladder of
-  fake alerts into the bbolt store (skipped when the store already has
-  alerts), then streams a synthetic market: ~500 pairs (realistic majors
-  down to sub-cent memecoins) in a mean-reverting random walk around each
-  pair's reference price, 3 fictional venues × 2 book tiers as the
-  engine's two dims, one client-stream per venue, `-rate 20000` default.
-  Rates and alerts are consistent by construction: rungs sit ±`-band`
-  around the reference the walk reverts to, so alerts trigger steadily as
-  the fake rate flows. Alerts are terminal once triggered — `-alerts` is
-  the trigger budget; delete the db file to reseed.
+Tests: `go test ./... -race -count=1`, plus the oracles above and an integration smoke over real binaries and sockets (`go test -tags integration ./tests`).
 
-```sh
-nats-server &                    # or: docker run -p 4222:4222 nats
-go run ./scripts/chronofeed -db demo.bbolt &   # seeds the ladder, waits for chronod
-go run ./cmd/chronod -db demo.bbolt            # replays the ladder, starts serving
-nats sub 'chrono.triggers.>'     # watch triggers fire
-xdg-open http://localhost:8080/  # live bento dashboard
-curl -s localhost:8080/stats | jq
-```
+Not yet built: TLS/auth, multi-node anything. Design docs live in [`docs/superpowers/specs/`](docs/superpowers/specs/).
 
-The dashboard is embedded in the binary — no extra process. Its TypeScript
-source lives in `internal/server/web/src`; the committed bundle (`dist/app.js`)
-is rebuilt with `internal/server/web/build.sh` (`npx -y -p typescript@5 tsc`
-and `npx -y -p esbuild@0.25`, so Node 22+ is required and the tools are
-fetched on first run; `go build` never needs it).
+---
 
-Prices are decimal strings end to end (`"65000.12"`), converted exactly
-through the `price` package at the gRPC boundary. Triggers are delivered
-through NATS — subscribe with wildcards like `chrono.triggers.ATLAS.*` or
-`chrono.triggers.>`. A publish that fails (NATS briefly down) is dropped
-and counted (`triggers_publish_dropped`), never blocking the pump — the
-same drop-and-log philosophy as the engine's own ring. The engine itself is
-untouched: the service layer adds
-catalogs, conversion, publishing and observability around it.
-
-Integration smoke (real binaries over real sockets):
-
-```sh
-go test -tags integration ./tests -run Integration -v -timeout 180s
-```
-
-Engine, `price` boundary and service layer are complete. Not yet built:
-persistence, TLS/auth, multi-node anything. Design docs live in
-`docs/superpowers/specs/`.
+<p align="center">
+  <a href="mailto:emirakts0@gmail.com">emirakts0@gmail.com</a>
+</p>
