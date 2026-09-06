@@ -207,7 +207,8 @@ type Spec struct {
 }
 
 // MkID derives a deterministic, non-zero, unique alert id from a layout
-// index (UUIDv7-shaped for readability; uniqueness is what matters).
+// index (the shape is 0x70-prefixed big-endian for readability, not a
+// conformant UUIDv7; uniqueness is the only contract).
 // The version marker sits in byte 0, which the counter never touches —
 // masking or ORing it into the counter bytes would sacrifice counter
 // bits and collide ids (every 4096 for the brief's byte-6 mask).
@@ -229,7 +230,10 @@ func parked(offset, n int, syms []Symbol) []Spec {
 		s := Spec{
 			ID: MkID(uint64(offset + i)), SymIdx: (i + offset) % len(syms),
 			Symbol: sym.Name, Decimals: sym.Decimals,
-			PriceType: engine.PriceType(i % 4), TierIdx: i % 2,
+			// Only feed-presented price types (Bid/Ask/Mid): the service's
+			// tick path never presents Last, so a PriceLast rung could
+			// never fire there.
+			PriceType: engine.PriceType(i % 3), TierIdx: i % 2,
 		}
 		if i%2 == 0 {
 			s.Direction, s.Target = engine.DirGTE, sym.Ref*3+int64(i)
@@ -256,7 +260,7 @@ func Trickle(n int, syms []Symbol, band float64) []Spec {
 		s := Spec{
 			ID: MkID(uint64(i)), SymIdx: i % len(syms),
 			Symbol: sym.Name, Decimals: sym.Decimals,
-			PriceType: engine.PriceType(i % 4), TierIdx: i % 2,
+			PriceType: engine.PriceType(i % 3), TierIdx: i % 2,
 		}
 		if i%2 == 0 {
 			s.Direction = engine.DirGTE
@@ -281,7 +285,7 @@ func GapCluster(total, k int, syms []Symbol) ([]Spec, Quote) {
 	for i := 0; i < k; i++ {
 		cluster[i] = Spec{
 			ID: MkID(uint64(i)), SymIdx: 0, Symbol: g0.Name, Decimals: g0.Decimals,
-			PriceType: engine.PriceType(i % 4), Direction: engine.DirGTE,
+			PriceType: engine.PriceType(i % 3), Direction: engine.DirGTE,
 			Target: g0.Ref + 1 + int64(i), TierIdx: 0,
 		}
 	}
