@@ -1,9 +1,0 @@
-=== engine/rate-200k layout=parked alerts=1000000 symbols=500 rate=200000 cluster=0 dur=240s ===
-2026/09/06 19:43:43 seeded 200000/1000000 alerts (0.6s)
-2026/09/06 19:43:44 seeded 400000/1000000 alerts (1.3s)
-2026/09/06 19:43:45 seeded 600000/1000000 alerts (2.0s)
-2026/09/06 19:43:46 seeded 800000/1000000 alerts (2.8s)
-2026/09/06 19:43:46 seeded 1000000/1000000 alerts (3.7s)
-2026/09/06 19:43:46 seed done: 1000000 alerts in 3.7s, RSS 993 MiB
-2026/09/06 19:47:46 scenario engine/rate-200k done: valid=true achieved=200000 tps rss_peak=994 MiB fired=0 drain=-1ms
-RUN engine/rate-200k: VALID
