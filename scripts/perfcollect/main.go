@@ -10,6 +10,8 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 
 	"github.com/emir/chrono-tree/internal/bench"
 )
@@ -74,6 +76,21 @@ type statLine struct {
 		RSSBytes   uint64  `json:"rss_bytes"`
 		ProcCPUPct float64 `json:"proc_cpu_percent"`
 	} `json:"sys"`
+	TS int64 `json:"ts"` // epoch seconds, stamped by run.sh's sampler; 0 = untimestamped
+}
+
+// readEpoch reads a marker file run.sh writes around the load phase
+// (load_start / load_end, epoch seconds); ok=false when absent/unparsable.
+func readEpoch(dir, name string) (int64, bool) {
+	b, err := os.ReadFile(filepath.Join(dir, name))
+	if err != nil {
+		return 0, false
+	}
+	v, err := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64)
+	if err != nil || v <= 0 {
+		return 0, false
+	}
+	return v, true
 }
 
 func collect(dir string) bench.Summary {
@@ -104,14 +121,23 @@ func collect(dir string) bench.Summary {
 	}
 	sum.RSSSeed = feed.Final.Sys.RSSBytes // replaced by first stats sample below
 
-	// 1 Hz stats log: peak = max rss; plateau = mean of the last 60
-	// samples; cpu% = mean proc_cpu_percent across the window.
+	// 1 Hz stats log. Load-window gating: run.sh stamps each sample with
+	// an epoch-seconds ts and writes load_start/load_end markers around
+	// the benchfeed invocation. Peak RSS spans the whole log (boot replay
+	// can legitimately grow the heap), but the CPU mean and the RSS
+	// plateau come from the load window only — averaging over replay+idle
+	// understates load CPU. Without markers/timestamps (jq-less hosts,
+	// old logs) every sample counts, the previous behavior.
 	f, err := os.Open(filepath.Join(dir, "stats.jsonl"))
 	if err == nil {
 		sc := bufio.NewScanner(f)
 		sc.Buffer(make([]byte, 1<<20), 1<<20)
-		var rss []uint64
-		var cpu []float64
+		type sample struct {
+			rss uint64
+			cpu float64
+			ts  int64
+		}
+		var all []sample
 		first := true
 		for sc.Scan() {
 			var l statLine
@@ -122,29 +148,38 @@ func collect(dir string) bench.Summary {
 				sum.RSSSeed = l.Sys.RSSBytes // post-replay steady point
 				first = false
 			}
-			rss = append(rss, l.Sys.RSSBytes)
-			cpu = append(cpu, l.Sys.ProcCPUPct)
+			all = append(all, sample{rss: l.Sys.RSSBytes, cpu: l.Sys.ProcCPUPct, ts: l.TS})
 		}
 		_ = f.Close()
-		for _, r := range rss {
-			if r > sum.RSSPeak {
-				sum.RSSPeak = r
+		lo, hasLo := readEpoch(dir, "load_start")
+		hi, hasHi := readEpoch(dir, "load_end")
+		inWindow := func(s sample) bool { return hasLo && hasHi && s.ts >= lo && s.ts <= hi }
+		var win []sample
+		for _, s := range all {
+			if inWindow(s) {
+				win = append(win, s)
 			}
 		}
-		if n := len(rss); n > 0 {
-			tail := rss[n-min(60, n):]
+		if len(win) == 0 {
+			win = all // no windowed samples: fall back to the whole log
+		}
+		for _, s := range all {
+			if s.rss > sum.RSSPeak {
+				sum.RSSPeak = s.rss
+			}
+		}
+		if n := len(win); n > 0 {
+			tail := win[n-min(60, n):]
 			var acc uint64
-			for _, r := range tail {
-				acc += r
+			for _, s := range tail {
+				acc += s.rss
 			}
 			sum.RSSPlateau = acc / uint64(len(tail))
-		}
-		if len(cpu) > 0 {
-			var acc float64
-			for _, c := range cpu {
-				acc += c
+			var cpuAcc float64
+			for _, s := range win {
+				cpuAcc += s.cpu
 			}
-			sum.CPUPctOneCore = acc / float64(len(cpu))
+			sum.CPUPctOneCore = cpuAcc / float64(len(win))
 			sum.CPUSeconds = sum.CPUPctOneCore / 100 * float64(feed.LoadWallMS) / 1000
 		}
 	}

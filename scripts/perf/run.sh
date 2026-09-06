@@ -53,17 +53,28 @@ else
     > "$TMP/chronod.log" 2>&1 &
   CPID=$!
   # 1 Hz stats sampler (runs the whole scenario, captures replay + load +
-  # drain) and RSS cap: >8 GiB kills chronod before the box OOMs. The cap
-  # check needs jq; without it, log once and sample uncapped.
+  # drain) and RSS cap: >8 GiB kills chronod before the box OOMs. Each
+  # sample is stamped with an epoch-seconds ts (jq) so perfcollect can
+  # window the CPU mean to the load phase via the load_start/load_end
+  # markers below. jq is also the cap check; without it, log once and
+  # sample untimestamped and uncapped (perfcollect falls back to the
+  # whole-log mean).
   RSS_CAP=$(( 8 * 1024 * 1024 * 1024 ))
+  HAVE_TS=0
   if command -v jq >/dev/null 2>&1; then
-    HAVE_JQ=1
+    HAVE_JQ=1; HAVE_TS=1
   else
     HAVE_JQ=0
-    echo "jq not found — skipping RSS cap check" | tee -a "$LOG"
+    echo "jq not found — sampling untimestamped, skipping RSS cap check" | tee -a "$LOG"
   fi
   ( while kill -0 $CPID 2>/dev/null; do
       S=$(curl -sf localhost:18080/stats) || { sleep 1; continue; }
+      if [ "$HAVE_TS" = 1 ]; then
+        if ! S=$(printf '%s' "$S" | jq -c --argjson ts "$(date +%s)" '. + {ts: $ts}'); then
+          HAVE_TS=0
+          echo "stats timestamping failed — falling back to untimestamped samples" >> "$LOG"
+        fi
+      fi
       echo "$S" >> "$DIR/stats.jsonl"
       if [ "$HAVE_JQ" = 1 ] && echo "$S" | jq -e --argjson cap $RSS_CAP '.sys.rss_bytes > $cap' >/dev/null 2>&1; then
         echo "RSS CAP EXCEEDED — killing chronod" >> "$LOG"; kill $CPID
@@ -85,10 +96,15 @@ else
   PSTART=$(( DURS/2 - 15 )); [ $PSTART -lt 0 ] && PSTART=0
   ( sleep $PSTART; curl -sf "localhost:18080/debug/pprof/profile?seconds=30" > "$DIR/cpu.pprof" ) &
   PPID2=$!
+  # Load-phase markers: perfcollect windows the CPU mean (and RSS plateau)
+  # to samples between these epoch seconds, so boot replay and post-load
+  # idle stop diluting the measurement.
+  date +%s > "$DIR/load_start"
   go run ./scripts/benchfeed -mode feed -server localhost:19090 -stats localhost:18080 -scenario "$SCN" \
     -layout "$LAYOUT" -alerts "$ALERTS" -symbols "$SYMBOLS" -cluster "$CLUSTER" \
     -band "$TRICKLE_BAND" -rate "$RATE" -duration "$DUR" -out "$DIR" 2>&1 | tee -a "$LOG"
   FEEDRC=$?
+  date +%s > "$DIR/load_end"
   curl -sf localhost:18080/debug/pprof/heap > "$DIR/heap.pprof" || echo "heap profile failed" | tee -a "$LOG"
   curl -sf "localhost:18080/debug/pprof/goroutine?debug=1" > "$DIR/goroutine.txt" || true
   # Let the 30s CPU profile finish before killing chronod — on the short

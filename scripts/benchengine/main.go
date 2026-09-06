@@ -133,6 +133,10 @@ func main() {
 		}
 	}
 	loadWall := time.Since(wallStart)
+	// CPU window closes here: the gap tick, drain wait, and profile
+	// writing below are not load work, but the summary's denominator
+	// (loadWall) is — mixing them in would inflate CPUSeconds/CPUPct.
+	cpuAfterLoad := bench.ReadCPUSeconds(pid)
 
 	// Burst: one gap tick, then time the drain to ring-empty.
 	var drainMs int64 = -1
@@ -149,6 +153,9 @@ func main() {
 		drainMs = time.Since(gapStart).Milliseconds()
 		if got := fired.Load() - before; got < target {
 			log.Printf("drain incomplete after 120s: %d of %d", got, target)
+		}
+		if c := bench.ReadCPUSeconds(pid) - cpuAfterLoad; c > 0 {
+			log.Printf("drain window CPU: %.2fs over %dms", c, drainMs)
 		}
 	}
 
@@ -191,7 +198,7 @@ func main() {
 		RSSPeak:      bench.ReadPeakRSS(pid),
 		HeapInuse:    ms.HeapInuse,
 		GCCount:      ms.NumGC,
-		CPUSeconds:   bench.ReadCPUSeconds(pid) - cpuSeed,
+		CPUSeconds:   cpuAfterLoad - cpuSeed, // load window only, matches loadWall
 		Fired:        fired.Load(),
 		RingDropped:  st.DroppedTriggers,
 		DrainMillis:  drainMs,
