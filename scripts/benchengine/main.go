@@ -26,6 +26,7 @@ func main() {
 	alerts := flag.Int("alerts", 1_000_000, "total alerts")
 	symbols := flag.Int("symbols", 500, "symbol universe size")
 	cluster := flag.Int("cluster", 0, "gap layout: cluster size k")
+	band := flag.Float64("band", 0.6, "trickle layout: ladder span as a fraction of Ref")
 	rate := flag.Float64("rate", 20000, "target ticks/sec")
 	duration := flag.Duration("duration", 4*time.Minute, "steady-load phase")
 	seed := flag.Uint64("seed", 1, "market RNG seed")
@@ -45,7 +46,7 @@ func main() {
 	case "parked":
 		specs = bench.Parked(*alerts, syms)
 	case "trickle":
-		specs = bench.Trickle(*alerts, syms, 0.002)
+		specs = bench.Trickle(*alerts, syms, *band)
 	case "gap":
 		specs, gap = bench.GapCluster(*alerts, *cluster, syms)
 	default:

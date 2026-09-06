@@ -1,12 +1,20 @@
 #!/usr/bin/env bash
 # run.sh <engine|service> <scenario> <results-root>
 # Scenarios: baseline rate-100k rate-200k sym-1000 sym-2000 trickle
-#            burst-100k burst-500k corner smoke
+#            burst-100k burst-500k corner smoke smoke-trickle
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 
 LAYER="$1"; SCN="$2"; ROOT="${3:-docs/perf/2026-09-06-campaign}"
+# TRICKLE_BAND: ladder span as a fraction of Ref. 0.002 (the old value)
+# sits deep inside the walk's stationary band (σ≈0.8%/1.6%/4.7% per
+# decimals class), so at campaign scale the whole ladder fired in the
+# first seconds. 0.6 keeps fires sparse and sustained: measured on
+# scripts/benchengine (1M alerts, 500 syms, 20k tps) 96783 fires over 60s
+# and 138298 (13.8% of the ladder) over the full 240s, ~77 of 2000 over
+# the 10s smoke.
 ALERTS=1000000; SYMBOLS=500; RATE=20000; LAYOUT=parked; CLUSTER=0; DUR=240s
+TRICKLE_BAND=0.6
 case "$SCN" in
   baseline)   ;;
   rate-100k)  RATE=100000 ;;
@@ -18,6 +26,7 @@ case "$SCN" in
   burst-500k) LAYOUT=gap; CLUSTER=500000 ;;
   corner)     LAYOUT=gap; CLUSTER=100000; RATE=200000; SYMBOLS=2000 ;;
   smoke)      ALERTS=1000; SYMBOLS=200; RATE=5000; DUR=10s ;;
+  smoke-trickle) LAYOUT=trickle; ALERTS=2000; SYMBOLS=200; RATE=5000; DUR=10s ;;
   *) echo "unknown scenario $SCN" >&2; exit 2 ;;
 esac
 
@@ -30,14 +39,15 @@ if [ "$LAYER" = engine ]; then
   mkdir -p "$ROOT/.bin"
   go build -o "$ROOT/.bin/benchengine" ./scripts/benchengine
   "$ROOT/.bin/benchengine" -scenario "$SCN" -layout "$LAYOUT" -alerts "$ALERTS" \
-    -symbols "$SYMBOLS" -cluster "$CLUSTER" -rate "$RATE" -duration "$DUR" -out "$DIR" 2>&1 | tee -a "$LOG"
+    -symbols "$SYMBOLS" -cluster "$CLUSTER" -band "$TRICKLE_BAND" \
+    -rate "$RATE" -duration "$DUR" -out "$DIR" 2>&1 | tee -a "$LOG"
   go tool pprof -top -nodecount=25 "$ROOT/.bin/benchengine" "$DIR/cpu.pprof" > "$DIR/pprof-top.txt" 2>>"$LOG" || true
   grep -q '"valid": true' "$DIR/summary.json"; RC=$?
 else
   TMP="$DIR/tmp"; mkdir -p "$TMP"
   go run ./scripts/benchfeed -mode seed -db "$TMP/alerts.bbolt" -scenario "$SCN" \
     -layout "$LAYOUT" -alerts "$ALERTS" -symbols "$SYMBOLS" -cluster "$CLUSTER" \
-    -rate "$RATE" -out "$DIR" 2>&1 | tee -a "$LOG"
+    -band "$TRICKLE_BAND" -rate "$RATE" -out "$DIR" 2>&1 | tee -a "$LOG"
   go build -o "$TMP/chronod" ./cmd/chronod
   "$TMP/chronod" -nats-url "" -db "$TMP/alerts.bbolt" -grpc-addr :19090 -http-addr :18080 \
     > "$TMP/chronod.log" 2>&1 &
@@ -77,7 +87,7 @@ else
   PPID2=$!
   go run ./scripts/benchfeed -mode feed -server localhost:19090 -stats localhost:18080 -scenario "$SCN" \
     -layout "$LAYOUT" -alerts "$ALERTS" -symbols "$SYMBOLS" -cluster "$CLUSTER" \
-    -rate "$RATE" -duration "$DUR" -out "$DIR" 2>&1 | tee -a "$LOG"
+    -band "$TRICKLE_BAND" -rate "$RATE" -duration "$DUR" -out "$DIR" 2>&1 | tee -a "$LOG"
   FEEDRC=$?
   curl -sf localhost:18080/debug/pprof/heap > "$DIR/heap.pprof" || echo "heap profile failed" | tee -a "$LOG"
   curl -sf "localhost:18080/debug/pprof/goroutine?debug=1" > "$DIR/goroutine.txt" || true

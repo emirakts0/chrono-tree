@@ -44,6 +44,7 @@ func main() {
 	alerts := flag.Int("alerts", 1_000_000, "total alerts")
 	symbols := flag.Int("symbols", 500, "symbol universe size")
 	cluster := flag.Int("cluster", 0, "gap layout: cluster size k")
+	band := flag.Float64("band", 0.6, "trickle layout: ladder span as a fraction of Ref")
 	rate := flag.Float64("rate", 20000, "target ticks/sec")
 	duration := flag.Duration("duration", 4*time.Minute, "steady-load phase")
 	seed := flag.Uint64("seed", 1, "market RNG seed")
@@ -56,21 +57,21 @@ func main() {
 		log.Fatalf("gap layout needs 0 < cluster(%d) < alerts(%d)", *cluster, *alerts)
 	}
 	if *mode == "seed" {
-		seedStore(*dbPath, *scenario, *layout, *alerts, *symbols, *cluster, *out, *rate)
+		seedStore(*dbPath, *scenario, *layout, *alerts, *symbols, *cluster, *band, *out, *rate)
 		return
 	}
-	if err := feed(*server, *statsAddr, *scenario, *layout, *alerts, *symbols, *cluster, *rate, *duration, *seed, *out); err != nil {
+	if err := feed(*server, *statsAddr, *scenario, *layout, *alerts, *symbols, *cluster, *band, *rate, *duration, *seed, *out); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func buildLayout(layout string, alerts, symbols, cluster int) ([]bench.Spec, bench.Quote) {
+func buildLayout(layout string, alerts, symbols, cluster int, band float64) ([]bench.Spec, bench.Quote) {
 	syms := bench.Symbols(symbols)
 	switch layout {
 	case "parked":
 		return bench.Parked(alerts, syms), bench.Quote{}
 	case "trickle":
-		return bench.Trickle(alerts, syms, 0.002), bench.Quote{}
+		return bench.Trickle(alerts, syms, band), bench.Quote{}
 	case "gap":
 		return bench.GapCluster(alerts, cluster, syms)
 	}
@@ -78,11 +79,11 @@ func buildLayout(layout string, alerts, symbols, cluster int) ([]bench.Spec, ben
 	return nil, bench.Quote{}
 }
 
-func seedStore(dbPath, scenario, layout string, alerts, symbols, cluster int, out string, rate float64) {
+func seedStore(dbPath, scenario, layout string, alerts, symbols, cluster int, band float64, out string, rate float64) {
 	if dbPath == "" {
 		log.Fatal("seed mode needs -db")
 	}
-	specs, _ := buildLayout(layout, alerts, symbols, cluster)
+	specs, _ := buildLayout(layout, alerts, symbols, cluster, band)
 	store, err := alertstore.Open(dbPath)
 	if err != nil {
 		log.Fatalf("open store: %v (chronod already running with this db?)", err)
@@ -113,7 +114,7 @@ func seedStore(dbPath, scenario, layout string, alerts, symbols, cluster int, ou
 	log.Printf("seed done: %d alerts into %s", len(specs), dbPath)
 }
 
-func feed(server, statsAddr, scenario, layout string, alerts, symbols, cluster int, rate float64, duration time.Duration, seed uint64, out string) error {
+func feed(server, statsAddr, scenario, layout string, alerts, symbols, cluster int, band float64, rate float64, duration time.Duration, seed uint64, out string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -141,7 +142,7 @@ func feed(server, statsAddr, scenario, layout string, alerts, symbols, cluster i
 		return err
 	}
 	syms := bench.Symbols(symbols)
-	_, gap := buildLayout(layout, alerts, symbols, cluster) // specs live in the store; only the gap quote is needed here
+	_, gap := buildLayout(layout, alerts, symbols, cluster, band) // specs live in the store; only the gap quote is needed here
 	m := bench.NewMarket(syms, seed, layout == "gap")
 	em := &bench.Emitter{Target: rate}
 	const batchMax, slice = 256, 10*time.Millisecond

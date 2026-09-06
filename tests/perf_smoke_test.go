@@ -24,7 +24,7 @@ func TestPerfSmoke(t *testing.T) {
 		if err != nil {
 			t.Fatalf("smoke failed: %v", err)
 		}
-	case <-time.After(3 * time.Minute):
+	case <-time.After(6 * time.Minute): // 4 legs (parked + trickle x 2 layers): 2 service boots dominate
 		_ = cmd.Process.Kill()
 		t.Fatal("smoke exceeded 3 minutes")
 	}
