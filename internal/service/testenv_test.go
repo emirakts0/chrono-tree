@@ -89,7 +89,7 @@ func openStore(t *testing.T) *alertstore.Store {
 
 func newEnvWithPub(t *testing.T, p pub.Publisher, natsURL string) *testEnv {
 	t.Helper()
-	cat := catalog.Default()
+	cat := catalog.Empty()
 	store := openStore(t) // store cleanup registered FIRST → runs LAST, after core.Close
 	core := NewCore(engine.DefaultConfig(), cat, NoopMetrics{}, stats.New(time.Now()), p, store)
 	t.Cleanup(core.Close)

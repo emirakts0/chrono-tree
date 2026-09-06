@@ -56,19 +56,22 @@ func TestUpsertVisibleImmediately(t *testing.T) {
 
 func TestUpsertValidation(t *testing.T) {
 	e := newEnv(t)
+	// Pin BTCUSDT at 2 decimals so the precision-loss and conflict cases
+	// below fail price conversion, not first-sight interning.
+	if _, err := e.alerts().UpsertAlert(context.Background(), validUpsert()); err != nil {
+		t.Fatal(err)
+	}
 	cases := []struct {
 		name string
 		mut  func(*chronov1.UpsertAlertRequest)
 		want codes.Code
 	}{
-		{"unknown symbol", func(r *chronov1.UpsertAlertRequest) { r.Symbol = "NOSUCH" }, codes.InvalidArgument},
 		{"no price type", func(r *chronov1.UpsertAlertRequest) { r.PriceType = chronov1.PriceType_PRICE_TYPE_UNSPECIFIED }, codes.InvalidArgument},
 		{"no direction", func(r *chronov1.UpsertAlertRequest) { r.Direction = chronov1.Direction_DIRECTION_UNSPECIFIED }, codes.InvalidArgument},
 		{"precision loss", func(r *chronov1.UpsertAlertRequest) { r.TargetPrice = "65000.005" }, codes.InvalidArgument},
 		{"bad number", func(r *chronov1.UpsertAlertRequest) { r.TargetPrice = "abc" }, codes.InvalidArgument},
 		{"overflow", func(r *chronov1.UpsertAlertRequest) { r.TargetPrice = "99999999999999999.00" }, codes.InvalidArgument},
-		{"unknown venue", func(r *chronov1.UpsertAlertRequest) { r.Venue = "BINANCE" }, codes.InvalidArgument},
-		{"unknown tier", func(r *chronov1.UpsertAlertRequest) { r.Tier = "DEEP" }, codes.InvalidArgument},
+		{"symbol scale conflict", func(r *chronov1.UpsertAlertRequest) { r.TargetPrice = "65000.000" }, codes.InvalidArgument},
 		{"expires before valid", func(r *chronov1.UpsertAlertRequest) { r.ValidFromUnixNanos = 200; r.ExpiresUnixNanos = 100 }, codes.InvalidArgument},
 		{"empty symbol", func(r *chronov1.UpsertAlertRequest) { r.Symbol = "" }, codes.InvalidArgument},
 	}
@@ -80,7 +83,7 @@ func TestUpsertValidation(t *testing.T) {
 			if status.Code(err) != tc.want {
 				t.Fatalf("code = %v, want %v (err %v)", status.Code(err), tc.want, err)
 			}
-			if got := e.core.AlertCount(); got != 0 {
+			if got := e.core.AlertCount(); got != 1 { // the seed only
 				t.Fatalf("rejected upsert left %d alerts behind", got)
 			}
 		})

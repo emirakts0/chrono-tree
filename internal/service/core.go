@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -103,7 +104,7 @@ type Core struct {
 	feedEver     atomic.Bool
 	feedLastSeen atomic.Int64 // unix nanos
 
-	venueTicks map[string]*atomic.Uint64 // venue → accepted ticks; fixed keys, written at construction
+	venueTicks sync.Map // venue name → *atomic.Uint64, interned on first sight
 }
 
 // NewCore builds the engine with the catalog's dim vocabulary, replays
@@ -132,10 +133,6 @@ func NewCore(cfg engine.Config, cat *catalog.Catalog, m Metrics, st *stats.Stats
 	// Healthy until a publish fails: "recovered" must only ever log after
 	// an actual failure, never on the process's first publish.
 	c.pubHealthy.Store(true)
-	c.venueTicks = make(map[string]*atomic.Uint64, len(cat.DimValues(catalog.DimVenue)))
-	for _, v := range cat.DimValues(catalog.DimVenue) {
-		c.venueTicks[v] = &atomic.Uint64{}
-	}
 	c.replay()
 	c.pumpCtx, c.pumpCancel = context.WithCancel(context.Background())
 	c.pumpDone = make(chan struct{})
@@ -151,7 +148,7 @@ func NewCore(cfg engine.Config, cat *catalog.Catalog, m Metrics, st *stats.Stats
 // source of truth or nothing.
 func (c *Core) replay() {
 	now := c.now()
-	var restored, expired, skipped int
+	var restored, expired int
 	var expiredIDs []engine.AlertID
 	err := c.store.EachActive(func(a alertstore.Alert) error {
 		if a.Expires != 0 && a.Expires <= now.UnixNano() {
@@ -159,11 +156,7 @@ func (c *Core) replay() {
 			expiredIDs = append(expiredIDs, a.ID)
 			return nil
 		}
-		spec, ok := c.specFrom(a)
-		if !ok {
-			skipped++ // catalog drifted from the record; loud count, not a boot failure
-			return nil
-		}
+		spec := c.specFrom(a)
 		if err := c.eng.Upsert(spec); err != nil {
 			return fmt.Errorf("replay upsert %s: %w", alertIDString(a.ID), err)
 		}
@@ -187,25 +180,16 @@ func (c *Core) replay() {
 		c.cancelled.Store(int64(cn))
 	}
 	slog.Info("alert store replay",
-		"restored", restored, "expired", expired, "skipped", skipped)
+		"restored", restored, "expired", expired)
 }
 
-// specFrom rebuilds the engine submission for a persisted record.
-// Dims are re-interned through the catalog (the engine owns uint16
-// values; the store owns names).
-func (c *Core) specFrom(a alertstore.Alert) (engine.AlertSpec, bool) {
-	sym, ok := c.Cat.Symbol(a.Symbol)
-	if !ok {
-		return engine.AlertSpec{}, false
-	}
-	vv, ok := c.Cat.Value(catalog.DimVenue, a.Venue)
-	if !ok {
-		return engine.AlertSpec{}, false
-	}
-	tv, ok := c.Cat.Value(catalog.DimTier, a.Tier)
-	if !ok {
-		return engine.AlertSpec{}, false
-	}
+// specFrom rebuilds the engine submission for a persisted record. The
+// record itself re-interns its symbol (at the store's persisted decimals)
+// and its venue/tier — replay can never drift from the registry.
+func (c *Core) specFrom(a alertstore.Alert) engine.AlertSpec {
+	sym, _ := c.Cat.EnsureSymbol(a.Symbol, a.Decimals)
+	vv, _ := c.Cat.EnsureValue(catalog.DimVenue, a.Venue)
+	tv, _ := c.Cat.EnsureValue(catalog.DimTier, a.Tier)
 	return engine.AlertSpec{
 		ID: a.ID, Symbol: sym.Name, PriceType: a.PriceType, Direction: a.Direction,
 		TargetPrice:    a.TargetPrice,
@@ -213,7 +197,7 @@ func (c *Core) specFrom(a alertstore.Alert) (engine.AlertSpec, bool) {
 		Expires:        a.Expires,
 		AutoDeactivate: a.AutoDeactivate,
 		Dims:           engine.Dims(vv, tv),
-	}, true
+	}
 }
 
 // Close stops the pump first (it is the only Triggers() consumer, and the
@@ -274,9 +258,13 @@ func toEngineDirection(d chronov1.Direction) (engine.Direction, bool) {
 // can always enrich), then submits and Syncs — the alert is visible to
 // Match when the response returns.
 func (c *Core) UpsertAlert(ctx context.Context, req *chronov1.UpsertAlertRequest) (*chronov1.UpsertAlertResponse, error) {
-	sym, ok := c.Cat.Symbol(req.GetSymbol())
+	dec, serr := price.ScaleOf(req.GetTargetPrice())
+	if serr != nil {
+		return nil, invalidf("target price %q: %v", req.GetTargetPrice(), serr)
+	}
+	sym, ok := c.Cat.EnsureSymbol(req.GetSymbol(), dec)
 	if !ok {
-		return nil, invalidf("unknown symbol %q", req.GetSymbol())
+		return nil, invalidf("symbol %q quotes %d decimals", req.GetSymbol(), sym.Decimals)
 	}
 	pt, ok := toEnginePriceType(req.GetPriceType())
 	if !ok {
@@ -290,13 +278,13 @@ func (c *Core) UpsertAlert(ctx context.Context, req *chronov1.UpsertAlertRequest
 	if err != nil {
 		return nil, invalidf("target price %q: %v (symbol quotes %d decimals)", req.GetTargetPrice(), err, sym.Decimals)
 	}
-	vv, ok := c.Cat.Value(catalog.DimVenue, req.GetVenue())
+	vv, ok := c.Cat.EnsureValue(catalog.DimVenue, req.GetVenue())
 	if !ok {
-		return nil, invalidf("unknown venue %q (valid: %v)", req.GetVenue(), c.Cat.DimValues(catalog.DimVenue))
+		return nil, invalidf("venue vocabulary exhausted")
 	}
-	tv, ok := c.Cat.Value(catalog.DimTier, req.GetTier())
+	tv, ok := c.Cat.EnsureValue(catalog.DimTier, req.GetTier())
 	if !ok {
-		return nil, invalidf("unknown tier %q (valid: %v)", req.GetTier(), c.Cat.DimValues(catalog.DimTier))
+		return nil, invalidf("tier vocabulary exhausted")
 	}
 	if req.GetExpiresUnixNanos() != 0 && req.GetExpiresUnixNanos() <= req.GetValidFromUnixNanos() {
 		return nil, invalidf("expires at or before valid_from")
@@ -397,11 +385,6 @@ func (c *Core) CancelAlert(ctx context.Context, req *chronov1.CancelAlertRequest
 	return &chronov1.CancelAlertResponse{}, nil
 }
 
-// errUnknownRefdata marks the batch-reject class (spec §8): a tick naming
-// a symbol/venue/tier outside the catalog means the feed is buggy — the
-// whole batch is rejected loudly.
-var errUnknownRefdata = errors.New("unknown reference data")
-
 // presentBidAskMid is the Present mask for ticks carrying bid, ask and a
 // derived mid.
 func presentBidAskMid() uint8 {
@@ -409,20 +392,31 @@ func presentBidAskMid() uint8 {
 }
 
 // ingestTick converts one wire tick to an engine tick and Matches it.
-// Errors: wrapped errUnknownRefdata (batch reject) or a price.Parse error
-// (drop this tick only).
+// Unknown symbol/venue/tier are interned on first sight — the feed
+// defines the vocabulary. Errors: price/scale problems (drop this tick
+// only) or dim exhaustion (also per-tick).
 func (c *Core) ingestTick(t *chronov1.Tick, now time.Time) error {
 	sym, ok := c.Cat.Symbol(t.GetSymbol())
 	if !ok {
-		return fmt.Errorf("%q: %w", t.GetSymbol(), errUnknownRefdata)
+		dec, serr := price.ScaleOf(t.GetBid())
+		if serr != nil {
+			return fmt.Errorf("bid %q: %v", t.GetBid(), serr)
+		}
+		if sym, ok = c.Cat.EnsureSymbol(t.GetSymbol(), dec); !ok {
+			return fmt.Errorf("symbol %q quotes %d decimals", t.GetSymbol(), sym.Decimals)
+		}
 	}
 	vv, ok := c.Cat.Value(catalog.DimVenue, t.GetVenue())
 	if !ok {
-		return fmt.Errorf("venue %q: %w", t.GetVenue(), errUnknownRefdata)
+		if vv, ok = c.Cat.EnsureValue(catalog.DimVenue, t.GetVenue()); !ok {
+			return fmt.Errorf("venue vocabulary exhausted")
+		}
 	}
 	tv, ok := c.Cat.Value(catalog.DimTier, t.GetTier())
 	if !ok {
-		return fmt.Errorf("tier %q: %w", t.GetTier(), errUnknownRefdata)
+		if tv, ok = c.Cat.EnsureValue(catalog.DimTier, t.GetTier()); !ok {
+			return fmt.Errorf("tier vocabulary exhausted")
+		}
 	}
 	bid, err := price.Parse(t.GetBid(), sym.Decimals)
 	if err != nil {
@@ -448,7 +442,8 @@ func (c *Core) ingestTick(t *chronov1.Tick, now time.Time) error {
 	if ts > 0 {
 		c.metrics.TickLatency(now.Sub(time.Unix(0, ts)))
 	}
-	c.venueTicks[t.GetVenue()].Add(1)
+	ctr, _ := c.venueTicks.LoadOrStore(t.GetVenue(), &atomic.Uint64{})
+	ctr.(*atomic.Uint64).Add(1)
 	return nil
 }
 
@@ -475,9 +470,6 @@ func (c *Core) StreamTicks(ss chronov1.FeedService_StreamTicksServer) error {
 		c.metrics.TickBatch(len(batch.GetTicks()))
 		for _, tk := range batch.GetTicks() {
 			if err := c.ingestTick(tk, now); err != nil {
-				if errors.Is(err, errUnknownRefdata) {
-					return status.Errorf(codes.InvalidArgument, "batch rejected: %v", err)
-				}
 				dropped++
 				c.stats.TicksDropped.Add(1)
 				c.metrics.TickDropped()
@@ -501,10 +493,11 @@ func (c *Core) FeedEverConnected() bool { return c.feedEver.Load() }
 
 // VenueTicks reports accepted ticks per venue.
 func (c *Core) VenueTicks() map[string]uint64 {
-	out := make(map[string]uint64, len(c.venueTicks))
-	for v, ctr := range c.venueTicks {
-		out[v] = ctr.Load()
-	}
+	out := map[string]uint64{}
+	c.venueTicks.Range(func(v, ctr any) bool {
+		out[v.(string)] = ctr.(*atomic.Uint64).Load()
+		return true
+	})
 	return out
 }
 

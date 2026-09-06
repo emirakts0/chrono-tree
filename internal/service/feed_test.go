@@ -6,9 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
-
 	chronov1 "github.com/emir/chrono-tree/api/gen/chrono/v1"
 )
 
@@ -91,7 +88,7 @@ func TestStreamTicksDropsBadPriceOnly(t *testing.T) {
 	e := newEnv(t)
 	fs, err := runTicks(t, e, &chronov1.TickBatch{Ticks: []*chronov1.Tick{
 		tick("BTCUSDT", "65000.00", "65000.10", "ATLAS", "TOP"),
-		tick("BTCUSDT", "65000.005", "65000.10", "ATLAS", "TOP"), // precision loss
+		tick("BTCUSDT", "65000.005", "65000.10", "ATLAS", "TOP"), // scale conflict: BTCUSDT pinned at 2 by the first tick
 	}})
 	if err != nil {
 		t.Fatalf("StreamTicks: %v", err)
@@ -104,20 +101,26 @@ func TestStreamTicksDropsBadPriceOnly(t *testing.T) {
 	}
 }
 
-func TestStreamTicksRejectsUnknownRefdata(t *testing.T) {
+func TestStreamTicksAcceptsUnknownRefdata(t *testing.T) {
 	e := newEnv(t)
-	_, err := runTicks(t, e, &chronov1.TickBatch{Ticks: []*chronov1.Tick{
+	fs, err := runTicks(t, e, &chronov1.TickBatch{Ticks: []*chronov1.Tick{
 		tick("BTCUSDT", "65000.00", "65000.10", "ATLAS", "TOP"),
 		tick("NOSUCH", "1.00", "1.01", "ATLAS", "TOP"),
 	}})
-	if status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("code = %v, want InvalidArgument", status.Code(err))
+	if err != nil {
+		t.Fatalf("StreamTicks: %v", err)
 	}
-	_, err = runTicks(t, e, &chronov1.TickBatch{Ticks: []*chronov1.Tick{
+	if fs.GetAccepted() != 2 || fs.GetDropped() != 0 {
+		t.Fatalf("FeedStatus = %+v, want 2 accepted 0 dropped", fs)
+	}
+	fs, err = runTicks(t, e, &chronov1.TickBatch{Ticks: []*chronov1.Tick{
 		tick("BTCUSDT", "1.00", "1.01", "BINANCE", "TOP"),
 	}})
-	if status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("unknown venue code = %v", status.Code(err))
+	if err != nil {
+		t.Fatalf("unknown venue rejected: %v", err)
+	}
+	if fs.GetAccepted() != 1 || fs.GetDropped() != 0 {
+		t.Fatalf("FeedStatus = %+v, want 1 accepted 0 dropped", fs)
 	}
 }
 
@@ -171,23 +174,71 @@ func TestIngestDimsScoping(t *testing.T) {
 
 func TestGetCatalog(t *testing.T) {
 	e := newEnv(t)
+	// The catalog is learned from the feed: two ticks teach two symbols
+	// (at the scales their prices declare) and two venues.
+	if _, err := runTicks(t, e, &chronov1.TickBatch{Ticks: []*chronov1.Tick{
+		tick("BTCUSDT", "65000.00", "65000.10", "ATLAS", "TOP"),
+		tick("PEPEUSDT", "0.00001234", "0.00001240", "NOVA", "MID"),
+	}}); err != nil {
+		t.Fatal(err)
+	}
 	reply, err := e.feed().GetCatalog(context.Background(), &chronov1.CatalogRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(reply.GetSymbols()) < 490 {
+	if len(reply.GetSymbols()) != 2 {
 		t.Fatalf("symbols = %d", len(reply.GetSymbols()))
 	}
 	if len(reply.GetDims()) != 2 || reply.GetDims()[0].GetName() != "venue" {
 		t.Fatalf("dims = %v", reply.GetDims())
 	}
-	var btc *chronov1.SymbolInfo
+	byName := map[string]*chronov1.SymbolInfo{}
 	for _, s := range reply.GetSymbols() {
-		if s.GetSymbol() == "BTCUSDT" {
-			btc = s
-		}
+		byName[s.GetSymbol()] = s
 	}
-	if btc == nil || btc.GetDecimals() != 2 || btc.GetReferencePrice() != "65000.00" {
-		t.Fatalf("BTCUSDT info = %+v", btc)
+	if btc := byName["BTCUSDT"]; btc == nil || btc.GetDecimals() != 2 {
+		t.Fatalf("BTCUSDT info = %+v, want 2 decimals from the wire scale", btc)
+	}
+	if pepe := byName["PEPEUSDT"]; pepe == nil || pepe.GetDecimals() != 8 {
+		t.Fatalf("PEPEUSDT info = %+v, want 8 decimals from the wire scale", pepe)
+	}
+	if venues := reply.GetDims()[0].GetValues(); len(venues) != 2 || venues[0] != "ATLAS" || venues[1] != "NOVA" {
+		t.Fatalf("venue values = %v, want learned [ATLAS NOVA]", venues)
+	}
+	if tiers := reply.GetDims()[1].GetValues(); len(tiers) != 2 || tiers[0] != "TOP" || tiers[1] != "MID" {
+		t.Fatalf("tier values = %v, want learned [TOP MID]", tiers)
+	}
+}
+
+// TestLearnedSymbolFiresAlert is the headline scenario: an alert on a
+// never-seen symbol, then the symbol's first tick — interned, matched,
+// fired. The trailing feed also interns an unseen venue (BINANCE).
+func TestLearnedSymbolFiresAlert(t *testing.T) {
+	e := newEnv(t)
+	_, err := e.alerts().UpsertAlert(context.Background(), &chronov1.UpsertAlertRequest{
+		Symbol: "NEWPAIR", PriceType: chronov1.PriceType_PRICE_TYPE_ASK,
+		Direction:   chronov1.Direction_DIRECTION_ABOVE,
+		TargetPrice: "12.34", Venue: "ATLAS", Tier: "TOP",
+	})
+	if err != nil {
+		t.Fatalf("upsert on unknown symbol: %v", err)
+	}
+	if _, err := runTicks(t, e, &chronov1.TickBatch{Ticks: []*chronov1.Tick{
+		tick("NEWPAIR", "12.30", "12.40", "ATLAS", "TOP"),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	waitTriggers(t, e, 1)
+	tr := e.rec.triggers()
+	if len(tr) != 1 || tr[0].Symbol != "NEWPAIR" {
+		t.Fatalf("triggers = %+v, want 1 NEWPAIR", tr)
+	}
+	if _, err := runTicks(t, e, &chronov1.TickBatch{Ticks: []*chronov1.Tick{
+		tick("TICKFIRST", "1.500", "1.600", "BINANCE", "DEEP"),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if vt := e.core.VenueTicks(); vt["BINANCE"] != 1 {
+		t.Fatalf("venue ticks = %v, want BINANCE=1", vt)
 	}
 }

@@ -18,7 +18,7 @@ import (
 func newEnvAtPath(t *testing.T, path string) *testEnv {
 	t.Helper()
 	rec := &recordingPub{}
-	cat := catalog.Default()
+	cat := catalog.Empty()
 	store, err := alertstore.Open(path)
 	if err != nil {
 		t.Fatalf("alertstore.Open: %v", err)
