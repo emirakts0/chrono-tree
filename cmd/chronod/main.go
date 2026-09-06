@@ -75,7 +75,7 @@ func run(ctx context.Context, grpcAddr, httpAddr, natsURL, dbPath string) error 
 	// Backstop ordering note: this defer registers BEFORE core.Close's,
 	// so it runs AFTER it (LIFO) — the store always outlives the pump.
 	defer func() { _ = store.Close() }()
-	core := service.NewCore(engine.DefaultConfig(), catalog.Default(), pm, st, publisher, store)
+	core := service.NewCore(engine.DefaultConfig(), catalog.Empty(), pm, st, publisher, store)
 	defer core.Close() // stops the pump, then the engine (idempotent)
 
 	statusSrv := server.New(core, st, reg, dbPath)
