@@ -4,10 +4,10 @@
 # locally built binaries
 /chronod
 /chronofeed
-
+/benchengine
+/benchfeed
 # IDE
 .idea/
-
 # working docs: specs/plans/perf campaigns live on disk, not in git
 docs/
 .superpowers
