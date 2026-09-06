@@ -30,6 +30,10 @@ import (
 
 const seedChunk = 5000 // alerts per write tx, chronofeed's bulk-seed size
 
+// statsHTTP bounds each /stats poll: the drain loop's deadline is only
+// checked between polls, so a hung request must not outlast it.
+var statsHTTP = &http.Client{Timeout: 2 * time.Second}
+
 func main() {
 	mode := flag.String("mode", "feed", "seed | feed")
 	server := flag.String("server", "localhost:9090", "chronod gRPC address")
@@ -253,7 +257,7 @@ func feed(server, statsAddr, scenario, layout string, alerts, symbols, cluster i
 
 // statsSnapshot fetches /stats once; nil if unreachable.
 func statsSnapshot(addr string) map[string]any {
-	r, err := http.Get("http://" + addr + "/stats")
+	r, err := statsHTTP.Get("http://" + addr + "/stats")
 	if err != nil {
 		return nil
 	}
