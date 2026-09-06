@@ -5,6 +5,7 @@
 package bench
 
 import (
+	"encoding/binary"
 	"fmt"
 	"hash/fnv"
 	"math"
@@ -13,6 +14,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/emir/chrono-tree/engine"
+	"github.com/emir/chrono-tree/internal/alertstore"
 )
 
 // Symbol is one generated tradable pair. Ref is the walk anchor in base
@@ -185,4 +189,142 @@ func ReadCPUSeconds(pid int) float64 {
 	utime, _ := strconv.ParseFloat(f[11], 64)
 	stime, _ := strconv.ParseFloat(f[12], 64)
 	return (utime + stime) / 100
+}
+
+// ---- Alert layouts ----
+
+// Spec is a layout-generated alert, transport-agnostic: benchengine turns
+// it into engine.AlertSpec, benchfeed into alertstore.Alert.
+type Spec struct {
+	ID        engine.AlertID
+	SymIdx    int
+	Symbol    string
+	Decimals  uint8
+	PriceType engine.PriceType
+	Direction engine.Direction
+	Target    int64 // base units at Decimals
+	TierIdx   int   // 0/1; venue value is always 0
+}
+
+// MkID derives a deterministic, non-zero, unique alert id from a layout
+// index (UUIDv7-shaped for readability; uniqueness is what matters).
+// The version marker sits in byte 0, which the counter never touches —
+// masking or ORing it into the counter bytes would sacrifice counter
+// bits and collide ids (every 4096 for the brief's byte-6 mask).
+func MkID(i uint64) engine.AlertID {
+	var id engine.AlertID
+	id[0] = 0x70
+	binary.BigEndian.PutUint64(id[1:9], i+1)
+	return id
+}
+
+// parked builds n zero-fire alerts: GTE rungs at 3× the walk anchor, LTE
+// rungs at a quarter of it — the walk never leaves the ±few-% band around
+// Ref, so nothing ever crosses. IDs start at offset (GapCluster reuses
+// this for its parked tail).
+func parked(offset, n int, syms []Symbol) []Spec {
+	out := make([]Spec, 0, n)
+	for i := 0; i < n; i++ {
+		sym := syms[(i+offset)%len(syms)]
+		s := Spec{
+			ID: MkID(uint64(offset + i)), SymIdx: (i + offset) % len(syms),
+			Symbol: sym.Name, Decimals: sym.Decimals,
+			PriceType: engine.PriceType(i % 4), TierIdx: i % 2,
+		}
+		if i%2 == 0 {
+			s.Direction, s.Target = engine.DirGTE, sym.Ref*3+int64(i)
+		} else {
+			s.Direction, s.Target = engine.DirLTE, max(sym.Ref/4, 1)
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// Parked returns the zero-fire ingest-control layout over the whole
+// universe.
+func Parked(n int, syms []Symbol) []Spec { return parked(0, n, syms) }
+
+// Trickle returns n rungs inside ±band of each symbol's anchor,
+// alternating ABOVE/BELOW: the mean-reverting walk crosses them at a
+// steady, sparse pace.
+func Trickle(n int, syms []Symbol, band float64) []Spec {
+	out := make([]Spec, 0, n)
+	for i := 0; i < n; i++ {
+		sym := syms[i%len(syms)]
+		frac := (float64(i) + 0.5) / float64(n)
+		s := Spec{
+			ID: MkID(uint64(i)), SymIdx: i % len(syms),
+			Symbol: sym.Name, Decimals: sym.Decimals,
+			PriceType: engine.PriceType(i % 4), TierIdx: i % 2,
+		}
+		if i%2 == 0 {
+			s.Direction = engine.DirGTE
+			s.Target = int64(float64(sym.Ref) * (1 + band*frac))
+		} else {
+			s.Direction = engine.DirLTE
+			s.Target = int64(float64(sym.Ref) * (1 - band*frac))
+		}
+		s.Target = max(s.Target, 1)
+		out = append(out, s)
+	}
+	return out
+}
+
+// GapCluster returns total alerts — k GTE rungs stacked one base unit
+// apart just above symbol 0's anchor (all tier 0, so one gap tick fires
+// them all), the rest the parked tail on symbols 1.. — plus the gap
+// quote: a price above every cluster target.
+func GapCluster(total, k int, syms []Symbol) ([]Spec, Quote) {
+	g0 := syms[0]
+	cluster := make([]Spec, k)
+	for i := 0; i < k; i++ {
+		cluster[i] = Spec{
+			ID: MkID(uint64(i)), SymIdx: 0, Symbol: g0.Name, Decimals: g0.Decimals,
+			PriceType: engine.PriceType(i % 4), Direction: engine.DirGTE,
+			Target: g0.Ref + 1 + int64(i), TierIdx: 0,
+		}
+	}
+	specs := append(cluster, parked(k, total-k, syms[1:])...)
+	gap := Quote{
+		SymIdx: 0, TierIdx: 0,
+		Bid: g0.Ref + int64(k) + 10_000,
+		Ask: g0.Ref + int64(k) + 10_001,
+	}
+	return specs, gap
+}
+
+// EngineSpec converts a Spec for direct engine submission. ValidFrom 1:
+// valid since the dawn of time; AutoDeactivate so fired entries retire.
+func EngineSpec(s Spec) engine.AlertSpec {
+	return engine.AlertSpec{
+		ID: s.ID, Symbol: s.Symbol, PriceType: s.PriceType, Direction: s.Direction,
+		TargetPrice: engine.Price(s.Target), ValidFrom: 1, AutoDeactivate: true,
+		Dims: engine.Dims(0, uint16(s.TierIdx)),
+	}
+}
+
+// EngineTick converts a Quote into an engine tick carrying all four
+// price types and matching dims.
+func EngineTick(syms []Symbol, q Quote, ts int64) engine.Tick {
+	s := syms[q.SymIdx]
+	return engine.Tick{
+		Symbol: s.Name,
+		Bid:    engine.Price(q.Bid), Ask: engine.Price(q.Ask),
+		Mid:    engine.Price((q.Bid + q.Ask) / 2), Last: engine.Price(q.Ask),
+		Present: engine.TickAllPresent(), TS: ts,
+		Dims: engine.Dims(0, uint16(q.TierIdx)),
+	}
+}
+
+// StoreAlert converts a Spec into a persisted record for seeding the
+// service's bbolt store.
+func StoreAlert(s Spec, now int64) alertstore.Alert {
+	return alertstore.Alert{
+		ID: s.ID, Symbol: s.Symbol, Decimals: s.Decimals,
+		Venue: VenueName, Tier: Tier(s.TierIdx),
+		PriceType: s.PriceType, Direction: s.Direction,
+		TargetPrice: engine.Price(s.Target),
+		ValidFrom: now, State: alertstore.StateActive, CreatedAt: now,
+	}
 }
