@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/emir/chrono-tree/internal/bench"
@@ -83,6 +84,56 @@ func TestCollectServiceRun(t *testing.T) {
 	}
 	if !again.Valid {
 		t.Fatal("written summary not valid")
+	}
+}
+
+// Regression: the drain/profile gate reasons were appended BEFORE
+// bench.Validate, whose fresh InvalidReasons slice clobbered them — a run
+// with no profile files passed as valid. Clean feed + valid stats + NO
+// profiles must be INVALID with both profile reasons.
+func TestCollectMissingProfilesInvalid(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "seed.json", map[string]any{
+		"scenario": "baseline", "layout": "parked", "alerts": 1000,
+		"symbols": 500, "cluster": 0, "rate": 20000,
+	})
+	write(t, dir, "feed.json", map[string]any{
+		"ticks_sent": 100000, "ticks_accepted": 100000, "ticks_dropped": 0,
+		"saturated": false, "drain_ms": -1, "load_wall_ms": 5000,
+		"final_stats": map[string]any{
+			"triggers_fired": 0,
+			"engine":         map[string]any{"dropped_triggers": 0},
+			"sys": map[string]any{
+				"rss_bytes": 2097152, "db_bytes": 1048576, "proc_cpu_percent": 150.0,
+			},
+		},
+	})
+	var lines string
+	for i := 0; i < 120; i++ {
+		l, _ := json.Marshal(map[string]any{
+			"sys": map[string]any{"rss_bytes": 2097152, "proc_cpu_percent": 150.0},
+		})
+		lines += string(l) + "\n"
+	}
+	if err := os.WriteFile(filepath.Join(dir, "stats.jsonl"), []byte(lines), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// NO cpu.pprof / heap.pprof.
+
+	sum := collect(dir)
+	if sum.Valid {
+		t.Fatal("run without profiles counted valid")
+	}
+	joined := strings.Join(sum.InvalidReasons, "; ")
+	for _, want := range []string{"missing or empty cpu.pprof", "missing or empty heap.pprof"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("reasons %q missing %q", joined, want)
+		}
+	}
+	// And the gates themselves still hold (the run is invalid ONLY for
+	// the missing profiles).
+	if strings.Contains(joined, "tick drops") || strings.Contains(joined, "no RSS") {
+		t.Fatalf("clean run gained spurious reasons: %v", sum.InvalidReasons)
 	}
 }
 

@@ -148,6 +148,11 @@ func collect(dir string) bench.Summary {
 			sum.CPUSeconds = sum.CPUPctOneCore / 100 * float64(feed.LoadWallMS) / 1000
 		}
 	}
+	// Gate the run first, then layer the collector's own spec gates on
+	// top — Validate overwrites InvalidReasons, so appending before it
+	// would silently drop these reasons (and mark a profile-less run
+	// valid).
+	bench.Validate(&sum)
 	if feed.DrainTimeout {
 		sum.InvalidReasons = append(sum.InvalidReasons, "drain exceeded 120s")
 	}
@@ -158,7 +163,7 @@ func collect(dir string) bench.Summary {
 			sum.InvalidReasons = append(sum.InvalidReasons, "missing or empty "+p)
 		}
 	}
-	bench.Validate(&sum)
+	sum.Valid = len(sum.InvalidReasons) == 0
 	b, _ := json.MarshalIndent(sum, "", "  ")
 	_ = os.WriteFile(filepath.Join(dir, "summary.json"), b, 0o644)
 	return sum
