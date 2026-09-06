@@ -98,6 +98,9 @@ type Core struct {
 	pumpCancel context.CancelFunc
 	pumpDone   chan struct{}
 
+	flipCh   chan []alertstore.Fired // enrich → flipper; capacity 2 = backpressure
+	flipDone chan struct{}
+
 	pub        pub.Publisher
 	pubHealthy atomic.Bool // log publish failures on transition only
 
@@ -136,7 +139,10 @@ func NewCore(cfg engine.Config, cat *catalog.Catalog, m Metrics, st *stats.Stats
 	c.replay()
 	c.pumpCtx, c.pumpCancel = context.WithCancel(context.Background())
 	c.pumpDone = make(chan struct{})
+	c.flipCh = make(chan []alertstore.Fired, 2)
+	c.flipDone = make(chan struct{})
 	go c.pump()
+	go c.flipper()
 	return c
 }
 
@@ -201,10 +207,12 @@ func (c *Core) specFrom(a alertstore.Alert) engine.AlertSpec {
 }
 
 // Close stops the pump first (it is the only Triggers() consumer, and the
-// engine contract requires submitters to stop before Close), then the engine.
+// engine contract requires submitters to stop before Close), waits for the
+// flipper to write every in-flight batch, then stops the engine.
 func (c *Core) Close() {
 	c.pumpCancel()
 	<-c.pumpDone
+	<-c.flipDone
 	c.eng.Close()
 }
 
@@ -537,33 +545,64 @@ func (c *Core) GetCatalog(ctx context.Context, _ *chronov1.CatalogRequest) (*chr
 	return &chronov1.CatalogReply{Symbols: syms, Dims: dims}, nil
 }
 
-// pump drains the engine's trigger ring and hands each batch to
-// deliverBatch. It is the ONLY Triggers() consumer.
+// pumpBatch is the ring drain width: one BatchGet read tx per 4096
+// triggers. The old 64-wide batches made store-transaction overhead the
+// pump's dominant cost (~1.7 ms/trigger, ~4.4k flips/s — 2026-09-06
+// campaign). 4096 keeps a read tx well under a second of work while
+// amortizing per-tx cost across three orders of magnitude more triggers.
+const pumpBatch = 4096
+
+// pump drains the engine's trigger ring, enriches and publishes each
+// batch (enrichBatch), and hands the flips to the flipper goroutine over
+// a capacity-2 channel: enriching batch N+1 overlaps flipping batch N.
+// It is the ONLY Triggers() consumer. Publish order is this goroutine's
+// order; flip order is free (writes are idempotent).
 func (c *Core) pump() {
 	defer close(c.pumpDone)
-	buf := make([]engine.Trigger, 64)
+	buf := make([]engine.Trigger, pumpBatch)
 	for {
 		n := c.eng.Triggers().PopBatch(buf)
 		if n == 0 {
 			select {
 			case <-c.pumpCtx.Done():
+				close(c.flipCh)
 				return
 			case <-time.After(500 * time.Microsecond):
 			}
 			continue
 		}
-		c.deliverBatch(buf[:n])
+		if fired := c.enrichBatch(buf[:n]); len(fired) > 0 {
+			c.flipCh <- fired
+		}
 	}
 }
 
-// deliverBatch enriches a drained ring batch in bulk: one read tx
-// resolves every alert, each active alert's trigger is published, then
-// ONE write tx flips the published ones to triggered (writing
-// fired_price/fired_at). A store failure at either end leaves the
-// records active — the engine has already dropped its refs at fire
-// time, so they re-enter via replay at the next restart: visible
-// duplication beats silent loss.
-func (c *Core) deliverBatch(batch []engine.Trigger) {
+// flipper is the pipeline's write stage: one MarkTriggeredBatch per
+// enriched batch, then the active/triggered gauges — they track store
+// truth, which lands here. Runs until the pump closes the channel and
+// every in-flight batch is written.
+func (c *Core) flipper() {
+	defer close(c.flipDone)
+	for fired := range c.flipCh {
+		flipped, err := c.store.MarkTriggeredBatch(fired)
+		if err != nil {
+			// Same contract as the synchronous era: records stay active
+			// and re-arm via replay at the next restart.
+			slog.Warn("mark triggered failed; records stay active until restart", "err", err)
+			continue
+		}
+		c.active.Add(-int64(flipped))
+		c.triggered.Add(int64(flipped))
+	}
+}
+
+// enrichBatch is the pipeline's read stage: one read tx resolves every
+// alert in a drained batch, each active alert's trigger is published,
+// and the published IDs return for the flipper to write. A store read
+// failure counts the batch as fired and leaves the records active — the
+// engine has already dropped its refs at fire time, so they re-enter via
+// replay at the next restart: visible duplication beats silent loss.
+func (c *Core) enrichBatch(batch []engine.Trigger) []alertstore.Fired {
 	ids := make([]engine.AlertID, len(batch))
 	for i := range batch {
 		ids[i] = batch[i].ID
@@ -576,9 +615,9 @@ func (c *Core) deliverBatch(batch []engine.Trigger) {
 			c.stats.FireRate.Add(1, now)
 		}
 		slog.Warn("trigger enrichment failed; batch lost, records stay active until restart", "err", err)
-		return
+		return nil
 	}
-	var fired []alertstore.Fired
+	fired := make([]alertstore.Fired, 0, len(batch))
 	for i := range batch {
 		tr := &batch[i]
 		c.stats.TriggersFired.Add(1)
@@ -614,16 +653,7 @@ func (c *Core) deliverBatch(batch []engine.Trigger) {
 		c.metrics.TriggerPublished()
 		fired = append(fired, alertstore.Fired{ID: a.ID, Price: engine.Price(tr.Price), At: tr.TS})
 	}
-	if len(fired) == 0 {
-		return
-	}
-	flipped, err := c.store.MarkTriggeredBatch(fired)
-	if err != nil {
-		slog.Warn("mark triggered failed; records stay active until restart", "err", err)
-		return
-	}
-	c.active.Add(-int64(flipped))
-	c.triggered.Add(int64(flipped))
+	return fired
 }
 
 func directionOf(d engine.Direction) string {
