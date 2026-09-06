@@ -33,9 +33,13 @@ service AlertService {
 
 service FeedService {
   // StreamTicks is a client-streaming feed of market ticks. Batches of up
-  // to 64. A batch containing a tick with unknown symbol/venue/tier is
-  // rejected with InvalidArgument; a tick whose price string is not exactly
-  // representable is dropped and counted, the rest of the batch proceeds.
+  // to 64. Unknown symbol/venue/tier names are interned on first sight:
+  // a symbol's decimals pin to the fractional-digit count of its first
+  // price string, and each dim's value capacity is bounded. A tick whose
+  // symbol/venue/tier is empty or exceeds the name-length bound (20, the
+  // UpsertAlert symbol pattern), or whose price string is not exactly
+  // representable at the pinned scale, is dropped and counted; the rest
+  // of the batch proceeds.
   rpc StreamTicks(stream TickBatch) returns (FeedStatus);
   // GetCatalog returns the symbol table (with decimals and a reference
   // price) and the dimension vocabulary.
@@ -43,12 +47,12 @@ service FeedService {
 }
 
 message UpsertAlertRequest {
-  string symbol = 1 [(buf.validate.field).string.pattern = "^[A-Z0-9]{5,20}$"]; // e.g. "BTCUSDT"; must be in the catalog
+  string symbol = 1 [(buf.validate.field).string.pattern = "^[A-Z0-9]{5,20}$"]; // e.g. "BTCUSDT"; interned at target_price's fractional digits on first sight
   PriceType price_type = 2;
   Direction direction = 3;
   string target_price = 4 [(buf.validate.field).string.pattern = "^[0-9]+(\\.[0-9]+)?$"]; // decimal string; exact at the symbol's decimals
-  string venue = 5;          // dim 0 value; must be in the catalog
-  string tier = 6;           // dim 1 value; must be in the catalog
+  string venue = 5;          // dim 0 value; interned on first sight
+  string tier = 6;           // dim 1 value; interned on first sight
   int64 valid_from_unix_nanos = 7; // 0 = immediately
   int64 expires_unix_nanos = 8;    // 0 = never
   bool auto_deactivate = 9;

@@ -174,9 +174,13 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type FeedServiceClient interface {
 	// StreamTicks is a client-streaming feed of market ticks. Batches of up
-	// to 64. A batch containing a tick with unknown symbol/venue/tier is
-	// rejected with InvalidArgument; a tick whose price string is not exactly
-	// representable is dropped and counted, the rest of the batch proceeds.
+	// to 64. Unknown symbol/venue/tier names are interned on first sight:
+	// a symbol's decimals pin to the fractional-digit count of its first
+	// price string, and each dim's value capacity is bounded. A tick whose
+	// symbol/venue/tier is empty or exceeds the name-length bound (20, the
+	// UpsertAlert symbol pattern), or whose price string is not exactly
+	// representable at the pinned scale, is dropped and counted; the rest
+	// of the batch proceeds.
 	StreamTicks(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[TickBatch, FeedStatus], error)
 	// GetCatalog returns the symbol table (with decimals and a reference
 	// price) and the dimension vocabulary.
@@ -219,9 +223,13 @@ func (c *feedServiceClient) GetCatalog(ctx context.Context, in *CatalogRequest, 
 // for forward compatibility.
 type FeedServiceServer interface {
 	// StreamTicks is a client-streaming feed of market ticks. Batches of up
-	// to 64. A batch containing a tick with unknown symbol/venue/tier is
-	// rejected with InvalidArgument; a tick whose price string is not exactly
-	// representable is dropped and counted, the rest of the batch proceeds.
+	// to 64. Unknown symbol/venue/tier names are interned on first sight:
+	// a symbol's decimals pin to the fractional-digit count of its first
+	// price string, and each dim's value capacity is bounded. A tick whose
+	// symbol/venue/tier is empty or exceeds the name-length bound (20, the
+	// UpsertAlert symbol pattern), or whose price string is not exactly
+	// representable at the pinned scale, is dropped and counted; the rest
+	// of the batch proceeds.
 	StreamTicks(grpc.ClientStreamingServer[TickBatch, FeedStatus]) error
 	// GetCatalog returns the symbol table (with decimals and a reference
 	// price) and the dimension vocabulary.

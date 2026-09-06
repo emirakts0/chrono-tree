@@ -131,12 +131,12 @@ func (Direction) EnumDescriptor() ([]byte, []int) {
 
 type UpsertAlertRequest struct {
 	state              protoimpl.MessageState `protogen:"open.v1"`
-	Symbol             string                 `protobuf:"bytes,1,opt,name=symbol,proto3" json:"symbol,omitempty"` // e.g. "BTCUSDT"; must be in the catalog
+	Symbol             string                 `protobuf:"bytes,1,opt,name=symbol,proto3" json:"symbol,omitempty"` // e.g. "BTCUSDT"; interned at target_price's fractional digits on first sight
 	PriceType          PriceType              `protobuf:"varint,2,opt,name=price_type,json=priceType,proto3,enum=chrono.v1.PriceType" json:"price_type,omitempty"`
 	Direction          Direction              `protobuf:"varint,3,opt,name=direction,proto3,enum=chrono.v1.Direction" json:"direction,omitempty"`
 	TargetPrice        string                 `protobuf:"bytes,4,opt,name=target_price,json=targetPrice,proto3" json:"target_price,omitempty"`                           // decimal string; exact at the symbol's decimals
-	Venue              string                 `protobuf:"bytes,5,opt,name=venue,proto3" json:"venue,omitempty"`                                                          // dim 0 value; must be in the catalog
-	Tier               string                 `protobuf:"bytes,6,opt,name=tier,proto3" json:"tier,omitempty"`                                                            // dim 1 value; must be in the catalog
+	Venue              string                 `protobuf:"bytes,5,opt,name=venue,proto3" json:"venue,omitempty"`                                                          // dim 0 value; interned on first sight
+	Tier               string                 `protobuf:"bytes,6,opt,name=tier,proto3" json:"tier,omitempty"`                                                            // dim 1 value; interned on first sight
 	ValidFromUnixNanos int64                  `protobuf:"varint,7,opt,name=valid_from_unix_nanos,json=validFromUnixNanos,proto3" json:"valid_from_unix_nanos,omitempty"` // 0 = immediately
 	ExpiresUnixNanos   int64                  `protobuf:"varint,8,opt,name=expires_unix_nanos,json=expiresUnixNanos,proto3" json:"expires_unix_nanos,omitempty"`         // 0 = never
 	AutoDeactivate     bool                   `protobuf:"varint,9,opt,name=auto_deactivate,json=autoDeactivate,proto3" json:"auto_deactivate,omitempty"`
