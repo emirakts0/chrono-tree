@@ -134,7 +134,7 @@ nats sub 'chrono.triggers.>'                         # watch triggers fire
 
 ## Benchmarks
 
-**Micro-benchmarks** (`go test ./engine -bench . -benchmem -run '^$'`, AMD Ryzen 5 5600H, Linux/amd64):
+**Micro-benchmarks** (AMD Ryzen 5 5600H, Linux/amd64):
 
 | benchmark | book | ns/op | B/op | allocs/op |
 |---|---|---:|---:|---:|
@@ -148,7 +148,7 @@ ticked symbol's trees, not the 1M-alert total. `DenseSkip` prices the deferred
 removal trade-off — ~9 ns per already-fired entry walked past until the
 flusher retires it.
 
-**Sustained-load campaign** ([2026-09-06](docs/perf/2026-09-06-campaign/REPORT.md), 16/16 valid runs). Engine layer, in-process driver, 4 min steady load per scenario; baseline = 1M alerts / 500 symbols / 20k ticks/s, each scenario moves one factor:
+**Sustained-load campaign** ([2026-09-06](docs/perf/2026-09-06-campaign/REPORT.md); baseline = 1M alerts / 500 symbols / 20k ticks/s):
 
 | scenario | ticks/s | CPU (% 1 core) | RSS peak | fired | ring drops |
 |---|---:|---:|---:|---:|---:|
