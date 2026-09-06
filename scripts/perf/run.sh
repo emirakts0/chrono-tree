@@ -113,6 +113,8 @@ else
   kill $CPID 2>/dev/null; wait $CPID 2>/dev/null; kill $SPID 2>/dev/null
   go run ./scripts/perfcollect -dir "$DIR" 2>&1 | tee -a "$LOG"
   go tool pprof -top -nodecount=25 "$TMP/chronod" "$DIR/cpu.pprof" > "$DIR/pprof-top.txt" 2>>"$LOG" || true
+  # Keep chronod's log — replay duration and crash evidence live there.
+  cp "$TMP/chronod.log" "$DIR/chronod.log" 2>/dev/null || true
   rm -rf "$TMP"
   grep -q '"valid": true' "$DIR/summary.json"; RC=$?
 fi

@@ -9,7 +9,6 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
-	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -205,19 +204,42 @@ func feed(server, statsAddr, scenario, layout string, alerts, symbols, cluster i
 	}
 	loadWall := time.Since(t0)
 
-	// Burst: one gap tick, then time the drain by polling /stats until the
-	// pump has fired the whole cluster (or 120s).
+	// Close the load stream well inside chronod's MaxConnectionAge (5m):
+	// the burst rides a FRESH stream so max-age can never interrupt the
+	// scenario's tail. The load stream carried only the paced soak.
+	fs, err := stream.CloseAndRecv()
+	loadAccepted, loadDropped := uint64(0), uint64(0)
+	if err != nil && err != io.EOF {
+		log.Printf("load stream close: %v (continuing with /stats counts)", err)
+	}
+	if fs != nil {
+		loadAccepted, loadDropped = fs.GetAccepted(), fs.GetDropped()
+	}
+
+	// Burst: open a fresh stream, send one gap tick, close; then time the
+	// drain by polling /stats until the pump has fired the whole cluster
+	// (or 120s).
 	drainMs, drainTimeout := int64(-1), false
+	gapSent := false
 	if layout == "gap" && ctx.Err() == nil {
-		now := time.Now()
-		if err := stream.Send(&chronov1.TickBatch{Ticks: []*chronov1.Tick{wire(gap, now)}}); err != nil {
+		gstream, err := fc.StreamTicks(ctx)
+		if err != nil {
 			return err
 		}
+		now := time.Now()
+		if err := gstream.Send(&chronov1.TickBatch{Ticks: []*chronov1.Tick{wire(gap, now)}}); err != nil {
+			return err
+		}
+		if _, err := gstream.CloseAndRecv(); err != nil && err != io.EOF {
+			log.Printf("gap stream close: %v (continuing with /stats counts)", err)
+		}
+		sent++ // the gap tick is not built by the pacing loop
+		gapSent = true
 		gapStart := time.Now()
 		deadline := gapStart.Add(120 * time.Second)
 		for time.Now().Before(deadline) {
 			fired := statsFired(statsAddr)
-			if fired >= uint64(cluster) {
+			if fired >= uint64(cluster) { // the cluster is what fires
 				break
 			}
 			time.Sleep(200 * time.Millisecond)
@@ -228,28 +250,30 @@ func feed(server, statsAddr, scenario, layout string, alerts, symbols, cluster i
 		}
 	}
 
-	fs, err := stream.CloseAndRecv()
-	if err != nil && err != io.EOF {
-		return fmt.Errorf("close stream: %w", err)
-	}
-	accepted, dropped := uint64(0), uint64(0)
-	if fs != nil {
-		accepted, dropped = fs.GetAccepted(), fs.GetDropped()
-	}
-	if layout == "gap" {
-		// The gap tick is not built by the pacing loop, so sent counts it
-		// here; accepted already includes it — the server counts every
-		// accepted batch before CloseAndRecv returns (verified end-to-end:
-		// incrementing both double-counted and reported accepted > sent).
-		sent++
-	}
 	final := statsSnapshot(statsAddr)
+	// FeedStatus counts are authoritative when the load stream closed
+	// cleanly; the gap tick (its own stream) is accepted by construction.
+	// Only on an unclean close do we fall back to /stats cumulative
+	// counters, so a max-age interruption never loses the run's results.
+	accepted, dropped := loadAccepted, loadDropped
+	if gapSent {
+		accepted++
+	}
+	if fs == nil && final != nil {
+		if t, ok := final["ticks"].(float64); ok && t > 0 {
+			accepted = uint64(t)
+		}
+		if d, ok := final["ticks_dropped"].(float64); ok {
+			dropped = uint64(d)
+		}
+	}
 	res := map[string]any{
 		"ticks_sent": sent, "ticks_accepted": accepted,
 		"ticks_dropped": dropped, "saturated": slow*10 > slices,
 		"drain_ms": drainMs, "drain_timeout": drainTimeout,
 		"load_wall_ms": loadWall.Milliseconds(), "final_stats": final,
 	}
+	// Results hit disk BEFORE anything can fail past this point.
 	writeJSON(out+"/feed.json", res)
 	log.Printf("feed done: sent=%d accepted=%d dropped=%d saturated=%v drain=%dms",
 		sent, accepted, dropped, slow*10 > slices, drainMs)
