@@ -167,7 +167,9 @@ flusher retires it.
   than the ring is an operator decision, not a code limit. Full tables and
   methodology: [campaign report](docs/perf/2026-09-06-campaign/REPORT.md).
 
-Tests: `go test ./... -race -count=1`, plus the oracles above and an integration smoke over real binaries and sockets (`go test -tags integration ./tests`).
+Tests: `go test ./... -race -count=1`, plus the oracles above. The perf
+harness carries its own end-to-end gate over real binaries and sockets
+(`go test ./scripts/perf/ -run TestPerfSmoke`, minutes-scale).
 
 Not yet built: persistence of engine state, TLS/auth, multi-node anything.
 
