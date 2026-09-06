@@ -161,7 +161,12 @@ flusher retires it.
 
 - **Rate**: 10× the tick rate costs 3× the CPU; no knee at 200k ticks/s.
 - **Memory is rate-, symbol- and burst-invariant**: ~1.0 GB in every scenario, set entirely by the 1M-alert index (~630 B/alert; seeding's B-tree node churn is nearly all allocation the process ever does — the steady state is allocation-free).
-- **Bursts are absorbed**: 500k simultaneous triggers pushed and drained in 44 ms with zero ring drops. In the same campaign, the *service* layer's trigger pump could only drain ~4.4k triggers/s — the honest gap, and the current scaling frontier, is documented in the [report](docs/perf/2026-09-06-campaign/REPORT.md).
+- **Bursts are absorbed** (engine): 500k simultaneous triggers pushed and drained in 44 ms with zero ring drops. The *service* layer's trigger pump initially lagged — ~4.4k triggers/s, dropping 34–87 % of large bursts at the ring. The [burst-absorption fix](docs/perf/2026-09-06-campaign-postopt/) (a pipelined pump and a 1,048,576-slot ring) removed it:
+
+| service burst | ring lost | drain | pump throughput |
+|---|---:|---:|---:|
+| 100k triggers | 34,400 → **0** | 15.1 s → **2.8 s** | ~4.4k → **~35k/s** |
+| 500k triggers | 434,336 → **0** | 14.9 s → **9.1 s** | ~4.4k → **~55k/s** |
 
 Tests: `go test ./... -race -count=1`, plus the oracles above and an integration smoke over real binaries and sockets (`go test -tags integration ./tests`).
 
