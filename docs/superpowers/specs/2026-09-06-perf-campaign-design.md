@@ -35,9 +35,11 @@ future changes re-run the same scenarios and compare.
 - **Machine budget**: 12 cores / 13 GB. Service-layer runs are serial;
   engine-layer runs (~700 MB each) may run two at a time. A hard RSS cap
   (8 GB) aborts a run cleanly rather than OOMing the box.
-- chronod runs **without NATS** in service scenarios: the pump exercises its
-  drop-and-count publish path, so pump + store-flip cost is measured without
-  a broker.
+- chronod runs **broker-less** in service scenarios, via a new
+  `-nats-url ""` mode that boots a noop publisher (chronod currently treats
+  NATS as a boot dependency, so "no NATS" must mean noop, not unreachable):
+  publishes succeed instantly, so the pump's enrich-and-flip path and the
+  store's batch writes are measured without a broker in the way.
 
 ## Scenarios
 
@@ -118,10 +120,13 @@ shrink to pprof-top + summaries with raw profiles gitignored.
 ## Run-validity gates
 
 A run counts only if: accepted == sent and drops == 0 (non-malformed
-scenarios), triggers fired == expected layout count (every GapCluster alert
-must fire — catches seeding bugs), achieved rate ≥ 95% of target, RSS and
-profiles present and non-empty. Failures mark the run INVALID with the
-reason in summary.json; the orchestrator continues, the report lists them.
+scenarios), firing matches the layout — parked: none; gap: the conservation
+law fired + ring_dropped == k (a trigger-ring overflow is a finding, not an
+invalidation; lost alerts mean the layout lied); trickle: some but not all —
+achieved rate ≥ 95% of target (waived when the feed was genuinely
+back-pressured: saturation is itself a finding), and RSS and profiles
+present and non-empty. Failures mark the run INVALID with the reason in
+summary.json; the orchestrator continues, the report lists them.
 
 ## Testing
 
