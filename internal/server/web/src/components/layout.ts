@@ -16,13 +16,6 @@ export function mount(root: HTMLElement): Mounts {
   root.innerHTML = `
   <header class="topbar">
     <span class="brand">chrono-tree<span class="brand-dot">▸</span></span>
-    <span class="status mono">
-      <span id="dot-feed"></span> feed
-      <span id="dot-nats"></span> nats
-      <span class="sep"></span>
-      <span class="mono" id="published">—</span> pub
-      · <span class="mono" id="pubdropped">—</span> drop
-    </span>
   </header>
   <main class="grid">
     <section class="card area-pulse"><h2>pulse</h2>
@@ -85,13 +78,9 @@ export function update(): void {
     const el = document.getElementById(id);
     if (el) el.innerHTML = statusDot(ok);
   };
-  setDot("dot-feed", s ? s.feed_ever_connected && s.feed_last_seen_ms_ago < 10_000 : false);
-  setDot("dot-nats", !!s?.nats_connected);
+  setDot("eng-dot-feed", s ? s.feed_ever_connected && s.feed_last_seen_ms_ago < 10_000 : false);
+  setDot("eng-dot-nats", !!s?.nats_connected);
   if (!s) return;
-
-  // Topbar owns transport health (published/dropped) — nowhere else.
-  set("published", fmt(s.triggers_published));
-  set("pubdropped", fmt(s.triggers_publish_dropped));
 
   // Pulse owns tick volume.
   set("tickrate", fmt(s.ticks_per_sec));
@@ -125,22 +114,28 @@ export function update(): void {
         .join("") || `<div class="empty">no ticks yet</div>`;
   }
 
-  // Engine card: engine-internal health, then this process's resources
-  // below the divider (sys is newer than old bundles' snapshots — read
-  // it defensively).
+  // Engine card: two columns — transport health and engine-internal rows
+  // on the left, this process's resources on the right (sys is newer than
+  // old bundles' snapshots — read it defensively).
   const eng = document.getElementById("engine");
   if (eng) {
     const sys = s.sys;
     const pct = (v: number) => `${Math.round(v)}%`;
     eng.innerHTML = `
-      <div class="row"><span>ring drops</span><span class="mono">${fmt(s.engine.dropped_triggers)}</span></div>
-      <div class="row"><span>symbols</span><span class="mono">${state.hello ? fmt(state.hello.symbol_count) : "—"}</span></div>
-      <div class="row"><span>uptime</span><span class="mono">${fmtDuration(s.uptime_sec)}</span></div>
-      <div class="hr"></div>
-      <div class="row"><span>cpu<span class="meta"> · ${pct(sys?.proc_cpu_percent ?? 0)} proc</span></span><span class="mono">${pct(sys?.host_cpu_percent ?? 0)}<span class="vmeta">${trend(state.series.cpu.slice(-40))}</span></span></div>
-      <div class="row"><span>cores</span><span class="mono">${sys?.cpu_cores ?? "—"}</span></div>
-      <div class="row"><span>ram<span class="meta"> · engine heap ${fmtBytes(sys?.heap_bytes ?? 0)}</span></span><span class="mono">${fmtBytes(sys?.rss_bytes ?? 0)}<span class="vmeta">${trend(state.series.rss.slice(-40))}</span></span></div>
-      <div class="row"><span>alert store</span><span class="mono">${(sys?.db_bytes ?? 0) > 0 ? fmtBytes(sys!.db_bytes) : "—"}</span></div>`;
+      <div class="col">
+        <div class="row"><span>feed</span><span id="eng-dot-feed"></span></div>
+        <div class="row"><span>nats</span><span id="eng-dot-nats"></span></div>
+        <div class="row"><span>pub · drop</span><span class="mono">${fmt(s.triggers_published)} · ${fmt(s.triggers_publish_dropped)}</span></div>
+        <div class="row"><span>ring drops</span><span class="mono">${fmt(s.engine.dropped_triggers)}</span></div>
+        <div class="row"><span>symbols</span><span class="mono">${state.hello ? fmt(state.hello.symbol_count) : "—"}</span></div>
+        <div class="row"><span>uptime</span><span class="mono">${fmtDuration(s.uptime_sec)}</span></div>
+      </div>
+      <div class="col">
+        <div class="row"><span>cpu<span class="meta"> · ${pct(sys?.proc_cpu_percent ?? 0)} proc</span></span><span class="mono">${pct(sys?.host_cpu_percent ?? 0)}<span class="vmeta">${trend(state.series.cpu.slice(-40))}</span></span></div>
+        <div class="row"><span>cores</span><span class="mono">${sys?.cpu_cores ?? "—"}</span></div>
+        <div class="row"><span>ram<span class="meta"> · engine heap ${fmtBytes(sys?.heap_bytes ?? 0)}</span></span><span class="mono">${fmtBytes(sys?.rss_bytes ?? 0)}<span class="vmeta">${trend(state.series.rss.slice(-40))}</span></span></div>
+        <div class="row"><span>alert store</span><span class="mono">${(sys?.db_bytes ?? 0) > 0 ? fmtBytes(sys!.db_bytes) : "—"}</span></div>
+      </div>`;
   }
 
   // The rail re-renders only when its content changed (keyed), so the

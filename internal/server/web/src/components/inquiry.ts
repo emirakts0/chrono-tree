@@ -116,7 +116,7 @@ export function mountInquiry(root: HTMLElement): void {
               (a) => `<tr>
               <td>${a.symbol}</td><td class="meta">${a.venue}/${a.tier}</td>
               <td class="meta">${a.price_type}</td>
-              <td><span class="badge ${a.direction === "ABOVE" ? "up" : "down"}">${a.direction}</span></td>
+              <td><b class="dir">${a.direction}</b></td>
               <td class="mono">${a.target_price}</td>
               <td><span class="chip state-${a.state}">${a.state}</span></td>
               <td class="mono time">${new Date(a.created_at_unix_nanos / 1e6).toLocaleTimeString()}</td>
