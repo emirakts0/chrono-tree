@@ -6,6 +6,11 @@
   allocation-free, at millions of concurrent alerts.
 </p>
 
+<p align="center">
+  Built for cryptocurrency markets: high tick rates, sub-cent precision
+  (8–18 decimals), venues and book tiers as match dimensions.
+</p>
+
 <div align="center">
 
 [![Go](https://img.shields.io/badge/Go-1.27-00ADD8?logo=go&logoColor=white)](https://go.dev)
@@ -144,7 +149,7 @@ nats sub 'chrono.triggers.>'                              # watch triggers fire
 | MatchDimsSparse1M | same as Sparse1M + 2 dims | 874 | 0 | 0 |
 | MatchDimsDenseSkip | same as DenseSkip + 2 dims | 201,614 | 0 | 0 |
 
-**Sustained-load campaign** (baseline = 1M alerts / 500 symbols / 20k ticks/s):
+**Sustained-load campaign** (1M alerts, one factor varied per scenario):
 
 | scenario | ticks/s | CPU (% 1 core) | RSS peak | fired | ring drops |
 |---|---:|---:|---:|---:|---:|
@@ -155,16 +160,11 @@ nats sub 'chrono.triggers.>'                              # watch triggers fire
 | trickle (575 fires/s) | 20,000 | 7.2 | 1,050 MiB | 138,298 | 0 |
 | burst-500k | 20,000 | 7.5 | 1,022 MiB | 500,000 | 0 |
 
-Tests: `go test ./... -race -count=1` (engine + price), plus the oracles
-above; the service suite lives in the demo module — `cd demo && go test ./...`.
-The perf harness carries its own end-to-end gate over real binaries and
-sockets (`cd demo && go test ./scripts/perf/ -run TestPerfSmoke`,
-minutes-scale).
-
 Not yet built: persistence of engine state, TLS/auth, multi-node anything.
 
 ---
 
 <p align="center">
+  Developed with GLM 5.3 (Z.ai).<br>
   <a href="mailto:emirakts0@gmail.com">emirakts0@gmail.com</a>
 </p>
