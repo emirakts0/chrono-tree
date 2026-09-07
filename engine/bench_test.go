@@ -205,6 +205,7 @@ func TestSweepOracleMatchesEngine(t *testing.T) {
 			cfg.Dims = []string{"segment", "tier"}
 		}
 		e := New(cfg)
+		defer e.Close()
 		for sym := range s.alerts {
 			for _, a := range s.alerts[sym] {
 				if err := e.Upsert(a); err != nil {
@@ -232,7 +233,6 @@ func TestSweepOracleMatchesEngine(t *testing.T) {
 		if d := q.Dropped(); d != 0 {
 			t.Fatalf("dimmed=%v: %d triggers dropped", dimmed, d)
 		}
-		e.Close()
 	}
 }
 

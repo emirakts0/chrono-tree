@@ -111,7 +111,8 @@ Sustained-load sweep: 500 symbols, 12 virtual seconds at 200 ticks per
 symbol-second (1.2M ticks per scenario), price-band frontiers advancing so
 ~5% of the population fires per virtual second (~60% depleted at the end,
 both trees still live). A consumer drains triggers out of band. ns/op is per
-tick — ticks/s = 1e9 / ns/op. allocs are the concurrent COW removal flush,
+tick — ticks/s = 1e9 / ns/op. allocs/op is 0 on every row — matching is
+allocation-free; any nonzero value would be the concurrent COW removal flush,
 not the match path.
 
 | benchmark | cores | ns/op | allocs/op | |
@@ -130,8 +131,9 @@ not the match path.
 | Sweep1MDims | 12 | 200.7 | 0 | |
 
 Core scaling is flat-to-negative on every row (4 cores is the slowest
-configuration on all four scenarios) — the sweep serializes on the shared
-trigger queue and memory bandwidth rather than scaling with core count.
+configuration on all four scenarios) — consistent with contention on the
+shared trigger queue and memory bandwidth, though the evidence establishes
+the shape, not the mechanism.
 
 ## Validated in practice
 
