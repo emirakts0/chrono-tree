@@ -84,9 +84,9 @@ flowchart LR
     class RP house
     class OUT comp
 
-    style DP fill:#E8F7FB,stroke:#111,stroke-width:2px
-    style CP fill:#FFE9E7,stroke:#111,stroke-width:2px
-    style HK fill:#F0FAE9,stroke:#111,stroke-width:2px
+    style DP fill:#E8F7FB,stroke:#111,stroke-width:2px,color:#111
+    style CP fill:#FFE9E7,stroke:#111,stroke-width:2px,color:#111
+    style HK fill:#F0FAE9,stroke:#111,stroke-width:2px,color:#111
 ```
 
 One package, no network, no I/O — everything follows one decision:
