@@ -321,9 +321,9 @@ func (a *slotArena) casGenAny(idx uint32, gen uint32, to Status, froms ...Status
 // Low-level: it does not touch the slot word. Production removal paths use
 // retireGen, which sets the retired bit first so duplicates cannot park the
 // slot twice.
-func (a *slotArena) retire(idx uint32) {
+func (a *slotArena) retire(idx uint32, at time.Time) {
 	a.mu.Lock()
-	a.retired = append(a.retired, retiredSlot{idx: idx, at: time.Now()})
+	a.retired = append(a.retired, retiredSlot{idx: idx, at: at})
 	a.mu.Unlock()
 }
 
@@ -333,7 +333,7 @@ func (a *slotArena) retire(idx uint32) {
 // already set — or a stale one — the slot has since been recycled into a new
 // generation. Exactly one removal per handout ever parks the slot, which is
 // what makes duplicate mutRemoves harmless.
-func (a *slotArena) retireGen(idx, gen uint32) {
+func (a *slotArena) retireGen(idx, gen uint32, at time.Time) {
 	s := a.get(idx)
 	for {
 		w := s.Load()
@@ -347,7 +347,7 @@ func (a *slotArena) retireGen(idx, gen uint32) {
 			break
 		}
 	}
-	a.retire(idx)
+	a.retire(idx, at)
 }
 
 // recycle returns retired slots older than before to the free list.

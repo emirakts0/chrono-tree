@@ -88,8 +88,8 @@ func TestSlotArena(t *testing.T) {
 		a.setStatus(idx, StatusActive)
 	}
 	// Retire two slots; they must not be reusable until recycle's grace passes.
-	a.retire(7)
-	a.retire(8)
+	a.retire(7, time.Now())
+	a.retire(8, time.Now())
 	for i := 0; i < 10; i++ {
 		if idx := a.alloc(); idx == 7 || idx == 8 {
 			t.Fatal("retired slot reused before recycle")

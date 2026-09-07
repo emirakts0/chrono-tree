@@ -1,5 +1,7 @@
 package engine
 
+import "time"
+
 // stateFor interns sym and guarantees an initial published snapshot.
 func (e *Engine) stateFor(sym string) (SymbolID, error) {
 	if sid, ok := e.syms.Get(sym); ok {
@@ -104,6 +106,10 @@ func (e *Engine) applyBatch(batch []mutation) {
 		next *snapshot
 	}
 	bySym := make(map[SymbolID]*pending) // cold path; map is fine
+	// One clock read per batch: every retire in it happens "now", so a single
+	// timestamp serves them all (a per-fire time.Now once dominated flush
+	// time on HPET-clocked hosts, where each read is ~µs and serialized).
+	now := time.Now()
 	var syncs []chan struct{}
 	for _, m := range batch {
 		switch m.op {
@@ -127,7 +133,7 @@ func (e *Engine) applyBatch(batch []mutation) {
 			// removal parks it at most once), and clean refs/live only
 			// if the live ref still matches this exact entry (a same-ID upsert
 			// may have already replaced it).
-			e.slots.retireGen(m.e.idx, m.gen)
+			e.slots.retireGen(m.e.idx, m.gen, now)
 			e.mu.Lock()
 			if r, ok := e.refs[m.e.id]; ok && r.e.idx == m.e.idx {
 				delete(e.refs, m.e.id)
