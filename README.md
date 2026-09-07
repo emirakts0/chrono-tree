@@ -151,6 +151,8 @@ network and no I/O.
 | trickle (575 fires/s) | 20,000 | 7.2 | 1,050 MiB | 138,298 | 0 | ladder firing steadily at ~575 triggers/s |
 | burst-500k | 20,000 | 7.5 | 1,022 MiB | 500,000 | 0 | 500k alerts clustered so one tick fires them all |
 
+> Developed and tested end-to-end with **GLM 5.3** (Z.ai).
+
 ---
 
 <p align="center">
