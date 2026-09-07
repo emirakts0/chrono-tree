@@ -261,6 +261,11 @@ func benchSweep(b *testing.B, alerts int, dimmed bool) {
 		b.Fatalf("sweep generator out of calibration: fire fraction %.3f (want 0.50–0.70)", frac)
 	}
 	cfg := DefaultConfig()
+	// Queue capacity above any scenario's total possible fires (1M alerts):
+	// the zero-drop assertion must measure engine/harness bugs, not whether
+	// the single consumer kept pace in this process (the 64k default
+	// overflowed deterministically on Sweep1MDims in the full campaign).
+	cfg.TriggerQueueSize = 1 << 20
 	if dimmed {
 		cfg.Dims = []string{"segment", "tier"}
 	}
