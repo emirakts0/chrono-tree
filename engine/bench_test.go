@@ -3,6 +3,10 @@ package engine
 import (
 	"fmt"
 	"math/rand"
+	"os"
+	"runtime"
+	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -231,3 +235,125 @@ func TestSweepOracleMatchesEngine(t *testing.T) {
 		e.Close()
 	}
 }
+
+// benchSink keeps the baseline probe's loop from being optimized away.
+var benchSink Price
+
+// benchSweep runs one full sustained-load sweep as the benchmark body. The
+// schedule is precomputed (Task 1), the engine preloaded and synced, and a
+// trigger consumer drains out of band; the timed op is a striped worker
+// fan-out replaying the per-symbol tick arrays. b.N is pinned to the
+// schedule length, so run with -benchtime=1x: the framework invokes the
+// function once per -cpu value (plus one unmeasured smoke pass, which also
+// rebuilds and re-sweeps — expect each row to take two sweeps of wall time).
+// ns/op is per tick; ticks/s = 1e9 / ns/op.
+//
+// Workers are spawned manually rather than via b.RunParallel: RunParallel's
+// contract requires the body to exhaust pb.Next() (Go 1.27 fatals otherwise),
+// and draining 1.2M iterations through the framework's shared atomic cursor
+// would put a contended counter in the timed path — exactly the
+// generator-overhead contamination this benchmark exists to avoid. Manual
+// fan-out keyed on GOMAXPROCS(0) keeps -cpu 1,4,12 meaningful with zero
+// shared state.
+func benchSweep(b *testing.B, alerts int, dimmed bool) {
+	s := genSweep(1, alerts, dimmed)
+	if frac := float64(s.wantFires) / float64(alerts); frac < 0.50 || frac > 0.70 {
+		b.Fatalf("sweep generator out of calibration: fire fraction %.3f (want 0.50–0.70)", frac)
+	}
+	cfg := DefaultConfig()
+	if dimmed {
+		cfg.Dims = []string{"segment", "tier"}
+	}
+	e := New(cfg)
+	defer e.Close()
+	for sym := range s.alerts {
+		for _, a := range s.alerts[sym] {
+			if err := e.Upsert(a); err != nil {
+				b.Fatal(err)
+			}
+		}
+	}
+	e.Sync()
+
+	// run drives the striped fan-out under the benchmark timer: worker w
+	// replays symbols w, w+workers, ... — identical per-symbol timelines, so
+	// work is perfectly balanced and no worker shares a cursor.
+	workers := runtime.GOMAXPROCS(0)
+	run := func(match func(*Tick)) {
+		b.ResetTimer()
+		var wg sync.WaitGroup
+		for w := 0; w < workers; w++ {
+			wg.Add(1)
+			go func(w int) {
+				defer wg.Done()
+				for sym := w; sym < sweepSymbols; sym += workers {
+					ticks := s.ticks[sym]
+					for i := range ticks {
+						match(&ticks[i])
+					}
+				}
+			}(w)
+		}
+		wg.Wait()
+		b.StopTimer()
+	}
+
+	b.N = s.total
+	b.ReportAllocs()
+
+	// Generator-overhead probe (debug, not part of the campaign): the same
+	// striped fan-out with the engine call removed. Its ns/op is the floor
+	// every real number must dominate.
+	if os.Getenv("CHRONO_BENCH_BASELINE") == "1" {
+		run(func(t *Tick) { benchSink = t.Last })
+		return
+	}
+
+	done := make(chan struct{})
+	finished := make(chan struct{})
+	var fired atomic.Int64
+	go func() {
+		c := e.Triggers().C()
+		for {
+			select {
+			case <-c:
+				fired.Add(1)
+			case <-done:
+				for { // drain the tail non-blocking, then signal
+					select {
+					case <-c:
+						fired.Add(1)
+					default:
+						close(finished)
+						return
+					}
+				}
+			}
+		}
+	}()
+
+	run(func(t *Tick) { e.Match(t) })
+	close(done)
+	<-finished
+
+	if got := fired.Load(); got != int64(s.wantFires) {
+		b.Fatalf("consumer counted %d fires, oracle says %d — harness mismatch", got, s.wantFires)
+	}
+	if d := e.Triggers().Dropped(); d != 0 {
+		b.Fatalf("%d triggers dropped — fire calibration invalid", d)
+	}
+}
+
+// BenchmarkSweep100k: 100k alerts across 500 symbols, no match dims.
+func BenchmarkSweep100k(b *testing.B) { benchSweep(b, 100_000, false) }
+
+// BenchmarkSweep1M: 1M alerts across 500 symbols — 10× the alert density per
+// symbol, so each tick fires ~10× more alerts than the 100k row.
+func BenchmarkSweep1M(b *testing.B) { benchSweep(b, 1_000_000, false) }
+
+// BenchmarkSweep100kDims: the 100k scenario with 2 match dims (9
+// combinations); alerts and tick load are split evenly across the cells.
+func BenchmarkSweep100kDims(b *testing.B) { benchSweep(b, 100_000, true) }
+
+// BenchmarkSweep1MDims: the 1M scenario with 2 match dims (9 combinations).
+func BenchmarkSweep1MDims(b *testing.B) { benchSweep(b, 1_000_000, true) }
