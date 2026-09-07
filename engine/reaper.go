@@ -52,6 +52,19 @@ func (e *Engine) runReaper() {
 		select {
 		case x := <-e.expQ:
 			e.expiry.Insert(x)
+			// Drain what's already queued in one go: each outer selectgo
+			// re-checks ticker.C, and a timer channel in the case set makes
+			// the runtime lock the timer and read the clock per iteration —
+			// µs-scale and chip-serialized on HPET-clocked hosts.
+		drain:
+			for {
+				select {
+				case x := <-e.expQ:
+					e.expiry.Insert(x)
+				default:
+					break drain
+				}
+			}
 		case now := <-ticker.C:
 			ticks++
 			e.sweep(now.UnixNano())
