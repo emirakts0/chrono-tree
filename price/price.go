@@ -1,6 +1,6 @@
 // Package price converts between decimal prices and fixed-point int64 base
 // units. It is the only place in chrono-tree where decimal↔binary conversion
-// happens; the engine itself is scale-agnostic and integer-only.
+// happens; the engine is scale-agnostic and integer-only.
 //
 // A price of "12.34" at 2 decimals is the int64 1234. Values are never
 // rounded: a nonzero digit beyond the requested scale is ErrPrecisionLoss.
@@ -12,7 +12,7 @@ import (
 	"strconv"
 )
 
-// Sentinel errors. All conversions are exact or fail loudly.
+// Sentinel errors; all conversions are exact or fail loudly.
 var (
 	ErrSyntax        = errors.New("price: invalid decimal syntax")
 	ErrOverflow      = errors.New("price: value overflows int64 at this scale")
@@ -33,11 +33,9 @@ var pow10 = [MaxDecimals + 1]int64{
 }
 
 // Parse converts the decimal string s to base units at the given scale.
-// Grammar: [+-]? digits [ '.' digits ] — at least one digit overall; "1." and
-// ".5" are accepted; exponent notation is rejected. Fraction digits beyond
-// the scale must be zeros (exact) or Parse fails with ErrPrecisionLoss.
-// No floating-point math anywhere: digits accumulate with checked
-// multiply-add, then the value is scaled by a power-of-ten factor.
+// Grammar: [+-]? digits [ '.' digits ]; exponent notation is rejected.
+// Fraction digits beyond the scale must be zeros, or Parse fails with
+// ErrPrecisionLoss. Pure integer math, overflow-checked.
 func Parse(s string, decimals uint8) (int64, error) {
 	if decimals > MaxDecimals {
 		return 0, ErrScale
@@ -58,11 +56,9 @@ func Parse(s string, decimals uint8) (int64, error) {
 			seenDigit = true
 			d := int64(c - '0')
 			// Integer-part digits are unlimited; fraction digits are capped
-			// at `decimals`. NOTE: the guard must be exactly this — a bare
-			// `fracDigits < int(decimals)` would reject EVERY integer digit
-			// when decimals == 0.
+			// at decimals. The !seenDot guard matters: a bare
+			// fracDigits < decimals would reject every digit at scale 0.
 			if !seenDot || fracDigits < int(decimals) {
-				// v = v*10 + d, overflow-checked.
 				if v > (math.MaxInt64-d)/10 {
 					return 0, ErrOverflow
 				}
@@ -71,9 +67,7 @@ func Parse(s string, decimals uint8) (int64, error) {
 					fracDigits++
 				}
 			} else if d != 0 {
-				// A nonzero digit beyond scale: the value is not exactly
-				// representable. Never round.
-				return 0, ErrPrecisionLoss
+				return 0, ErrPrecisionLoss // never round
 			}
 		case c == '.' && !seenDot:
 			seenDot = true
@@ -84,7 +78,7 @@ func Parse(s string, decimals uint8) (int64, error) {
 	if !seenDigit {
 		return 0, ErrSyntax
 	}
-	// Scale up: "12" at 3 decimals is 12000; "12.3" at 3 decimals is 12300.
+	// Scale up: "12" at 3 decimals is 12000.
 	if m := pow10[decimals] / pow10[uint8(fracDigits)]; m != 1 {
 		if v > math.MaxInt64/m {
 			return 0, ErrOverflow
@@ -97,10 +91,7 @@ func Parse(s string, decimals uint8) (int64, error) {
 	return v, nil
 }
 
-// ScaleOf returns the number of fractional digits in the decimal string s
-// — the smallest scale at which Parse(s, scale) is exact. Same grammar as
-// Parse (sign, digits, one optional dot); a fraction longer than
-// MaxDecimals is ErrScale, anything else malformed is ErrSyntax.
+// ScaleOf returns the smallest scale at which Parse(s, scale) is exact.
 func ScaleOf(s string) (uint8, error) {
 	i := 0
 	if i < len(s) && (s[i] == '+' || s[i] == '-') {
@@ -131,12 +122,10 @@ func ScaleOf(s string) (uint8, error) {
 	return uint8(frac), nil
 }
 
-// FromFloat converts a float64 via its shortest decimal representation that
-// round-trips (strconv 'f' -1). A float whose shortest form needs more
-// fractional digits than the scale — or exceeds int64 scaled — is rejected
-// with ErrPrecisionLoss / ErrOverflow. NaN and ±Inf are ErrNotFinite.
-// This is strict: values are never rounded. Callers with coarser data should
-// pre-round on their side, explicitly.
+// FromFloat converts a float64 via its shortest round-tripping decimal
+// representation. Values needing more fraction digits than the scale, or
+// exceeding int64 scaled, are rejected; NaN and ±Inf are ErrNotFinite.
+// Never rounds — callers with coarser data must pre-round explicitly.
 func FromFloat(f float64, decimals uint8) (int64, error) {
 	if math.IsNaN(f) || math.IsInf(f, 0) {
 		return 0, ErrNotFinite
@@ -145,18 +134,14 @@ func FromFloat(f float64, decimals uint8) (int64, error) {
 }
 
 // Format renders base units as a decimal string with exactly `decimals`
-// fraction digits (none when decimals == 0). Pure integer math — no float
-// round-trip. It is the exact inverse of Parse: Parse(Format(v, d), d) == v.
-// Panics on decimals > MaxDecimals: a display helper fed an impossible scale
-// is a programmer error.
+// fraction digits. Pure integer math; the exact inverse of Parse. Panics on
+// decimals > MaxDecimals (programmer error).
 func Format(v int64, decimals uint8) string {
 	if decimals > MaxDecimals {
 		panic("price: decimals must be 0..18")
 	}
 	neg := v < 0
-	// uint64(v) wraps negatives; negating in uint64 space yields the true
-	// magnitude (and 2^63 for MinInt64).
-	u := uint64(v)
+	u := uint64(v) // negating in uint64 space yields the true magnitude
 	if neg {
 		u = -u
 	}

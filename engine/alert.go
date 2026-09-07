@@ -9,13 +9,11 @@ import (
 	"time"
 )
 
-// AlertID is a 128-bit UUID (v7 expected: time-ordered). Always stored by value.
+// AlertID is a 128-bit UUID (v7 expected: time-ordered).
 type AlertID [16]byte
 
-// Price is a price in base units of the instrument's smallest quoted tick
-// (fixed-point integer). Scale-agnostic: the engine never knows where the
-// decimal point is; conversion between decimal text/floats and base units
-// happens only in the price package, at the ingestion boundary.
+// Price is a fixed-point integer in base units. The engine is scale-agnostic;
+// decimal conversion happens only in the price package.
 type Price int64
 
 // PriceType selects which quote field of a tick an alert watches.
@@ -37,8 +35,7 @@ const (
 	DirLTE                  // fires when market <= target
 )
 
-// Status is the alert lifecycle state, held in an atomic slot so snapshot
-// readers can retire an alert without mutating shared trees.
+// Status is the alert lifecycle state, packed into an atomic slot word.
 type Status uint32
 
 const (
@@ -51,16 +48,15 @@ const (
 )
 
 // entry is the hot-path alert record, stored by value inside btype.Table.
-// Field order keeps the record at exactly one cache line: 64 bytes on 64-bit
-// (guarded by TestEntrySize). dims is sentinel-padded past the engine width,
-// so comparator and probes never branch on width.
+// Field order keeps the record at exactly one cache line (TestEntrySize);
+// dims is sentinel-padded past the engine width.
 type entry struct {
-	price     Price          // target price in base units, secondary sort key
+	price     Price          // target price, secondary sort key
 	id        AlertID        // tie-breaker so equal (dims, price) coexist
-	dims      [dimMax]uint16 // leading sort keys, caller-owned values
+	dims      [dimMax]uint16 // leading sort keys
 	validFrom int64          // unix nanos
 	expires   int64          // unix nanos; 0 = never
-	idx       uint32         // index into Engine slot arena
+	idx       uint32         // slot arena index
 	flags     uint8
 }
 
@@ -98,16 +94,10 @@ func makeFlags(pt PriceType, dir Direction, autoDeactivate bool) uint8 {
 	return f
 }
 
-// makeEntryCompare returns the entry comparator specialized to the engine's
-// dim width: the dim-prefix loop runs only over configured slots, so a
-// width-0 engine compares (price, id) exactly like the pre-dims comparator
-// (pinned by the Sparse1M gate). The closure is captured per engine at
-// table construction — a package-level width would break processes running
-// engines with different configs. btype pivots are compared with the FULL
-// comparator, so boundary probes must be dims- and id-aware: probes carry
-// the tick's normalized dims; AlertID{} sorts before any real UUID (correct
-// for Ascend); a Descend probe needs an id that sorts after every real UUID
-// or same-key entries are skipped.
+// makeEntryCompare returns the comparator specialized to the engine's dim
+// width. btype pivots use the full comparator, so boundary probes must be
+// dims- and id-aware: AlertID{} sorts before every real UUID (for Ascend),
+// the all-ones id sorts after every real UUID (for Descend).
 func makeEntryCompare(width uint8) func(a, b entry) int {
 	return func(a, b entry) int {
 		for i := 0; i < int(width); i++ {
@@ -128,17 +118,14 @@ func makeEntryCompare(width uint8) func(a, b entry) int {
 	}
 }
 
-// entryKey builds a probe entry for keyed Ascend seeks: id AlertID{} sorts
-// first, so Ascend(entryKey(dims, price)) yields every entry with the probe's
-// dims and price >= probe.
+// entryKey builds a Descend-unfriendly probe for Ascend: yields every entry
+// with the probe's dims and price >= probe.
 func entryKey(dims [dimMax]uint16, price Price) entry {
 	return entry{dims: dims, price: price}
 }
 
-// entryKeyMax builds a probe entry for keyed Descend seeks: the all-ones id
-// sorts after every real UUID, so Descend(entryKeyMax(dims, price)) yields
-// every entry with the probe's dims and price <= probe (including entries
-// exactly at the boundary price).
+// entryKeyMax builds a probe whose id sorts after every real UUID, for
+// Descend: yields every entry with the probe's dims and price <= probe.
 func entryKeyMax(dims [dimMax]uint16, price Price) entry {
 	var maxID AlertID
 	for i := range maxID {
@@ -148,36 +135,21 @@ func entryKeyMax(dims [dimMax]uint16, price Price) entry {
 }
 
 // slotArena hands out dense uint32 indices into fixed-size chunks of atomic
-// status words. The chunk-pointer slice has fixed length (set at construction
-// from MaxAlerts) so hot-path get() never observes a growing slice header;
-// chunks themselves are allocated lazily under mu. Publication safety: a
-// chunk pointer is stored before any entry referencing the slot is submitted
-// to the mutation queue, and the queue/atomic-pointer chain provides the
-// happens-before edge to readers.
+// status words. Chunks are allocated lazily under mu; the chunk-pointer
+// slice has fixed length so hot-path get() never sees a growing header.
 //
-// Freed slots are retired, not immediately reused: a reader holding an old
-// snapshot may still see the dead entry and touch its slot, so reuse waits
-// for a grace period (2× reaper interval) driven by recycle().
+// Slot word layout: bits 0-7 status, bit 8 retired, bits 9-31 generation.
+// Two invariants:
+//   - gen gates staleness: alloc bumps the generation at every handout, so
+//     a reference built against an older generation (above all the reaper's
+//     expiry-table entries, which linger past the recycle grace) can never
+//     win a full-word CAS against the slot's new occupant.
+//   - retired dedupes removals: a mutRemove may land twice for one entry;
+//     retireGen sets the bit exactly once per handout, so only the first
+//     removal parks the slot.
 //
-// Every slot word packs a generation counter and a retired bit:
-// word = gen<<9 | retired<<8 | status (Status values fit in 8 bits; gen is
-// 23 bits). alloc() bumps the generation on every handout, so any stale
-// reference to the slot built against an older generation — above all the
-// reaper's expiry-table entries, which linger until their expires passes and
-// are NOT covered by the recycle grace (tree-entry staleness is: the flusher
-// removes those within flush lag, well inside the grace) — can never
-// transition the word: the full-word CAS fails. A stale expiry sweep hitting
-// a recycled slot would otherwise silently kill the slot's new occupant
-// (Active→Expired) and park its live slot forever. Full-word CASes make every
-// transition fail against a word from another generation, which kills
-// in-flight stale CAS attempts; for freshly-loaded checks (the reaper's
-// expiry sweep) the generation captured at registration time must be
-// validated explicitly — see casGen.
-//
-// The retired bit is the duplicate-removal guard: a mutRemove may land twice
-// for one entry (e.g. a replacement racing a fire), and parking the slot
-// twice would hand the SAME index to two future alerts. retireGen sets the
-// bit exactly once per handout, so only the first removal parks the slot.
+// Freed slots wait a grace period (2× reaper interval, via recycle) before
+// reuse, so readers of old snapshots never touch a recycled slot.
 type slotArena struct {
 	mu      sync.Mutex
 	chunks  []*slotChunk // fixed length, indexed idx>>slotChunkBits
@@ -202,9 +174,7 @@ const slotGenShift = 9
 
 func newSlotArena(maxAlerts uint64) *slotArena {
 	n := (maxAlerts + slotChunkSize - 1) / slotChunkSize
-	// Margin: slots in flight (allocated, removal queued) can briefly exceed
-	// the live-alert count; one extra chunk absorbs any lag.
-	n++
+	n++ // margin for slots in flight (allocated, removal queued)
 	return &slotArena{chunks: make([]*slotChunk, n)}
 }
 
@@ -224,14 +194,9 @@ func (a *slotArena) alloc() uint32 {
 		a.chunks[ci] = new(slotChunk)
 	}
 	s := &a.chunks[ci][idx&(slotChunkSize-1)]
-	// The non-CAS Load/Store below is safe: alloc runs under a.mu, and a
-	// free-listed slot always carries the retired bit — production retire
-	// paths all go through retireGen (bare retire is test-only) — while a
-	// never-touched slot is invisible to everyone until this Store publishes
-	// it, and references to a freed slot die within flush lag, well inside
-	// the recycle grace, so no transition CAS can be in flight on it.
+	// Safe without CAS: alloc runs under a.mu, and a slot on the free list
+	// always carries the retired bit, so no transition CAS can be in flight.
 	w := s.Load() // 0 for a never-touched slot: generation 0
-	// Fresh word: next generation, retired bit clear, status zero.
 	s.Store(((w>>slotGenShift)+1)<<slotGenShift | uint32(StatusZero))
 	return idx
 }
@@ -260,9 +225,8 @@ func (a *slotArena) setStatus(idx uint32, to Status) {
 	}
 }
 
-// cas attempts one transition from→to. The CAS is on the full observed word,
-// so it fails if the status is not from OR the generation moved (stale
-// reference) — which is exactly the protection we want.
+// cas attempts one transition from→to on the full observed word, so it also
+// fails when the generation moved (stale reference).
 func (a *slotArena) cas(idx uint32, from, to Status) bool {
 	s := a.get(idx)
 	w := s.Load()
@@ -282,17 +246,14 @@ func (a *slotArena) casAny(idx uint32, to Status, froms ...Status) bool {
 	return false
 }
 
-// gen reads the slot's current generation. Valid while the caller holds the
-// slot: the generation moves only at handout (alloc).
+// gen reads the slot's current generation; it moves only at handout (alloc).
 func (a *slotArena) gen(idx uint32) uint32 {
 	return a.get(idx).Load() >> slotGenShift
 }
 
-// casGen is cas restricted to a specific generation. A caller holding a
-// reference from an older generation (e.g. a reaper expiry entry created
-// before the slot was retired, recycled, and reused) is rejected here even
-// though the CURRENT status may match from: cas/casAny alone cannot detect
-// staleness, because they load the live word.
+// casGen is cas restricted to a specific generation, rejecting callers that
+// hold a reference from an older generation even though the current status
+// matches.
 func (a *slotArena) casGen(idx uint32, gen uint32, from, to Status) bool {
 	s := a.get(idx)
 	w := s.Load()
@@ -303,11 +264,8 @@ func (a *slotArena) casGen(idx uint32, gen uint32, from, to Status) bool {
 }
 
 // casGenAny attempts the generation-checked transition to from each of
-// froms once.
-//
-// Accepted ABA window: the 23-bit generation wraps after 8,388,608 handouts
-// of a single slot; a stale expiry entry whose expires horizon spans that
-// many reuses of its slot could match once — bounded, non-cascading, accepted.
+// froms once. Accepted ABA window: the 23-bit generation wraps after
+// 8,388,608 handouts of a single slot — bounded, non-cascading, accepted.
 func (a *slotArena) casGenAny(idx uint32, gen uint32, to Status, froms ...Status) bool {
 	for _, from := range froms {
 		if a.casGen(idx, gen, from, to) {
@@ -318,21 +276,17 @@ func (a *slotArena) casGenAny(idx uint32, gen uint32, to Status, froms ...Status
 }
 
 // retire parks a freed slot until recycle moves it past its grace period.
-// Low-level: it does not touch the slot word. Production removal paths use
-// retireGen, which sets the retired bit first so duplicates cannot park the
-// slot twice.
+// Low-level: it does not touch the slot word; production paths use retireGen.
 func (a *slotArena) retire(idx uint32, at time.Time) {
 	a.mu.Lock()
 	a.retired = append(a.retired, retiredSlot{idx: idx, at: at})
 	a.mu.Unlock()
 }
 
-// retireGen marks the slot retired (bit 8) iff gen still identifies the
-// current occupant and the bit is clear, then parks it for recycling. It
-// returns without parking for a duplicate removal — the retired bit is
-// already set — or a stale one — the slot has since been recycled into a new
-// generation. Exactly one removal per handout ever parks the slot, which is
-// what makes duplicate mutRemoves harmless.
+// retireGen sets the retired bit iff gen still identifies the current
+// occupant and the bit is clear, then parks the slot for recycling. Only the
+// first removal per handout parks the slot, which makes duplicate mutRemoves
+// harmless.
 func (a *slotArena) retireGen(idx, gen uint32, at time.Time) {
 	s := a.get(idx)
 	for {

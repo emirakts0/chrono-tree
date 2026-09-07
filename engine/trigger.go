@@ -9,29 +9,14 @@ type Trigger struct {
 	TS    int64
 }
 
-// TriggerQueue is the engine's outbound delivery queue: a buffered channel
-// with drop-and-count overflow semantics.
-//
-// Producers are the Match hot path, so TryPush never blocks and never
-// allocates: it is a select-default send that counts a drop when the buffer
-// is full. A slow consumer degrades to counted drops, never to
-// backpressure into matching.
-//
-// Consumers may poll with Pop/PopBatch or receive from C(), which supports
-// blocking receives and select against other event sources. The channel is
-// never closed by the engine — a racing producer past Engine.Close would
-// panic on a closed channel — so consumers should pair C() with their own
-// shutdown signaling.
-//
-// Synchronization is the channel's runtime-managed lock. It replaces an
-// earlier hand-rolled Vyukov MPMC ring whose contended-CAS/retry enqueue
-// degraded under many producers (negative scaling past 4 threads on
-// 12-thread hardware); the channel's short critical section measured flat
-// ~47 ns/push at 12 threads, ~5x the ring's aggregate throughput.
-// Exactly-once firing is unaffected: it is guaranteed by the per-alert slot
-// CAS that gates every TryPush, not by the queue, and a channel's
-// send/receive pairing provides the happens-before edge that publishes each
-// Trigger payload.
+// TriggerQueue is the outbound delivery queue: a buffered channel with
+// drop-and-count overflow. Producers are the Match hot path, so TryPush never
+// blocks or allocates; a slow consumer degrades to counted drops, never to
+// backpressure into matching. Consumers poll via Pop/PopBatch or receive
+// from C(). The channel is never closed by the engine (a racing producer
+// past Engine.Close would panic) — consumers pair C() with their own
+// shutdown signaling. Exactly-once firing is guaranteed by the per-alert
+// slot CAS that gates every TryPush, not by the queue.
 type TriggerQueue struct {
 	ch      chan Trigger
 	dropped atomic.Uint64
@@ -46,12 +31,10 @@ func NewTriggerQueue(capacity int) *TriggerQueue {
 	return &TriggerQueue{ch: make(chan Trigger, capacity)}
 }
 
-// C exposes the underlying channel for blocking receives and select. It is
-// never closed.
+// C exposes the underlying channel for blocking receives and select.
 func (q *TriggerQueue) C() <-chan Trigger { return q.ch }
 
-// TryPush offers t without blocking. It returns false — and counts a drop —
-// when the queue is full. Safe for any number of concurrent producers.
+// TryPush offers t without blocking; false (and a counted drop) when full.
 func (q *TriggerQueue) TryPush(t Trigger) bool {
 	select {
 	case q.ch <- t:
@@ -62,8 +45,7 @@ func (q *TriggerQueue) TryPush(t Trigger) bool {
 	}
 }
 
-// Pop removes one trigger without blocking; ok is false when the queue is
-// empty. Safe for any number of concurrent consumers.
+// Pop removes one trigger without blocking; ok is false when empty.
 func (q *TriggerQueue) Pop() (Trigger, bool) {
 	select {
 	case t := <-q.ch:
@@ -90,5 +72,5 @@ func (q *TriggerQueue) PopBatch(dst []Trigger) int {
 // Dropped reports triggers rejected because the queue was full.
 func (q *TriggerQueue) Dropped() uint64 { return q.dropped.Load() }
 
-// Len reports the number of queued, undelivered triggers (advisory).
+// Len reports the number of queued triggers (advisory).
 func (q *TriggerQueue) Len() int { return len(q.ch) }

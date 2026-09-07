@@ -2,12 +2,11 @@ package engine
 
 import "sync"
 
-// SymbolID is a dense identifier produced by the Interner. SymbolIDs index
-// the Engine's fixed symbolState array, so they must stay small and dense.
+// SymbolID is a dense identifier indexing the Engine's symbolState array.
 type SymbolID uint32
 
-// Interner maps symbol strings to dense SymbolIDs. Interning is rare (new
-// symbols only); Get is hot-path and takes a single RLock map probe.
+// Interner maps symbol strings to dense SymbolIDs. Interning is rare
+// (new symbols only); Get is hot-path.
 type Interner struct {
 	mu    sync.RWMutex
 	ids   map[string]SymbolID

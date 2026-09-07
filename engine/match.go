@@ -1,7 +1,7 @@
 package engine
 
 // Tick is a market tick. Present is a bitmask of PriceType bits for the
-// quote fields the feed actually carries; absent fields are not evaluated.
+// quote fields the feed carries; absent fields are not evaluated.
 type Tick struct {
 	Symbol  string
 	Bid     Price
@@ -30,9 +30,8 @@ func priceOf(t *Tick, pt PriceType) Price {
 }
 
 // Match evaluates a tick against every indexed alert for its symbol.
-// Allocation-free and non-blocking: it never waits on queue capacity or on
-// consumers, and never mutates shared trees — firing is CAS-gated per
-// alert, tree removal is deferred.
+// Allocation-free and non-blocking; firing is CAS-gated per alert, tree
+// removal is deferred to the flusher.
 func (e *Engine) Match(t *Tick) {
 	if e.closed.Load() {
 		return // engine shut down; trees may be released
@@ -41,8 +40,8 @@ func (e *Engine) Match(t *Tick) {
 		return
 	}
 	// Trailing dim slots are normalized so zero-value ticks work at any
-	// width; a sentinel inside width is a malformed tick — dropped like
-	// Present == 0 (Match is fire-and-forget, it cannot return errors).
+	// width; a sentinel inside width is a malformed tick — dropped (Match
+	// cannot return errors).
 	dims, ok := normalizeDims(t.Dims, e.dimWidth)
 	if !ok {
 		return
@@ -51,16 +50,14 @@ func (e *Engine) Match(t *Tick) {
 	if !ok {
 		return
 	}
-	// A symbol interned past MaxSymbols stays in the interner after stateFor
-	// rejected it (sid >= len(states), no snapshot ever published); indexing
-	// states with it would panic. Same guard stateFor has.
+	// Same guard stateFor has: a symbol interned past MaxSymbols has no
+	// snapshot, and indexing states with it would panic.
 	if uint64(sid) >= uint64(len(e.states)) {
 		return
 	}
 	st := &e.states[sid]
-	// Pin the snapshot against concurrent release: the flusher may retire
-	// it the moment a newer snapshot is published. A pin that loses the
-	// race with retirement retries on the fresh snapshot.
+	// Pin the snapshot against release; a pin that loses the race with
+	// retirement retries on the fresh snapshot.
 	var snap *snapshot
 	for {
 		snap = st.snap.Load()
@@ -77,22 +74,17 @@ func (e *Engine) Match(t *Tick) {
 			continue
 		}
 		price := priceOf(t, pt)
-		// GTE fires when market >= target ⇔ every target <= price:
-		// Descend from the tick price downward — all entries qualify. The
-		// probe carries the tick's dims and the max id so entries exactly at
-		// the tick price are not skipped by the id tie-break. The scan is
-		// unbounded below, so it stops the moment the dim block ends: entries
-		// arrive in descending (dims, price, id) order, and once dims differ
-		// every remaining entry belongs to a smaller dim combination.
+		// GTE: descend from the tick price downward — every target <= price
+		// qualifies. Scan stops the moment the dim block ends, since entries
+		// arrive in descending (dims, price, id) order.
 		for en := range snap.trees[treeIndex(pt, DirGTE)].Descend(entryKeyMax(dims, price)) {
 			if e.dimWidth > 0 && en.dims != dims {
 				break
 			}
 			e.fire(sid, &en, price, t.TS)
 		}
-		// LTE fires when market <= target ⇔ every target >= price:
-		// Ascend from the tick price upward — all entries qualify. Same
-		// dim-block stop, mirrored for ascending order.
+		// LTE: ascend from the tick price upward — every target >= price
+		// qualifies. Same dim-block stop, mirrored.
 		for en := range snap.trees[treeIndex(pt, DirLTE)].Ascend(entryKey(dims, price)) {
 			if e.dimWidth > 0 && en.dims != dims {
 				break
@@ -118,12 +110,9 @@ func (e *Engine) fire(sid SymbolID, en *entry, price Price, ts int64) {
 		if slotStatus(cur) != StatusActive {
 			return // paused, or already fired/retired by another path
 		}
-		// CAS on the full word preserves the generation and retired bits; a
-		// stale entry from an older generation can never win this CAS.
+		// Full-word CAS preserves the generation: a stale entry from an older
+		// generation can never win.
 		if s.CompareAndSwap(cur, cur&^0xff|uint32(StatusTriggered)) {
-			// Per the grace argument (see slotArena): at CAS-win time the
-			// word's generation IS this entry's handout gen — a tree entry
-			// this stale cannot meet a recycled slot.
 			gen = cur >> slotGenShift
 			break
 		}

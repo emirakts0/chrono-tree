@@ -22,22 +22,20 @@ var (
 	ErrDims              = errors.New("chrono-tree: sentinel dim value inside configured width")
 )
 
-// Config bounds all preallocated structures. See DefaultConfig.
+// Config bounds all preallocated structures.
 type Config struct {
 	MaxSymbols         uint32        // fixed symbolState array size
 	MaxAlerts          uint64        // live alert cap
 	MutationQueueDepth int           // bounded mutation queue
 	FlushBatch         int           // max ops applied per flush cycle
-	TriggerQueueSize   int           // trigger queue (buffered channel) capacity
+	TriggerQueueSize   int           // trigger queue capacity
 	ReaperInterval     time.Duration // expiry sweep + slot recycle period
 	IntegrityEvery     int           // integrity sweep cadence, in reaper ticks (<=0 → default)
-	Dims               []string      // positional dimension names; slot i = Dims[i]; max 8. Width is len(Dims).
+	Dims               []string      // positional dimension names; slot i = Dims[i]; max 8
 }
 
-// defaultIntegrityEvery is the integrity sweep cadence in reaper ticks. The
-// sweep re-submits removals for TRIGGERED entries whose original enqueue was
-// lost (fire's trySubmit is best-effort), so a leaked entry is cleaned within
-// IntegrityEvery × ReaperInterval + flush lag.
+// defaultIntegrityEvery is the integrity sweep cadence in reaper ticks; a
+// leaked entry is cleaned within this × ReaperInterval + flush lag.
 const defaultIntegrityEvery = 30
 
 func DefaultConfig() Config {
@@ -58,11 +56,11 @@ type AlertSpec struct {
 	Symbol         string
 	PriceType      PriceType
 	Direction      Direction
-	TargetPrice    Price // base units; scale is the caller's contract
+	TargetPrice    Price // base units
 	ValidFrom      int64 // unix nanos
 	Expires        int64 // unix nanos; 0 = never
 	AutoDeactivate bool
-	Dims           [dimMax]uint16 // width real values; trailing slots normalized by the engine
+	Dims           [dimMax]uint16 // width real values; trailing slots normalized
 }
 
 func (a *AlertSpec) validate() error {
@@ -96,13 +94,13 @@ type alertRef struct {
 	e   entry
 }
 
-// mutation is a queued index change, applied by the flusher (Task 8).
+// mutation is a queued index change, applied by the flusher.
 type mutation struct {
 	op   mutOp
 	sid  SymbolID
 	e    entry
-	gen  uint32        // op == mutRemove: handout generation of e.idx, gates retireGen
-	done chan struct{} // op == mutSync: closed once applied
+	gen  uint32        // for mutRemove: handout generation of e.idx
+	done chan struct{} // for mutSync: closed once applied
 }
 
 type mutOp uint8
@@ -113,15 +111,11 @@ const (
 	mutSync
 )
 
-// expEntry registers an alert with the reaper's expiry table (Task 11).
-// gen is the slot generation at handout: expiry entries outlive the recycle
-// grace, so sweep must reject entries whose slot has since been recycled and
-// reused (its generation moved) — a fresh word alone can't tell stale from
-// current, the generation captured here can.
-//
-// EVERY alert is registered, never-expiring ones with the expiryNever
-// sentinel: the table doubles as the integrity sweep's registry of live
-// alerts (see reaper.integrity).
+// expEntry registers an alert with the reaper's expiry table. gen is the slot
+// generation at handout: expiry entries outlive the recycle grace, so sweeps
+// must reject entries whose slot has been recycled (gen moved). Every alert
+// is registered, never-expiring ones with the expiryNever sentinel: the table
+// doubles as the integrity sweep's registry of live alerts.
 type expEntry struct {
 	expires int64
 	sid     SymbolID
@@ -129,9 +123,8 @@ type expEntry struct {
 	gen     uint32
 }
 
-// expiryNever is the never-due deadline sentinel for alerts without Expires:
-// the expiry sweep skips it (expires > now for any real now); only the
-// integrity sweep ever acts on sentinel entries.
+// expiryNever is the never-due deadline sentinel: the expiry sweep skips it;
+// only the integrity sweep ever acts on sentinel entries.
 const expiryNever = math.MaxInt64
 
 // Engine is the alert evaluation engine. Zero network, zero I/O.
@@ -146,7 +139,7 @@ type Engine struct {
 	expQ     chan expEntry
 	triggers *TriggerQueue
 	expiry   btype.Table[expEntry] // owned by the reaper only
-	parked   []*snapshot           // flusher-owned: retired snapshots pinned by readers, released once drained
+	parked   []*snapshot           // flusher-owned: retired snapshots awaiting reader drain
 
 	mu   sync.Mutex // guards refs, live
 	refs map[AlertID]*alertRef
@@ -190,15 +183,10 @@ func New(cfg Config) *Engine {
 }
 
 // Close stops the flusher and reaper and releases all snapshots. Idempotent.
-// It waits for in-flight Match scans to finish before freeing any tree:
-// each snapshot (current and parked) is shut down via a synchronous
-// mark-retired + spin-until-readers-drain, so a concurrent Match either
-// completes on a valid snapshot or observes closed/nil and returns. That
-// wait spins until the longest in-flight scan drains, so Close can block
-// for as long as a reader holds a pin — never call it from a
-// latency-sensitive path.
-// Lifecycle contract: callers must stop submitting before calling Close; a
-// residual race window between a final submit and Close is accepted by design.
+// It synchronously drains readers of each snapshot (current and parked)
+// before freeing its trees, so it can block as long as a Match scan holds a
+// pin — never call it from a latency-sensitive path. Callers must stop
+// submitting before Close; a residual race window is accepted by design.
 func (e *Engine) Close() {
 	if !e.closed.CompareAndSwap(false, true) {
 		return
@@ -212,8 +200,7 @@ func (e *Engine) Close() {
 			e.states[i].snap.Store(nil)
 		}
 	}
-	// Parked snapshots need the same reader drain: their trees must not be
-	// freed under a scan that pinned them before retirement either.
+	// Parked snapshots need the same reader drain before their trees are freed.
 	for _, s := range e.parked {
 		s.shutdownRelease()
 	}
