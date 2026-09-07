@@ -140,17 +140,6 @@ network and no I/O.
 | MatchDimsSparse1M | 874 | 0 | same as Sparse1M with 2 match dimensions |
 | MatchDimsDenseSkip | 201,614 | 0 | same as DenseSkip with 2 match dimensions |
 
-**Sustained-load campaign** (1M alerts, one factor varied per scenario):
-
-| scenario | ticks/s | CPU (% 1 core) | RSS peak | fired | ring drops | |
-|---|---:|---:|---:|---:|---:|---|
-| baseline | 20,000 | 6.3 | 1,000 MiB | 0 | 0 | parked ladder that never fires, 500 symbols |
-| rate-100k | 100,000 | 13.3 | 1,000 MiB | 0 | 0 | baseline with tick rate raised to 100k/s |
-| rate-200k | 200,000 | 19.2 | 995 MiB | 0 | 0 | baseline with tick rate raised to 200k/s |
-| sym-2000 | 20,000 | 7.8 | 1,017 MiB | 0 | 0 | baseline spread over 2,000 symbols |
-| trickle (575 fires/s) | 20,000 | 7.2 | 1,050 MiB | 138,298 | 0 | ladder firing steadily at ~575 triggers/s |
-| burst-500k | 20,000 | 7.5 | 1,022 MiB | 500,000 | 0 | 500k alerts clustered so one tick fires them all |
-
 > Developed and tested end-to-end with **GLM 5.3** (Z.ai).
 
 ---
