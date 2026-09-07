@@ -20,7 +20,7 @@
 
 ## Overview
 
-> chrono-tree is a pure Go engine library that holds 1M–10M live price alerts
+> chrono-tree is a pure Go engine library that holds millions live price alerts
 > and evaluates them against a continuous tick stream. The hot path never
 > allocates and never takes a lock: a tick descends two B-trees for its symbol,
 > touches only entries in range, and fires winners through a single CAS.
@@ -122,7 +122,7 @@ is property-tested against `math/big` over 50,000 cases.
 
 ## A demo on top
 
-To validate the engine under realistic conditions, we built a demo daemon on
+To validate the engine under realistic conditions, i built a demo daemon on
 top of it — `chrono.v1` gRPC ingestion, trigger publishing to NATS, a bbolt
 alert store, and an embedded monitoring dashboard, with a synthetic market
 feeder — and ran it against 1M live alerts at up to 200k ticks/s. The demo is
@@ -131,27 +131,25 @@ network and no I/O.
 
 ## Benchmarks
 
-**Micro-benchmarks** (AMD Ryzen 5 5600H, Linux/amd64):
+(AMD Ryzen 5 5600H, Linux/amd64):
 
-| benchmark | book | ns/op | B/op | allocs/op |
-|---|---|---:|---:|---:|
-| MatchSparse1M | 1M alerts / 1k symbols, non-firing tick | 623 | 0 | 0 |
-| MatchDenseSkip | 20k already-fired entries crossed | 209,715 | 0 | 0 |
-| MatchDimsSparse1M | same as Sparse1M + 2 dims | 874 | 0 | 0 |
-| MatchDimsDenseSkip | same as DenseSkip + 2 dims | 201,614 | 0 | 0 |
+| benchmark | ns/op | allocs/op | |
+|---|---:|---:|---|
+| MatchSparse1M | 623 | 0 | 1M alerts across 1k symbols, non-firing tick |
+| MatchDenseSkip | 209,715 | 0 | tick price crosses 20k already-fired entries |
+| MatchDimsSparse1M | 874 | 0 | same as Sparse1M with 2 match dimensions |
+| MatchDimsDenseSkip | 201,614 | 0 | same as DenseSkip with 2 match dimensions |
 
 **Sustained-load campaign** (1M alerts, one factor varied per scenario):
 
-| scenario | ticks/s | CPU (% 1 core) | RSS peak | fired | ring drops |
-|---|---:|---:|---:|---:|---:|
-| baseline | 20,000 | 6.3 | 1,000 MiB | 0 | 0 |
-| rate-100k | 100,000 | 13.3 | 1,000 MiB | 0 | 0 |
-| rate-200k | 200,000 | 19.2 | 995 MiB | 0 | 0 |
-| sym-2000 | 20,000 | 7.8 | 1,017 MiB | 0 | 0 |
-| trickle (575 fires/s) | 20,000 | 7.2 | 1,050 MiB | 138,298 | 0 |
-| burst-500k | 20,000 | 7.5 | 1,022 MiB | 500,000 | 0 |
-
-Not yet built: persistence of engine state, TLS/auth, multi-node anything.
+| scenario | ticks/s | CPU (% 1 core) | RSS peak | fired | ring drops | |
+|---|---:|---:|---:|---:|---:|---|
+| baseline | 20,000 | 6.3 | 1,000 MiB | 0 | 0 | parked ladder that never fires, 500 symbols |
+| rate-100k | 100,000 | 13.3 | 1,000 MiB | 0 | 0 | baseline with tick rate raised to 100k/s |
+| rate-200k | 200,000 | 19.2 | 995 MiB | 0 | 0 | baseline with tick rate raised to 200k/s |
+| sym-2000 | 20,000 | 7.8 | 1,017 MiB | 0 | 0 | baseline spread over 2,000 symbols |
+| trickle (575 fires/s) | 20,000 | 7.2 | 1,050 MiB | 138,298 | 0 | ladder firing steadily at ~575 triggers/s |
+| burst-500k | 20,000 | 7.5 | 1,022 MiB | 500,000 | 0 | 500k alerts clustered so one tick fires them all |
 
 ---
 
