@@ -120,6 +120,8 @@ evaluator must produce identical trigger sets, the same scenario run through
 `price.Format`/`Parse` must match direct integer prices exactly, and `price`
 is property-tested against `math/big` over 50,000 cases.
 
+Note: developed with GLM 5.3 (Z.ai).
+
 ## A demo on top
 
 To validate the engine under realistic conditions, i built a demo daemon on
@@ -139,8 +141,6 @@ network and no I/O.
 | MatchDenseSkip | 209,715 | 0 | tick price crosses 20k already-fired entries |
 | MatchDimsSparse1M | 874 | 0 | same as Sparse1M with 2 match dimensions |
 | MatchDimsDenseSkip | 201,614 | 0 | same as DenseSkip with 2 match dimensions |
-
-> Developed and tested end-to-end with **GLM 5.3** (Z.ai).
 
 ---
 
