@@ -117,23 +117,29 @@ not the match path.
 
 | benchmark | cores | ns/op | allocs/op | |
 |---|---:|---:|---:|---|
-| Sweep100k | 1 | 110.2 | 0 | 100k alerts across 500 symbols, no match dims |
-| Sweep100k | 4 | 208.4 | 0 | |
-| Sweep100k | 12 | 122.1 | 0 | |
-| Sweep1M | 1 | 676.6 | 0 | 1M alerts across the same 500 symbols — 10× alert density per symbol |
-| Sweep1M | 4 | 1335 | 0 | |
-| Sweep1M | 12 | 682.5 | 0 | |
-| Sweep100kDims | 1 | 65.40 | 0 | Sweep100k with 2 match dims (9 combinations) — the 9 cells partition each symbol's trees, so each tick scans ~1/9 of the entries: faster than the plain row |
-| Sweep100kDims | 4 | 127.2 | 0 | |
-| Sweep100kDims | 12 | 69.56 | 0 | |
-| Sweep1MDims | 1 | 230.2 | 0 | Sweep1M with 2 match dims (9 combinations) — same partitioning effect |
-| Sweep1MDims | 4 | 327.8 | 0 | |
-| Sweep1MDims | 12 | 200.7 | 0 | |
+| Sweep100k | 1 | 109.1 | 0 | 100k alerts across 500 symbols, no match dims |
+| Sweep100k | 4 | 168.1 | 0 | |
+| Sweep100k | 12 | 104.7 | 0 | |
+| Sweep1M | 1 | 608.8 | 0 | 1M alerts across the same 500 symbols — 10× alert density per symbol |
+| Sweep1M | 4 | 766.3 | 0 | |
+| Sweep1M | 12 | 577.9 | 0 | |
+| Sweep100kDims | 1 | 65.55 | 0 | Sweep100k with 2 match dims (9 combinations) — the 9 cells partition each symbol's trees, so each tick scans ~1/9 of the entries: faster than the plain row |
+| Sweep100kDims | 4 | 127.7 | 0 | |
+| Sweep100kDims | 12 | 67.63 | 0 | |
+| Sweep1MDims | 1 | 285.9 | 0 | Sweep1M with 2 match dims (9 combinations) — same partitioning effect |
+| Sweep1MDims | 4 | 332.3 | 0 | |
+| Sweep1MDims | 12 | 224.3 | 0 | |
 
 Core scaling is flat-to-negative on every row (4 cores is the slowest
-configuration on all four scenarios) — consistent with contention on the
-shared trigger queue and memory bandwidth, though the evidence establishes
-the shape, not the mechanism.
+configuration on all four scenarios). The dominant cause was diagnosed with
+CPU profiles and removed: this host's kernel clocksource is HPET (TSC
+unavailable), where a clock read costs ~3 µs and serializes across cores,
+and the flusher used to read the clock once per fired alert — a fire storm
+saturated the shared HPET bank and dragged every core down (Sweep1M-4
+measured 1337 ns/op before the batched-timestamp fix, ~660–940 after). The
+residue is consistent with scheduler-path clock reads on the same HPET bank
+and contention on the shared trigger queue; on a TSC host the shape should
+be closer to monotonic.
 
 ## Validated in practice
 
