@@ -103,10 +103,6 @@ One package, no network, no I/O — everything follows one decision:
 - **Delivery** — winners land on a bounded MPMC ring (`Pop` / `PopBatch`). A
   slow consumer means counted drops, never backpressure into `Match`.
 
-Correctness is checked against independent oracles: a randomized brute-force
-evaluator must produce identical trigger sets, and `price` is property-tested
-against `math/big` over 50,000 cases.
-
 ## Benchmarks
 
 (AMD Ryzen 5 5600H, Linux/amd64):
