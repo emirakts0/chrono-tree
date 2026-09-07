@@ -45,6 +45,76 @@ func BenchmarkMatchSparse10M(b *testing.B) {
 	benchSparse(b, 10_000_000)
 }
 
+func BenchmarkMatchSparse5M(b *testing.B) { benchSparse(b, 5_000_000) }
+
+// BenchmarkMatchHotSymbol1M is Sparse1M collapsed onto a single symbol: the
+// same 1M alerts, all on one instrument. The tick still fires nothing, but
+// every seek now descends trees 1000× larger than the spread case — the
+// per-symbol concentration cost of a venue-wide alert book on one name.
+func BenchmarkMatchHotSymbol1M(b *testing.B) {
+	e := New(DefaultConfig())
+	defer e.Close()
+	const alerts = 1_000_000
+	for i := 0; i < alerts/2; i++ {
+		e.Upsert(AlertSpec{ID: mkID(uint32(i * 2)), Symbol: "HOT",
+			PriceType: PriceType(i % 4), Direction: DirGTE,
+			TargetPrice: Price(1_000_000 + i), ValidFrom: 1, AutoDeactivate: true})
+		e.Upsert(AlertSpec{ID: mkID(uint32(i*2 + 1)), Symbol: "HOT",
+			PriceType: PriceType(i % 4), Direction: DirLTE,
+			TargetPrice: Price(100_000 - i), ValidFrom: 1, AutoDeactivate: true})
+	}
+	e.Sync()
+	tick := Tick{Symbol: "HOT", Bid: 500_000, Ask: 500_000, Mid: 500_000, Last: 500_000,
+		Present: TickAllPresent(), TS: 1 << 40}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		e.Match(&tick)
+	}
+}
+
+// BenchmarkMatchFire1k measures the firing path: each timed Match fires
+// 1000 fresh ACTIVE alerts (scan + CAS win + ring push), then re-arms them
+// with the timer stopped. DenseSkip shows the CAS-fail cost of stale
+// entries; this is its CAS-win complement — the per-fire price of a real
+// gap. The tick carries only the Last price, so it is also the partial-
+// Present shape (3 of 4 price types pruned by the mask). The flusher runs
+// concurrently, as in production: each fire schedules a tree removal, and
+// the COW copies that removal triggers land in the reported B/op — the
+// matching path itself allocates nothing (0 B/op is asserted in tests).
+func BenchmarkMatchFire1k(b *testing.B) {
+	e := New(DefaultConfig())
+	defer e.Close()
+	const fires = 1000
+	specs := make([]AlertSpec, fires)
+	for i := range specs {
+		specs[i] = AlertSpec{ID: mkID(uint32(i)), Symbol: "FIRE",
+			PriceType: PriceLast, Direction: DirGTE,
+			TargetPrice: Price(100_000 + i), ValidFrom: 1, AutoDeactivate: true}
+	}
+	for i := range specs {
+		e.Upsert(specs[i])
+	}
+	e.Sync()
+	buf := make([]Trigger, fires)
+	tick := Tick{Symbol: "FIRE", Last: 1_000_000,
+		Present: 1 << uint(PriceLast), TS: 1 << 40}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		e.Match(&tick)
+		b.StopTimer()
+		e.Triggers().PopBatch(buf) // drain: keep the ring from wrapping
+		for j := range specs {
+			// Re-arm: the old slots are terminal (TRIGGERED), so Upsert
+			// replaces them cleanly without double-removal.
+			e.Upsert(specs[j])
+		}
+		e.Sync()
+		b.StartTimer()
+	}
+}
+
 // BenchmarkMatchDenseSkip measures the sustained-load shape: alerts already
 // TRIGGERED, so every scan touches entries whose slot CAS fails. This is the
 // per-tick cost the engine pays between price gaps.
@@ -106,6 +176,8 @@ func benchDimsSparse(b *testing.B, alerts int) {
 }
 
 func BenchmarkMatchDimsSparse1M(b *testing.B) { benchDimsSparse(b, 1_000_000) }
+
+func BenchmarkMatchDimsSparse5M(b *testing.B) { benchDimsSparse(b, 5_000_000) }
 
 // BenchmarkMatchDimsDenseSkip is DenseSkip at width 2 with all alerts in the
 // tick's dim cell: the pure byte-width cost of the 64B entry in dense scans.

@@ -138,8 +138,12 @@ network and no I/O.
 | benchmark | ns/op | allocs/op | |
 |---|---:|---:|---|
 | MatchSparse1M | 623 | 0 | 1M alerts across 1k symbols, non-firing tick |
+| MatchSparse5M | 679 | 0 | same tick at 5M alerts — per-tick cost stays ~flat |
+| MatchHotSymbol1M | 1,190 | 0 | all 1M alerts on one symbol — deeper-tree seeks |
 | MatchDenseSkip | 209,715 | 0 | tick price crosses 20k already-fired entries |
+| MatchFire1k | 75,316 | 5 | 1k fresh fires per tick (~75 ns/fire); the allocs are the concurrent COW removal flush, not the match path |
 | MatchDimsSparse1M | 874 | 0 | same as Sparse1M with 2 match dimensions |
+| MatchDimsSparse5M | 1,050 | 0 | same as DimsSparse1M at 5M alerts |
 | MatchDimsDenseSkip | 201,614 | 0 | same as DenseSkip with 2 match dimensions |
 
 ---
