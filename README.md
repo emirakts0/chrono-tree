@@ -122,21 +122,12 @@ is property-tested against `math/big` over 50,000 cases.
 
 ## A demo on top
 
-`demo/cmd/chronod` is a **demo application** built on the engine — a thin shell
-showing the library in a realistic setting, not the product itself. The demo is
-its own Go module (`demo/`, using the engine via a local `replace`), so the
-library stays standalone. It wraps the engine as a daemon: `chrono.v1` gRPC on
-`:9090` (alerts, tick ingestion, catalog), trigger publishing to NATS
-(`chrono.triggers.{venue}.{tier}`), a bbolt alert store, and an embedded
-monitoring dashboard on `:8080` — catalog validation and exact price conversion
-at the boundary, then the engine unchanged.
-
-```sh
-nats-server &                                             # trigger bus
-go run ./demo/scripts/chronofeed -db demo.bbolt &         # seed alerts, stream a synthetic market
-go run ./demo/cmd/chronod -db demo.bbolt                  # serve :9090 · dashboard on :8080
-nats sub 'chrono.triggers.>'                              # watch triggers fire
-```
+To validate the engine under realistic conditions, we built a demo daemon on
+top of it — `chrono.v1` gRPC ingestion, trigger publishing to NATS, a bbolt
+alert store, and an embedded monitoring dashboard, with a synthetic market
+feeder — and ran it against 1M live alerts at up to 200k ticks/s. The demo is
+not part of this repository; the engine ships as a pure library with no
+network and no I/O.
 
 ## Benchmarks
 
