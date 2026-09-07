@@ -105,19 +105,33 @@ One package, no network, no I/O — everything follows one decision:
 
 ## Benchmarks
 
-(AMD Ryzen 5 5600H, Linux/amd64):
+(AMD Ryzen 5 5600H, Linux/amd64; `go test -bench='Sweep(100k|1M)(Dims)?' -benchtime=1x -cpu 1,4,12 -benchmem`)
 
-| benchmark | ns/op | allocs/op | |
-|---|---:|---:|---|
-| MatchSparse1M | 649 | 0 | 1M alerts across 1k symbols, non-firing tick |
-| MatchSparse5M | 709 | 0 | same tick at 5M alerts — per-tick cost stays ~flat |
-| MatchHotSymbol1M | 1,248 | 0 | all 1M alerts on one symbol — deeper-tree seeks |
-| MatchDenseSkip | 211,234 | 0 | tick price crosses 20k already-fired entries |
-| MatchFire1k | 87,496 | 4 | 1k fresh fires per tick (~87 ns/fire); the allocs are the concurrent COW removal flush, not the match path |
-| MatchDimsSparse1M | 947 | 0 | same as Sparse1M with 2 match dimensions |
-| MatchDimsSparse5M | 1,075 | 0 | same as DimsSparse1M at 5M alerts |
-| MatchDimsDenseSkip | 218,327 | 0 | same as DenseSkip with 2 match dimensions |
-| TriggerQueueRoundtrip | 71 | 0 | trigger push+pop pair, 12 parallel producers |
+Sustained-load sweep: 500 symbols, 12 virtual seconds at 200 ticks per
+symbol-second (1.2M ticks per scenario), price-band frontiers advancing so
+~5% of the population fires per virtual second (~60% depleted at the end,
+both trees still live). A consumer drains triggers out of band. ns/op is per
+tick — ticks/s = 1e9 / ns/op. allocs are the concurrent COW removal flush,
+not the match path.
+
+| benchmark | cores | ns/op | allocs/op | |
+|---|---:|---:|---:|---|
+| Sweep100k | 1 | 110.2 | 0 | 100k alerts across 500 symbols, no match dims |
+| Sweep100k | 4 | 208.4 | 0 | |
+| Sweep100k | 12 | 122.1 | 0 | |
+| Sweep1M | 1 | 676.6 | 0 | 1M alerts across the same 500 symbols — 10× alert density per symbol |
+| Sweep1M | 4 | 1335 | 0 | |
+| Sweep1M | 12 | 682.5 | 0 | |
+| Sweep100kDims | 1 | 65.40 | 0 | Sweep100k with 2 match dims (9 combinations) — the 9 cells partition each symbol's trees, so each tick scans ~1/9 of the entries: faster than the plain row |
+| Sweep100kDims | 4 | 127.2 | 0 | |
+| Sweep100kDims | 12 | 69.56 | 0 | |
+| Sweep1MDims | 1 | 230.2 | 0 | Sweep1M with 2 match dims (9 combinations) — same partitioning effect |
+| Sweep1MDims | 4 | 327.8 | 0 | |
+| Sweep1MDims | 12 | 200.7 | 0 | |
+
+Core scaling is flat-to-negative on every row (4 cores is the slowest
+configuration on all four scenarios) — the sweep serializes on the shared
+trigger queue and memory bandwidth rather than scaling with core count.
 
 ## Validated in practice
 
