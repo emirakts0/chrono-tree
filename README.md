@@ -130,17 +130,6 @@ not the match path.
 | Sweep1MDims | 4 | 332.3 | 0 | |
 | Sweep1MDims | 12 | 224.3 | 0 | |
 
-Core scaling is flat-to-negative on every row (4 cores is the slowest
-configuration on all four scenarios). The dominant cause was diagnosed with
-CPU profiles and removed: this host's kernel clocksource is HPET (TSC
-unavailable), where a clock read costs ~3 µs and serializes across cores,
-and the flusher used to read the clock once per fired alert — a fire storm
-saturated the shared HPET bank and dragged every core down (Sweep1M-4
-measured 1337 ns/op before the batched-timestamp fix, ~660–940 after). The
-residue is consistent with scheduler-path clock reads on the same HPET bank
-and contention on the shared trigger queue; on a TSC host the shape should
-be closer to monotonic.
-
 ## Validated in practice
 
 The engine was stress-tested through a separate demo daemon — `chrono.v1`
