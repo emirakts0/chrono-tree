@@ -215,6 +215,36 @@ func TestTriggerQueueConcurrent(t *testing.T) {
 	}
 }
 
+func TestTriggerQueueC(t *testing.T) {
+	q := NewTriggerQueue(2)
+	if !q.TryPush(Trigger{Price: 7}) {
+		t.Fatal("push rejected on non-full queue")
+	}
+	select {
+	case tr := <-q.C():
+		if tr.Price != 7 {
+			t.Fatalf("C() delivered %v, want 7", tr.Price)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("blocking receive on C() starved with a queued trigger")
+	}
+	select {
+	case tr := <-q.C():
+		t.Fatalf("C() delivered %v from an empty queue", tr.Price)
+	default:
+	}
+}
+
+func TestTriggerQueueCapacityClamp(t *testing.T) {
+	q := NewTriggerQueue(0)
+	if !q.TryPush(Trigger{}) {
+		t.Fatal("push rejected on capacity-clamped queue")
+	}
+	if q.Len() != 1 {
+		t.Fatalf("Len = %d, want 1", q.Len())
+	}
+}
+
 func TestInterner(t *testing.T) {
 	in := NewInterner()
 	if _, ok := in.Get("USDTRY"); ok {

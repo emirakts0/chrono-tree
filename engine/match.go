@@ -30,8 +30,9 @@ func priceOf(t *Tick, pt PriceType) Price {
 }
 
 // Match evaluates a tick against every indexed alert for its symbol.
-// Lock-free and allocation-free; it never blocks and never mutates shared
-// trees — firing is CAS-gated per alert, tree removal is deferred.
+// Allocation-free and non-blocking: it never waits on queue capacity or on
+// consumers, and never mutates shared trees — firing is CAS-gated per
+// alert, tree removal is deferred.
 func (e *Engine) Match(t *Tick) {
 	if e.closed.Load() {
 		return // engine shut down; trees may be released

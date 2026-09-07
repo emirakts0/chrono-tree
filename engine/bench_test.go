@@ -74,7 +74,7 @@ func BenchmarkMatchHotSymbol1M(b *testing.B) {
 }
 
 // BenchmarkMatchFire1k measures the firing path: each timed Match fires
-// 1000 fresh ACTIVE alerts (scan + CAS win + ring push), then re-arms them
+// 1000 fresh ACTIVE alerts (scan + CAS win + queue push), then re-arms them
 // with the timer stopped. DenseSkip shows the CAS-fail cost of stale
 // entries; this is its CAS-win complement — the per-fire price of a real
 // gap. The tick carries only the Last price, so it is also the partial-
@@ -104,7 +104,7 @@ func BenchmarkMatchFire1k(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		e.Match(&tick)
 		b.StopTimer()
-		e.Triggers().PopBatch(buf) // drain: keep the ring from wrapping
+		e.Triggers().PopBatch(buf) // drain: keep the queue from filling
 		for j := range specs {
 			// Re-arm: the old slots are terminal (TRIGGERED), so Upsert
 			// replaces them cleanly without double-removal.
@@ -207,4 +207,22 @@ func BenchmarkMatchDimsDenseSkip(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		e.Match(&tick)
 	}
+}
+
+// BenchmarkTriggerQueueRoundtrip measures the delivery queue's combined
+// push+pop cost under parallel producers — the channel-backed queue that
+// replaced the Vyukov ring (see TriggerQueue doc for the measurement
+// rationale). Push+pop per iteration keeps the buffer from filling, so both
+// sides of the queue stay in the measured path.
+func BenchmarkTriggerQueueRoundtrip(b *testing.B) {
+	q := NewTriggerQueue(1024)
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		t := Trigger{}
+		for pb.Next() {
+			q.TryPush(t)
+			q.Pop()
+		}
+	})
 }

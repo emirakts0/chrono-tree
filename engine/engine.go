@@ -28,7 +28,7 @@ type Config struct {
 	MaxAlerts          uint64        // live alert cap
 	MutationQueueDepth int           // bounded mutation queue
 	FlushBatch         int           // max ops applied per flush cycle
-	RingSize           int           // trigger ring capacity (rounded to pow2)
+	TriggerQueueSize   int           // trigger queue (buffered channel) capacity
 	ReaperInterval     time.Duration // expiry sweep + slot recycle period
 	IntegrityEvery     int           // integrity sweep cadence, in reaper ticks (<=0 → default)
 	Dims               []string      // positional dimension names; slot i = Dims[i]; max 8. Width is len(Dims).
@@ -46,7 +46,7 @@ func DefaultConfig() Config {
 		MaxAlerts:          10_000_000,
 		MutationQueueDepth: 4096,
 		FlushBatch:         256,
-		RingSize:           1 << 16,
+		TriggerQueueSize:   1 << 16,
 		ReaperInterval:     time.Second,
 		IntegrityEvery:     defaultIntegrityEvery,
 	}
@@ -178,7 +178,7 @@ func New(cfg Config) *Engine {
 		slots:    newSlotArena(cfg.MaxAlerts),
 		mutQ:     make(chan mutation, cfg.MutationQueueDepth),
 		expQ:     make(chan expEntry, cfg.MutationQueueDepth),
-		triggers: NewTriggerQueue(cfg.RingSize),
+		triggers: NewTriggerQueue(cfg.TriggerQueueSize),
 		refs:     make(map[AlertID]*alertRef),
 		done:     make(chan struct{}),
 	}
