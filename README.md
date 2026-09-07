@@ -118,6 +118,13 @@ One package, no network, no I/O — everything follows one decision:
 | MatchDimsSparse5M | 1,044 | 0 | same as DimsSparse1M at 5M alerts |
 | MatchDimsDenseSkip | 213,126 | 0 | same as DenseSkip with 2 match dimensions |
 
+## Validated in practice
+
+The engine was stress-tested through a separate demo daemon — `chrono.v1`
+gRPC ingestion, trigger publishing to NATS, a bbolt alert store, an embedded
+monitoring dashboard, and a synthetic market feeder — against 1M live alerts
+at up to 200k ticks/s.
+
 ---
 
 <p align="center">
