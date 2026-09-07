@@ -279,6 +279,7 @@ func benchSweep(b *testing.B, alerts int, dimmed bool) {
 		}
 	}
 	e.Sync()
+	reportMutationDrops(b) // cumulative; row's own drops = end − start
 
 	// run drives the striped fan-out under the benchmark timer: worker w
 	// replays symbols w, w+workers, ... — identical per-symbol timelines, so
@@ -347,6 +348,7 @@ func benchSweep(b *testing.B, alerts int, dimmed bool) {
 	if d := e.Triggers().Dropped(); d != 0 {
 		b.Fatalf("%d triggers dropped — fire calibration invalid", d)
 	}
+	reportMutationDrops(b)
 }
 
 // BenchmarkSweep100k: 100k alerts across 500 symbols, no match dims.
