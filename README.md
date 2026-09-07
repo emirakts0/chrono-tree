@@ -49,7 +49,7 @@ flowchart LR
         SNAP["Snapshot Load<br/>atomic.Pointer"]
         TREES["8 B-Trees per symbol<br/>4 price types × 2 directions<br/>key: (dims, price, id)"]
         CAS["Exactly-Once Gate<br/>CAS ACTIVE → TRIGGERED"]
-        RING["Vyukov MPMC Ring<br/>65,536 triggers"]
+        RING["Vyukov MPMC Ring<br/>bounded · drop-and-count"]
         IN --> SNAP --> TREES --> CAS --> RING
     end
 
