@@ -243,18 +243,24 @@ var benchSink Price
 // schedule is precomputed (Task 1), the engine preloaded and synced, and a
 // trigger consumer drains out of band; the timed op is a striped worker
 // fan-out replaying the per-symbol tick arrays. b.N is pinned to the
-// schedule length, so run with -benchtime=1x: the framework invokes the
-// function once per -cpu value (plus one unmeasured smoke pass, which also
-// rebuilds and re-sweeps — expect each row to take two sweeps of wall time).
-// ns/op is per tick; ticks/s = 1e9 / ns/op.
+// schedule length, so run with -benchtime=1x. ns/op is per tick;
+// ticks/s = 1e9 / ns/op.
+//
+// Protocol: run via benchSweepPinned with `-benchtime=1x -count=3` and NO
+// -cpu flag; the gN sub-benchmark suffix is the pinned GOMAXPROCS. Discard
+// count 1 of every cell — the framework's discovery pass, which under
+// go1.27.0 runs at whatever ambient GOMAXPROCS the process has (with a
+// multi-value -cpu list that is the last value, and a b.N-overriding body
+// gets that run printed as its first row) — and take the median of counts
+// 2–3. GOMAXPROCS is pinned inside each sub-benchmark so parallelism is
+// correct by construction, discovery pass included.
 //
 // Workers are spawned manually rather than via b.RunParallel: RunParallel's
 // contract requires the body to exhaust pb.Next() (Go 1.27 fatals otherwise),
 // and draining 1.2M iterations through the framework's shared atomic cursor
 // would put a contended counter in the timed path — exactly the
 // generator-overhead contamination this benchmark exists to avoid. Manual
-// fan-out keyed on GOMAXPROCS(0) keeps -cpu 1,4,12 meaningful with zero
-// shared state.
+// fan-out keyed on GOMAXPROCS(0) matches the pin with zero shared state.
 func benchSweep(b *testing.B, alerts int, dimmed bool) {
 	s := genSweep(1, alerts, dimmed)
 	if frac := float64(s.wantFires) / float64(alerts); frac < 0.50 || frac > 0.70 {
@@ -351,16 +357,33 @@ func benchSweep(b *testing.B, alerts int, dimmed bool) {
 	reportMutationDrops(b)
 }
 
+// benchSweepPinned runs the sweep scenario at GOMAXPROCS 1, 4, and 12 as
+// named sub-benchmarks. Parallelism is pinned inside each sub-benchmark
+// (before benchSweep's fan-out reads GOMAXPROCS(0)) so the harness cannot
+// be poisoned by ambient scheduler state: a multi-value -cpu list under
+// go1.27.0 executes the framework's discovery pass at the last -cpu value's
+// GOMAXPROCS, and a b.N-overriding body gets that run reported as a result.
+// Do not pass -cpu to the campaign; the gN suffix carries the value.
+func benchSweepPinned(b *testing.B, alerts int, dimmed bool) {
+	for _, g := range []int{1, 4, 12} {
+		b.Run(fmt.Sprintf("g%d", g), func(b *testing.B) {
+			old := runtime.GOMAXPROCS(g)
+			defer runtime.GOMAXPROCS(old)
+			benchSweep(b, alerts, dimmed)
+		})
+	}
+}
+
 // BenchmarkSweep100k: 100k alerts across 500 symbols, no match dims.
-func BenchmarkSweep100k(b *testing.B) { benchSweep(b, 100_000, false) }
+func BenchmarkSweep100k(b *testing.B) { benchSweepPinned(b, 100_000, false) }
 
 // BenchmarkSweep1M: 1M alerts across 500 symbols — 10× the alert density per
 // symbol, so each tick fires ~10× more alerts than the 100k row.
-func BenchmarkSweep1M(b *testing.B) { benchSweep(b, 1_000_000, false) }
+func BenchmarkSweep1M(b *testing.B) { benchSweepPinned(b, 1_000_000, false) }
 
 // BenchmarkSweep100kDims: the 100k scenario with 2 match dims (9
 // combinations); alerts and tick load are split evenly across the cells.
-func BenchmarkSweep100kDims(b *testing.B) { benchSweep(b, 100_000, true) }
+func BenchmarkSweep100kDims(b *testing.B) { benchSweepPinned(b, 100_000, true) }
 
 // BenchmarkSweep1MDims: the 1M scenario with 2 match dims (9 combinations).
-func BenchmarkSweep1MDims(b *testing.B) { benchSweep(b, 1_000_000, true) }
+func BenchmarkSweep1MDims(b *testing.B) { benchSweepPinned(b, 1_000_000, true) }
