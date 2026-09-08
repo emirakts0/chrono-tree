@@ -126,6 +126,13 @@ AMD Ryzen 5 5600H (6 cores / 12 threads; g12 is SMT), Linux/amd64, go1.27.0.
 | Sweep1MDims | 4 | 312.1 | 267 | 0 | |
 | Sweep1MDims | 12 | 197.8 | 153 | 0 | |
 
+> **0 allocs/op, nonzero B/op:** `Match` itself never allocates — pinned by
+> `testing.AllocsPerRun` in `TestMatchZeroAllocs`/`TestMatchDimsZeroAllocs`.
+> The `B/op` is background control-plane churn (flusher COW node clones,
+> reaper bookkeeping) that scales with the fire rate, not the tick rate;
+> `allocs/op` reads 0 only because that churn amortizes to well under one
+> allocation per tick.
+
 Sustained-load sweep: 500 symbols, 12 virtual seconds at 200 ticks per
 symbol-second (1.2M ticks per scenario), price-band frontiers advancing so
 ~5% of the population fires per virtual second (~60% depleted at the end,
