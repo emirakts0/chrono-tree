@@ -345,6 +345,54 @@ func TestFlusherAppliesMutations(t *testing.T) {
 	}
 }
 
+// TestStatsMutationDrops exposes trySubmit shedding: holding e.mu stalls the
+// flusher inside applyBatch's refs cleanup, the mutation queue fills, and
+// further trySubmit removals must be dropped and counted exactly in Stats.
+func TestStatsMutationDrops(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	cfg := DefaultConfig()
+	cfg.MutationQueueDepth = 4
+	e := New(cfg)
+	defer e.Close()
+	if s := e.Stats(); s.MutationDrops != 0 {
+		t.Fatalf("fresh engine MutationDrops = %d, want 0", s.MutationDrops)
+	}
+	sid, err := e.stateFor("USDTRY")
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := 0
+	newRemoval := func() mutation {
+		next++
+		idx := e.slots.alloc()
+		e.slots.setStatus(idx, StatusActive)
+		ent := entry{price: Price(100 + next), id: AlertID{byte(next)},
+			idx: idx, validFrom: 1, flags: makeFlags(PriceLast, DirGTE, true)}
+		return mutation{op: mutRemove, sid: sid, e: ent, gen: e.slots.gen(idx)}
+	}
+	// Every submitted mutation is a mutRemove, so the flusher's first batch
+	// stalls in applyBatch on the held lock; submit until the queue is full.
+	e.mu.Lock()
+	for len(e.mutQ) < cap(e.mutQ) {
+		if err := e.submit(newRemoval()); err != nil {
+			e.mu.Unlock()
+			t.Fatal(err)
+		}
+	}
+	const drops = 3
+	for i := 0; i < drops; i++ {
+		if e.trySubmit(newRemoval()) {
+			e.mu.Unlock()
+			t.Fatal("trySubmit succeeded on a full queue")
+		}
+	}
+	e.mu.Unlock()
+	e.Sync()
+	if s := e.Stats(); s.MutationDrops != drops {
+		t.Fatalf("MutationDrops = %d, want %d", s.MutationDrops, drops)
+	}
+}
+
 func TestSyncBarrier(t *testing.T) {
 	defer goleak.VerifyNone(t)
 	e := New(DefaultConfig())

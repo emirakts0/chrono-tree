@@ -37,6 +37,21 @@ func (e *Engine) submit(m mutation) error {
 	}
 }
 
+// trySubmit is the hot path's best-effort, never-blocking enqueue. A miss
+// only defers cleanup (the integrity sweep re-submits later); it can never
+// cause a missed or duplicate trigger. Drops are counted in e.mutDrops so
+// shedding is observable via Stats — the atomic add runs only on the miss
+// path; the success path stays one channel send, zero allocs, never blocks.
+func (e *Engine) trySubmit(m mutation) bool {
+	select {
+	case e.mutQ <- m:
+		return true
+	default:
+		e.mutDrops.Add(1)
+		return false
+	}
+}
+
 // Sync blocks until every mutation submitted before Sync has been applied.
 func (e *Engine) Sync() {
 	done := make(chan struct{})
@@ -84,6 +99,13 @@ func (e *Engine) runFlusher() {
 	}
 }
 
+// refClean is one pending refs-map cleanup item: delete e.refs[id] only if
+// the ref still points at the removed entry's slot.
+type refClean struct {
+	id  AlertID
+	idx uint32
+}
+
 // applyBatch applies ops grouped by symbol so each symbol is copied once,
 // then publishes all snapshots atomically before releasing the old ones.
 func (e *Engine) applyBatch(batch []mutation) {
@@ -94,6 +116,7 @@ func (e *Engine) applyBatch(batch []mutation) {
 	}
 	bySym := make(map[SymbolID]*pending) // cold path; map is fine
 	now := time.Now()                    // one clock read per batch
+	removals := e.refBuf[:0]             // flusher-owned scratch; no per-batch alloc
 	var syncs []chan struct{}
 	for _, m := range batch {
 		switch m.op {
@@ -114,17 +137,24 @@ func (e *Engine) applyBatch(batch []mutation) {
 		case mutRemove:
 			p.next.trees[treeIndex(m.e.priceType(), m.e.direction())].Delete(m.e)
 			// Retire the slot (gen-gated, duplicate removals park at most
-			// once); clean refs/live only if the ref still matches this
-			// exact entry (a same-ID upsert may have replaced it).
+			// once); refs/live cleanup is deferred to one locked pass below.
 			e.slots.retireGen(m.e.idx, m.gen, now)
-			e.mu.Lock()
-			if r, ok := e.refs[m.e.id]; ok && r.e.idx == m.e.idx {
-				delete(e.refs, m.e.id)
-				e.live--
-			}
-			e.mu.Unlock()
+			removals = append(removals, refClean{id: m.e.id, idx: m.e.idx})
 		}
 	}
+	// One refs pass per batch, not per removal. Same semantics as the
+	// per-removal lock it replaces: the match-this-exact-entry check still
+	// runs under the lock — a same-ID upsert may have replaced the entry,
+	// and only a ref whose idx still equals the removed entry's is deleted.
+	e.mu.Lock()
+	for _, r := range removals {
+		if ref, ok := e.refs[r.id]; ok && ref.e.idx == r.idx {
+			delete(e.refs, r.id)
+			e.live--
+		}
+	}
+	e.mu.Unlock()
+	e.refBuf = removals // keep capacity for the next batch
 	for _, p := range bySym {
 		p.st.snap.Store(p.next)
 		if !p.old.retireRelease() {

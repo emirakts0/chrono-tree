@@ -86,6 +86,7 @@ func (a *AlertSpec) validate() error {
 type Stats struct {
 	Live            uint64
 	DroppedTriggers uint64
+	MutationDrops   uint64 // removals shed by trySubmit on a full mutation queue
 }
 
 // alertRef locates an alert's index structures for control-plane ops.
@@ -140,6 +141,9 @@ type Engine struct {
 	triggers *TriggerQueue
 	expiry   btype.Table[expEntry] // owned by the reaper only
 	parked   []*snapshot           // flusher-owned: retired snapshots awaiting reader drain
+	refBuf   []refClean            // flusher-owned: per-batch refs-cleanup scratch
+
+	mutDrops atomic.Uint64 // trySubmit misses (full mutQ); drop path only
 
 	mu   sync.Mutex // guards refs, live
 	refs map[AlertID]*alertRef
@@ -210,10 +214,14 @@ func (e *Engine) Close() {
 // Triggers exposes the trigger ring for downstream consumption.
 func (e *Engine) Triggers() *TriggerQueue { return e.triggers }
 
-// Stats reports live alerts and dropped triggers.
+// Stats reports live alerts, dropped triggers, and shed mutations.
 func (e *Engine) Stats() Stats {
 	e.mu.Lock()
 	live := e.live
 	e.mu.Unlock()
-	return Stats{Live: live, DroppedTriggers: e.triggers.Dropped()}
+	return Stats{
+		Live:            live,
+		DroppedTriggers: e.triggers.Dropped(),
+		MutationDrops:   e.mutDrops.Load(),
+	}
 }
