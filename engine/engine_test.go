@@ -393,6 +393,105 @@ func TestStatsMutationDrops(t *testing.T) {
 	}
 }
 
+// TestSyncAcrossSymbols pins the Sync barrier over a wide symbol fan-out:
+// upserts across many symbols must all be applied and published when Sync
+// returns — trees populated, not just the control-plane Live counter
+// (which Upsert bumps synchronously).
+func TestSyncAcrossSymbols(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	e := New(DefaultConfig())
+	defer e.Close()
+	const syms = 100
+	for i := 0; i < syms; i++ {
+		if err := e.Upsert(testSpec(byte(i+1), fmt.Sprintf("SYM%03d", i),
+			PriceLast, DirGTE, 100)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.Sync()
+	if s := e.Stats(); s.Live != syms {
+		t.Fatalf("Live = %d, want %d", s.Live, syms)
+	}
+	for i := 0; i < syms; i++ {
+		sid, ok := e.syms.Get(fmt.Sprintf("SYM%03d", i))
+		if !ok {
+			t.Fatalf("symbol %d not interned", i)
+		}
+		if n := e.states[sid].snap.Load().trees[treeIndex(PriceLast, DirGTE)].Len(); n != 1 {
+			t.Fatalf("symbol %d: tree Len = %d after Sync, want 1 — barrier missed a mutation", i, n)
+		}
+	}
+}
+
+// TestStressConcurrentMixedOps drives concurrent Upsert/Cancel/Match/Sync
+// across symbols from several goroutines; after the final Sync every
+// non-cancelled alert must have fired exactly once, no removal may have
+// been shed, and live must be zero.
+func TestStressConcurrentMixedOps(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	const syms, workers, perSym, cancels = 16, 4, 40, 8
+	e := New(DefaultConfig())
+	defer e.Close()
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for s := w; s < syms; s += workers {
+				sym := fmt.Sprintf("STRESS%02d", s)
+				for i := 0; i < perSym; i++ {
+					a := AlertSpec{ID: mkID(uint32(s*perSym + i)), Symbol: sym,
+						PriceType: PriceLast, Direction: DirGTE, TargetPrice: 100,
+						ValidFrom: 1, AutoDeactivate: true}
+					if err := e.Upsert(a); err != nil {
+						t.Error(err)
+						return
+					}
+				}
+				e.Sync()
+				for i := 0; i < cancels; i++ {
+					if err := e.Cancel(mkID(uint32(s*perSym + i))); err != nil {
+						t.Error(err)
+						return
+					}
+				}
+				e.Sync()
+				e.Match(&Tick{Symbol: sym, Last: 200,
+					Present: 1 << uint(PriceLast), TS: 1 << 40})
+				e.Sync()
+			}
+		}(w)
+	}
+	wg.Wait()
+	e.Sync()
+	counts := map[AlertID]int{}
+	for _, tr := range drainTriggers(e) {
+		counts[tr.ID]++
+	}
+	for s := 0; s < syms; s++ {
+		for i := 0; i < perSym; i++ {
+			id := mkID(uint32(s*perSym + i))
+			want := 1
+			if i < cancels {
+				want = 0
+			}
+			if got := counts[id]; got != want {
+				t.Fatalf("alert %d fired %d times, want %d", s*perSym+i, got, want)
+			}
+		}
+	}
+	st := e.Stats()
+	if st.Live != 0 {
+		t.Fatalf("Live = %d after final Sync, want 0", st.Live)
+	}
+	if st.MutationDrops != 0 {
+		t.Fatalf("MutationDrops = %d, want 0 — stress shed removals", st.MutationDrops)
+	}
+	if st.DroppedTriggers != 0 {
+		t.Fatalf("DroppedTriggers = %d, want 0", st.DroppedTriggers)
+	}
+}
+
 func TestSyncBarrier(t *testing.T) {
 	defer goleak.VerifyNone(t)
 	e := New(DefaultConfig())
