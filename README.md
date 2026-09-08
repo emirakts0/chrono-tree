@@ -28,7 +28,7 @@
 
 ## Features
 
-- **Zero-Allocation Matching** — a tick touches only its symbol's trees: ~0.6–0.75 µs per tick at 1M alerts on 4–12 threads (~4.2 µs single-threaded), `0 B/op` asserted in tests. Per-tick cost is O(qualifying entries), independent of total alert count.
+- **Zero-Allocation Matching** — a tick touches only its symbol's trees: ~0.55–0.75 µs per tick at 1M alerts on 4–12 threads (~4.2 µs single-threaded); 0 allocs/op asserted in tests. Per-tick cost is O(qualifying entries), independent of total alert count.
 - **Exact Integer Prices** — no floats anywhere. Prices are `int64` base units (`"12.34"` at 2 decimals is `1234`); one conversion boundary (`price`) accepts only values representable exactly, which sub-cent tokens with 8–18 decimals require.
 - **Partitioned B-Tree Index** — 8 trees per symbol (4 price types × 2 directions), keyed by `(dims, price, id)`. Every entry a scan visits qualifies by construction — there are no per-entry filters.
 - **Copy-on-Write Snapshots** — mutations are applied to tree copies and published with one atomic store (RCU style). Ticks never block writers; writers never block ticks.
@@ -105,61 +105,31 @@ One package, no network, no I/O — everything follows one decision:
 
 ## Benchmarks
 
-(AMD Ryzen 5 5600H — 6 cores / 12 threads, so g12 is SMT — Linux/amd64, go1.27.0.)
-
-Protocol: GOMAXPROCS is pinned inside each sub-benchmark (the g1/g4/g12
-suffix carries the value; no `-cpu` flag). `-benchtime=1x -count=3`, single
-process invocation; count 1 of every cell is discarded (the testing
-framework's discovery pass) and the table reports the median of counts 2–3:
-
 ```
 go test ./engine -run '^$' -bench='Sweep(100k|1M)(Dims)?$' -benchtime=1x -benchmem -count=3
 ```
 
+AMD Ryzen 5 5600H (6 cores / 12 threads; g12 is SMT), Linux/amd64, go1.27.0.
+
+| benchmark | threads | ns/op | B/op | allocs/op | |
+|---|---:|---:|---:|---:|---|
+| Sweep100k | 1 | 615.6 | 27 | 0 | 100k alerts across 500 symbols, no match dims |
+| Sweep100k | 4 | 171.1 | 34 | 0 | |
+| Sweep100k | 12 | 106.2 | 48 | 0 | |
+| Sweep1M | 1 | 4227 | 178 | 0 | 1M alerts across the same 500 symbols — 10× alert density per symbol |
+| Sweep1M | 4 | 753.6 | 217 | 0 | |
+| Sweep1M | 12 | 553.5 | 227 | 0 | |
+| Sweep100kDims | 1 | 352.8 | 23 | 0 | Sweep100k with 2 match dims (9 combinations) — each tick scans ~1/9 of the entries |
+| Sweep100kDims | 4 | 110.9 | 46 | 0 | |
+| Sweep100kDims | 12 | 66.0 | 34 | 0 | |
+| Sweep1MDims | 1 | 1109.5 | 164 | 0 | Sweep1M with 2 match dims — same partitioning effect |
+| Sweep1MDims | 4 | 312.1 | 267 | 0 | |
+| Sweep1MDims | 12 | 197.8 | 153 | 0 | |
+
 Sustained-load sweep: 500 symbols, 12 virtual seconds at 200 ticks per
 symbol-second (1.2M ticks per scenario), price-band frontiers advancing so
 ~5% of the population fires per virtual second (~60% depleted at the end,
-both trees still live). A consumer drains triggers out of band. ns/op is per
-tick — ticks/s = 1e9 / ns/op. allocs/op is 0 on every row — matching is
-allocation-free; any nonzero value would be the concurrent COW removal flush,
-not the match path.
-
-| benchmark | threads | ns/op | allocs/op | |
-|---|---:|---:|---:|---|
-| Sweep100k | 1 | 615.6 | 0 | 100k alerts across 500 symbols, no match dims |
-| Sweep100k | 4 | 171.1 | 0 | |
-| Sweep100k | 12 | 106.2 | 0 | |
-| Sweep1M | 1 | 4227 | 0 | 1M alerts across the same 500 symbols — 10× alert density per symbol |
-| Sweep1M | 4 | 753.6 | 0 | |
-| Sweep1M | 12 | 553.5 | 0 | |
-| Sweep100kDims | 1 | 352.8 | 0 | Sweep100k with 2 match dims (9 combinations) — the 9 cells partition each symbol's trees, so each tick scans ~1/9 of the entries: faster than the plain row |
-| Sweep100kDims | 4 | 110.9 | 0 | |
-| Sweep100kDims | 12 | 66.0 | 0 | |
-| Sweep1MDims | 1 | 1109.5 | 0 | Sweep1M with 2 match dims (9 combinations) — same partitioning effect |
-| Sweep1MDims | 4 | 312.1 | 0 | |
-| Sweep1MDims | 12 | 197.8 | 0 | |
-
-### Sustained-load notes
-
-The engine scales with cores on every scenario: g1→g4 is 3.2–5.6× and g1→g12
-is 5.3–7.6× (Sweep1M: 4227 → 753.6 → 553.5 ns/op). Under extreme sustained
-fire rates the bounded deferred-removal queue sheds removals by design —
-never the match path, never trigger delivery — observable via
-`Stats().MutationDrops`: in the Sweep1M scenario above it holds ~0.7% of
-removals at g1 (the flusher keeps pace) and ~24–30% at g4/g12, where one
-flusher cannot keep pace with 12 threads firing; the reaper's integrity
-sweep reclaims shed removals later (the dense-dims scenario, Sweep1MDims,
-sheds the most — 57.6–87.9% under the same protocol, recorded in the
-project spec). (The pre-campaign version of this table
-reported a 1-core column that was a measurement artifact — a testing-framework
-discovery-pass mislabeling — and has been corrected.)
-
-## Validated in practice
-
-The engine was stress-tested through a separate demo daemon — `chrono.v1`
-gRPC ingestion, trigger publishing to NATS, a bbolt alert store, an embedded
-monitoring dashboard, and a synthetic market feeder — against 1M live alerts
-at up to 200k ticks/s.
+both trees still live). A consumer drains triggers out of band.
 
 ---
 
