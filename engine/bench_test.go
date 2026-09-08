@@ -256,6 +256,45 @@ func TestSweepGeneratorCalibration(t *testing.T) {
 	}
 }
 
+// checkEngineMatchesOracle feeds a schedule to a fresh engine and verifies
+// the engine fires exactly the oracle's count with zero drops.
+func checkEngineMatchesOracle(t *testing.T, s *sweepSchedule, dimmed bool) {
+	t.Helper()
+	cfg := DefaultConfig()
+	if dimmed {
+		cfg.Dims = []string{"segment", "tier"}
+	}
+	e := New(cfg)
+	defer e.Close()
+	for sym := range s.alerts {
+		for _, a := range s.alerts[sym] {
+			if err := e.Upsert(a); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	e.Sync()
+	for sym := range s.ticks {
+		for i := range s.ticks[sym] {
+			e.Match(&s.ticks[sym][i])
+		}
+	}
+	q := e.Triggers()
+	n := 0
+	for {
+		if _, ok := q.Pop(); !ok {
+			break
+		}
+		n++
+	}
+	if n != s.wantFires {
+		t.Fatalf("dimmed=%v: engine fired %d, oracle predicted %d", dimmed, n, s.wantFires)
+	}
+	if d := q.Dropped(); d != 0 {
+		t.Fatalf("dimmed=%v: %d triggers dropped", dimmed, d)
+	}
+}
+
 // TestSweepOracleMatchesEngine is the ground-truth check: feeding the
 // schedule to a real engine must fire exactly the alerts the oracle
 // predicts, with zero drops.
@@ -266,39 +305,22 @@ func TestSweepOracleMatchesEngine(t *testing.T) {
 		if frac < 0.50 || frac > 0.70 {
 			t.Fatalf("dimmed=%v: fire fraction %.3f, want 0.50–0.70", dimmed, frac)
 		}
-		cfg := DefaultConfig()
-		if dimmed {
-			cfg.Dims = []string{"segment", "tier"}
+		checkEngineMatchesOracle(t, s, dimmed)
+	}
+}
+
+// TestSweepHoldOracleMatchesEngine is the hold-mode ground truth: the 100k
+// hold scenario (50% fire fraction, the densest hold case) must fire exactly
+// what the oracle predicts. Smaller populations can't realize 50k fires
+// (need ≥ 100 firing targets per symbol), so 100k is the floor.
+func TestSweepHoldOracleMatchesEngine(t *testing.T) {
+	for _, dimmed := range []bool{false, true} {
+		s := genSweep(1, 100_000, sweepHoldFires, dimmed)
+		if d := s.wantFires - sweepHoldFires; d < -sweepHoldFires/100 || d > sweepHoldFires/100 {
+			t.Fatalf("dimmed=%v: hold generator out of calibration: fires %d, want %d ±1%%",
+				dimmed, s.wantFires, sweepHoldFires)
 		}
-		e := New(cfg)
-		defer e.Close()
-		for sym := range s.alerts {
-			for _, a := range s.alerts[sym] {
-				if err := e.Upsert(a); err != nil {
-					t.Fatal(err)
-				}
-			}
-		}
-		e.Sync()
-		for sym := range s.ticks {
-			for i := range s.ticks[sym] {
-				e.Match(&s.ticks[sym][i])
-			}
-		}
-		q := e.Triggers()
-		n := 0
-		for {
-			if _, ok := q.Pop(); !ok {
-				break
-			}
-			n++
-		}
-		if n != s.wantFires {
-			t.Fatalf("dimmed=%v: engine fired %d, oracle predicted %d", dimmed, n, s.wantFires)
-		}
-		if d := q.Dropped(); d != 0 {
-			t.Fatalf("dimmed=%v: %d triggers dropped", dimmed, d)
-		}
+		checkEngineMatchesOracle(t, s, dimmed)
 	}
 }
 
