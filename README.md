@@ -28,7 +28,7 @@
 
 ## Features
 
-- **Zero-Allocation Matching** — a tick touches only its symbol's trees: ~0.6 µs at 1M alerts, `0 B/op` asserted in tests. Per-tick cost is O(qualifying entries), independent of total alert count.
+- **Zero-Allocation Matching** — a tick touches only its symbol's trees: ~0.6–0.75 µs per tick at 1M alerts on 4–12 threads (~4.2 µs single-threaded), `0 B/op` asserted in tests. Per-tick cost is O(qualifying entries), independent of total alert count.
 - **Exact Integer Prices** — no floats anywhere. Prices are `int64` base units (`"12.34"` at 2 decimals is `1234`); one conversion boundary (`price`) accepts only values representable exactly, which sub-cent tokens with 8–18 decimals require.
 - **Partitioned B-Tree Index** — 8 trees per symbol (4 price types × 2 directions), keyed by `(dims, price, id)`. Every entry a scan visits qualifies by construction — there are no per-entry filters.
 - **Copy-on-Write Snapshots** — mutations are applied to tree copies and published with one atomic store (RCU style). Ticks never block writers; writers never block ticks.
@@ -148,7 +148,9 @@ never the match path, never trigger delivery — observable via
 `Stats().MutationDrops`: in the Sweep1M scenario above it holds ~0.7% of
 removals at g1 (the flusher keeps pace) and ~24–30% at g4/g12, where one
 flusher cannot keep pace with 12 threads firing; the reaper's integrity
-sweep reclaims shed removals later. (The pre-campaign version of this table
+sweep reclaims shed removals later (the dense-dims scenario, Sweep1MDims,
+sheds the most — 57.6–87.9% under the same protocol, recorded in the
+project spec). (The pre-campaign version of this table
 reported a 1-core column that was a measurement artifact — a testing-framework
 discovery-pass mislabeling — and has been corrected.)
 

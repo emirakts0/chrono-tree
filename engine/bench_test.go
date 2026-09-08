@@ -357,8 +357,9 @@ func benchSweep(b *testing.B, alerts int, dimmed bool) {
 	// these scenarios — every fired AutoDeactivate alert queues one removal —
 	// so wantFires is the drop-percentage denominator.
 	if os.Getenv("CHRONO_BENCH_DROPS") == "1" {
-		b.Logf("mutation drops: %d (%.1f%% of %d removals)",
-			e.Stats().MutationDrops, 100*float64(e.Stats().MutationDrops)/float64(s.wantFires), s.wantFires)
+		st := e.Stats()
+		b.Logf("mutation drops: %d (%.1f%% of %d removals)", st.MutationDrops,
+			100*float64(st.MutationDrops)/float64(s.wantFires), s.wantFires)
 	}
 }
 
