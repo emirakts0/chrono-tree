@@ -1133,8 +1133,7 @@ func TestExpiryRegistrySlotReuse(t *testing.T) {
 }
 
 // TestSnapshotPerTreeCOW pins per-tree copy-on-write: a mutation touching one
-// tree must republish a snapshot whose untouched trees remain scannable, and
-// the untouched trees must share storage with the old snapshot (no clone).
+// tree must republish a snapshot whose untouched trees remain scannable.
 // Behavioral pin only — the safety of any storage sharing scheme is decided
 // by btype's Copy/Release semantics, not by this test.
 func TestSnapshotPerTreeCOW(t *testing.T) {
@@ -1164,9 +1163,10 @@ func TestSnapshotPerTreeCOW(t *testing.T) {
 		t.Fatal("snapshot not republished after cancel")
 	}
 
-	// Untouched tree (PriceBid, DirGTE) must share storage with old —
-	// asserted behaviorally: it still scans the same (empty) range without
-	// error, and the fired-path still works on the touched tree.
+	// The republished snapshot must leave the untouched (PriceBid, DirGTE)
+	// tree scannable; this tick's Present mask carries only PriceLast, so
+	// Match never evaluates PriceBid — the pin covers republish plus the
+	// fired-path on the touched tree.
 	tick := Tick{Symbol: "S", Last: 150, Present: 1 << uint(PriceLast), TS: 2}
 	e.Match(&tick)
 	n := 0

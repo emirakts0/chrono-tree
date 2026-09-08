@@ -35,7 +35,7 @@
 - **Exactly-Once Firing** — the ACTIVE → TRIGGERED transition is a single CAS on a per-alert slot, so concurrent ticks and stale snapshots cannot double-fire.
 - **Up to 8 Match Dimensions** — caller-owned dimension values (e.g. venue, book tier) fold into the tree key; a fire requires exact equality across all of them.
 - **Bounded Trigger Queue** — a buffered channel delivers triggers with non-blocking, drop-and-count sends; a slow consumer means counted drops, never backpressure into the matching path.
-- **Background Reaper** — sweeps expiries, recycles alert slots, and runs an integrity pass; shutdown is goleak-verified.
+- **Background Reaper** — sweeps expiries, recycles alert slots, and runs an integrity pass that also reclaims removals shed by a full mutation queue (counted in `Stats().MutationDrops`); shutdown is goleak-verified.
 
 ## Architecture
 
@@ -105,7 +105,16 @@ One package, no network, no I/O — everything follows one decision:
 
 ## Benchmarks
 
-(AMD Ryzen 5 5600H, Linux/amd64; `go test -bench='Sweep(100k|1M)(Dims)?' -benchtime=1x -cpu 1,4,12 -benchmem`)
+(AMD Ryzen 5 5600H — 6 cores / 12 threads, so g12 is SMT — Linux/amd64, go1.27.0.)
+
+Protocol: GOMAXPROCS is pinned inside each sub-benchmark (the g1/g4/g12
+suffix carries the value; no `-cpu` flag). `-benchtime=1x -count=3`, single
+process invocation; count 1 of every cell is discarded (the testing
+framework's discovery pass) and the table reports the median of counts 2–3:
+
+```
+go test ./engine -run '^$' -bench='Sweep(100k|1M)(Dims)?$' -benchtime=1x -benchmem -count=3
+```
 
 Sustained-load sweep: 500 symbols, 12 virtual seconds at 200 ticks per
 symbol-second (1.2M ticks per scenario), price-band frontiers advancing so
@@ -115,20 +124,33 @@ tick — ticks/s = 1e9 / ns/op. allocs/op is 0 on every row — matching is
 allocation-free; any nonzero value would be the concurrent COW removal flush,
 not the match path.
 
-| benchmark | cores | ns/op | allocs/op | |
+| benchmark | threads | ns/op | allocs/op | |
 |---|---:|---:|---:|---|
-| Sweep100k | 1 | 109.1 | 0 | 100k alerts across 500 symbols, no match dims |
-| Sweep100k | 4 | 168.1 | 0 | |
-| Sweep100k | 12 | 104.7 | 0 | |
-| Sweep1M | 1 | 608.8 | 0 | 1M alerts across the same 500 symbols — 10× alert density per symbol |
-| Sweep1M | 4 | 766.3 | 0 | |
-| Sweep1M | 12 | 577.9 | 0 | |
-| Sweep100kDims | 1 | 65.55 | 0 | Sweep100k with 2 match dims (9 combinations) — the 9 cells partition each symbol's trees, so each tick scans ~1/9 of the entries: faster than the plain row |
-| Sweep100kDims | 4 | 127.7 | 0 | |
-| Sweep100kDims | 12 | 67.63 | 0 | |
-| Sweep1MDims | 1 | 285.9 | 0 | Sweep1M with 2 match dims (9 combinations) — same partitioning effect |
-| Sweep1MDims | 4 | 332.3 | 0 | |
-| Sweep1MDims | 12 | 224.3 | 0 | |
+| Sweep100k | 1 | 615.6 | 0 | 100k alerts across 500 symbols, no match dims |
+| Sweep100k | 4 | 171.1 | 0 | |
+| Sweep100k | 12 | 106.2 | 0 | |
+| Sweep1M | 1 | 4227 | 0 | 1M alerts across the same 500 symbols — 10× alert density per symbol |
+| Sweep1M | 4 | 753.6 | 0 | |
+| Sweep1M | 12 | 553.5 | 0 | |
+| Sweep100kDims | 1 | 352.8 | 0 | Sweep100k with 2 match dims (9 combinations) — the 9 cells partition each symbol's trees, so each tick scans ~1/9 of the entries: faster than the plain row |
+| Sweep100kDims | 4 | 110.9 | 0 | |
+| Sweep100kDims | 12 | 66.0 | 0 | |
+| Sweep1MDims | 1 | 1109.5 | 0 | Sweep1M with 2 match dims (9 combinations) — same partitioning effect |
+| Sweep1MDims | 4 | 312.1 | 0 | |
+| Sweep1MDims | 12 | 197.8 | 0 | |
+
+### Sustained-load notes
+
+The engine scales with cores on every scenario: g1→g4 is 3.2–5.6× and g1→g12
+is 5.3–7.6× (Sweep1M: 4227 → 753.6 → 553.5 ns/op). Under extreme sustained
+fire rates the bounded deferred-removal queue sheds removals by design —
+never the match path, never trigger delivery — observable via
+`Stats().MutationDrops`: in the Sweep1M scenario above it holds ~0.7% of
+removals at g1 (the flusher keeps pace) and ~24–30% at g4/g12, where one
+flusher cannot keep pace with 12 threads firing; the reaper's integrity
+sweep reclaims shed removals later. (The pre-campaign version of this table
+reported a 1-core column that was a measurement artifact — a testing-framework
+discovery-pass mislabeling — and has been corrected.)
 
 ## Validated in practice
 
