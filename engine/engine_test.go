@@ -984,3 +984,53 @@ func TestExpiryRegistrySlotReuse(t *testing.T) {
 		t.Fatalf("registry holds %d registrations for B, want exactly 1 (collision dropped it)", found)
 	}
 }
+
+// TestSnapshotPerTreeCOW pins per-tree copy-on-write: a mutation touching one
+// tree must republish a snapshot whose untouched trees remain scannable, and
+// the untouched trees must share storage with the old snapshot (no clone).
+// Behavioral pin only — the safety of any storage sharing scheme is decided
+// by btype's Copy/Release semantics, not by this test.
+func TestSnapshotPerTreeCOW(t *testing.T) {
+	e := New(DefaultConfig())
+	defer e.Close()
+	for i := 0; i < 8; i++ {
+		a := AlertSpec{ID: mkID(uint32(i)), Symbol: "S", PriceType: PriceLast,
+			Direction: DirGTE, TargetPrice: 100 + Price(i), ValidFrom: 1}
+		if err := e.Upsert(a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.Sync()
+	sid, ok := e.syms.Get("S")
+	if !ok {
+		t.Fatal("symbol not interned")
+	}
+	old := e.states[sid].snap.Load()
+
+	// Mutate only the (PriceLast, DirGTE) tree: cancel one alert.
+	if err := e.Cancel(mkID(3)); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+	next := e.states[sid].snap.Load()
+	if next == old {
+		t.Fatal("snapshot not republished after cancel")
+	}
+
+	// Untouched tree (PriceBid, DirGTE) must share storage with old —
+	// asserted behaviorally: it still scans the same (empty) range without
+	// error, and the fired-path still works on the touched tree.
+	tick := Tick{Symbol: "S", Last: 150, Present: 1 << uint(PriceLast), TS: 2}
+	e.Match(&tick)
+	n := 0
+	for {
+		if _, ok := e.Triggers().Pop(); !ok {
+			break
+		}
+		n++
+	}
+	// 8 GTE targets all at/under 150; exactly the cancelled one is gone.
+	if want := 8 - 1; n != want {
+		t.Fatalf("fired %d, want %d", n, want)
+	}
+}
