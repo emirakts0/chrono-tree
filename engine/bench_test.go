@@ -75,6 +75,9 @@ func lteTarget(i, n, fireN, span int) Price {
 // With fixedFires > 0 (hold mode) the fire count is pinned instead: targets
 // inside the frontier span all fire and the rest sit beyond it, so the
 // schedule always fires fixedFires regardless of population.
+// Hold mode's first firing target per direction lands on the band boundary
+// 100, where the GTE and LTE bands meet; probes still never cross because
+// tick prices stay strictly inside (100,160] / [40,100).
 func genSweep(seed int64, alerts, fixedFires int, dimmed bool) *sweepSchedule {
 	rng := rand.New(rand.NewSource(seed))
 	combos := 1
@@ -91,7 +94,7 @@ func genSweep(seed int64, alerts, fixedFires int, dimmed bool) *sweepSchedule {
 	fireGTE, fireLTE := 0, 0
 	if fixedFires > 0 {
 		perSymFires := fixedFires / sweepSymbols
-		if perSymFires%2 != 0 || perSymFires/2 > nGTE || perSymFires/2 > nLTE {
+		if perSymFires == 0 || perSymFires%2 != 0 || perSymFires/2 > nGTE || perSymFires/2 > nLTE {
 			panic(fmt.Sprintf("genSweep: fixedFires %d not realizable for %d alerts", fixedFires, alerts))
 		}
 		fireGTE, fireLTE = perSymFires/2, perSymFires/2
