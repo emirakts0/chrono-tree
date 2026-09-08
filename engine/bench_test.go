@@ -329,18 +329,27 @@ func TestSweepHoldOracleMatchesEngine(t *testing.T) {
 // consumer drains out of band; the timed op is a striped worker fan-out
 // replaying the per-symbol tick arrays. b.N is pinned to the schedule
 // length, so run with -benchtime=1x; ns/op is per tick.
-func benchSweep(b *testing.B, alerts int, dimmed bool) {
-	s := genSweep(1, alerts, 0, dimmed)
-	if frac := float64(s.wantFires) / float64(alerts); frac < 0.50 || frac > 0.70 {
-		b.Fatalf("sweep generator out of calibration: fire fraction %.3f (want 0.50–0.70)", frac)
+func benchSweep(b *testing.B, alerts, fixedFires int, dimmed bool) {
+	s := genSweep(1, alerts, fixedFires, dimmed)
+	switch {
+	case fixedFires > 0:
+		if d := s.wantFires - fixedFires; d < -fixedFires/100 || d > fixedFires/100 {
+			b.Fatalf("hold generator out of calibration: fires %d, want %d ±1%%", s.wantFires, fixedFires)
+		}
+	default:
+		if frac := float64(s.wantFires) / float64(alerts); frac < 0.50 || frac > 0.70 {
+			b.Fatalf("sweep generator out of calibration: fire fraction %.3f (want 0.50–0.70)", frac)
+		}
 	}
 	cfg := DefaultConfig()
-	// Queue capacity above any scenario's total possible fires — each alert
-	// fires at most once, so alerts bounds fires — rounded up to the next
-	// power of two.
+	// Queue capacity above any scenario's total possible fires — hold fires
+	// are bounded by fixedFires; standard fires are bounded by alerts —
+	// rounded up to the next power of two.
 	qcap := 1 << 20
-	for qcap < alerts {
-		qcap <<= 1
+	if fixedFires == 0 {
+		for qcap < alerts {
+			qcap <<= 1
+		}
 	}
 	cfg.TriggerQueueSize = qcap
 	if dimmed {
@@ -422,31 +431,64 @@ func benchSweep(b *testing.B, alerts int, dimmed bool) {
 // named sub-benchmarks, pinning parallelism inside each sub-benchmark before
 // the fan-out reads GOMAXPROCS(0). Do not pass -cpu; the gN suffix carries
 // the value.
-func benchSweepPinned(b *testing.B, alerts int, dimmed bool) {
+func benchSweepPinned(b *testing.B, alerts, fixedFires int, dimmed bool) {
 	for _, g := range []int{1, 4, 12} {
 		b.Run(fmt.Sprintf("g%d", g), func(b *testing.B) {
 			old := runtime.GOMAXPROCS(g)
 			defer runtime.GOMAXPROCS(old)
-			benchSweep(b, alerts, dimmed)
+			benchSweep(b, alerts, fixedFires, dimmed)
 		})
 	}
 }
 
 // BenchmarkSweep100k: 100k alerts across 500 symbols, no match dims.
-func BenchmarkSweep100k(b *testing.B) { benchSweepPinned(b, 100_000, false) }
+func BenchmarkSweep100k(b *testing.B) { benchSweepPinned(b, 100_000, 0, false) }
 
 // BenchmarkSweep1M: 1M alerts across 500 symbols.
-func BenchmarkSweep1M(b *testing.B) { benchSweepPinned(b, 1_000_000, false) }
+func BenchmarkSweep1M(b *testing.B) { benchSweepPinned(b, 1_000_000, 0, false) }
 
 // BenchmarkSweep100kDims: the 100k scenario with 2 match dims (9
 // combinations).
-func BenchmarkSweep100kDims(b *testing.B) { benchSweepPinned(b, 100_000, true) }
+func BenchmarkSweep100kDims(b *testing.B) { benchSweepPinned(b, 100_000, 0, true) }
 
 // BenchmarkSweep1MDims: the 1M scenario with 2 match dims (9 combinations).
-func BenchmarkSweep1MDims(b *testing.B) { benchSweepPinned(b, 1_000_000, true) }
+func BenchmarkSweep1MDims(b *testing.B) { benchSweepPinned(b, 1_000_000, 0, true) }
 
 // BenchmarkSweep5M: 5M alerts across the same 500 symbols.
-func BenchmarkSweep5M(b *testing.B) { benchSweepPinned(b, 5_000_000, false) }
+func BenchmarkSweep5M(b *testing.B) { benchSweepPinned(b, 5_000_000, 0, false) }
 
 // BenchmarkSweep5MDims: the 5M scenario with 2 match dims (9 combinations).
-func BenchmarkSweep5MDims(b *testing.B) { benchSweepPinned(b, 5_000_000, true) }
+func BenchmarkSweep5MDims(b *testing.B) { benchSweepPinned(b, 5_000_000, 0, true) }
+
+// BenchmarkSweepHold100k: 100k alerts, total fires pinned at 50k. The hold
+// family isolates resident-population cost (tree depth, cache/heap pressure,
+// slot-arena footprint) from fire/density cost: fires and scan work are
+// constant across the family while population varies.
+func BenchmarkSweepHold100k(b *testing.B) {
+	benchSweepPinned(b, 100_000, sweepHoldFires, false)
+}
+
+// BenchmarkSweepHold1M: 1M alerts, total fires pinned at 50k.
+func BenchmarkSweepHold1M(b *testing.B) {
+	benchSweepPinned(b, 1_000_000, sweepHoldFires, false)
+}
+
+// BenchmarkSweepHold5M: 5M alerts, total fires pinned at 50k.
+func BenchmarkSweepHold5M(b *testing.B) {
+	benchSweepPinned(b, 5_000_000, sweepHoldFires, false)
+}
+
+// BenchmarkSweepHold100kDims: the 100k hold scenario with 2 match dims.
+func BenchmarkSweepHold100kDims(b *testing.B) {
+	benchSweepPinned(b, 100_000, sweepHoldFires, true)
+}
+
+// BenchmarkSweepHold1MDims: the 1M hold scenario with 2 match dims.
+func BenchmarkSweepHold1MDims(b *testing.B) {
+	benchSweepPinned(b, 1_000_000, sweepHoldFires, true)
+}
+
+// BenchmarkSweepHold5MDims: the 5M hold scenario with 2 match dims.
+func BenchmarkSweepHold5MDims(b *testing.B) {
+	benchSweepPinned(b, 5_000_000, sweepHoldFires, true)
+}
