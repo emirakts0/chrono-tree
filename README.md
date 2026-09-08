@@ -28,14 +28,14 @@
 
 ## Features
 
-- **Zero-Allocation Matching** — a tick touches only its symbol's trees: ~0.55–0.75 µs per tick at 1M alerts on 4–12 threads (~4.2 µs single-threaded); 0 allocs/op asserted in tests. Per-tick cost is O(qualifying entries).
-- **Exact Integer Prices** — no floats anywhere. Prices are `int64` base units (`"12.34"` at 2 decimals is `1234`); one conversion boundary (`price`) accepts only values representable exactly, which sub-cent tokens with 8–18 decimals require.
-- **Partitioned B-Tree Index** — 8 trees per symbol (4 price types × 2 directions), keyed by `(dims, price, id)`. Every entry a scan visits qualifies by construction — there are no per-entry filters.
-- **Copy-on-Write Snapshots** — mutations are applied to tree copies and published with one atomic store (RCU style). Ticks never block writers; writers never block ticks.
+- **Zero-Allocation Matching** — a tick touches only its own symbol's trees, so per-tick cost stays nearly flat even as live alerts grow into the millions; the hot path allocates nothing, a guarantee pinned by tests.
+- **Exact Integer Prices** — no floats anywhere: prices are `int64` base units (`"12.34"` is simply `1234`), and conversion accepts only exactly representable values — the guarantee sub-cent tokens demand.
+- **Partitioned B-Tree Index** — trees are partitioned per symbol, price type and direction, so every entry a scan visits qualifies by construction — no per-entry filters.
+- **Copy-on-Write Snapshots** — mutations apply to tree copies and publish with a single atomic store. Ticks never block writers; writers never block ticks.
 - **Exactly-Once Firing** — the ACTIVE → TRIGGERED transition is a single CAS on a per-alert slot, so concurrent ticks and stale snapshots cannot double-fire.
-- **Up to 8 Match Dimensions** — caller-owned dimension values (e.g. venue, book tier) fold into the tree key; a fire requires exact equality across all of them.
-- **Bounded Trigger Queue** — a buffered channel delivers triggers with non-blocking, drop-and-count sends; a slow consumer means counted drops, never backpressure into the matching path.
-- **Background Reaper** — sweeps expiries, recycles alert slots, and runs an integrity pass that also reclaims removals shed by a full mutation queue (counted in `Stats().MutationDrops`); shutdown is goleak-verified.
+- **Up to 8 Match Dimensions** — caller-owned values such as venue or book tier fold into the tree key; a fire requires exact equality across all of them.
+- **Bounded Trigger Queue** — delivery is non-blocking and drop-and-count: a slow consumer means counted drops, never backpressure into the matching path.
+- **Background Reaper** — sweeps expiries, recycles alert slots, and reclaims removals shed by a full mutation queue; shutdown is goleak-verified.
 
 ## Architecture
 
