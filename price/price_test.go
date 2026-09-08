@@ -13,7 +13,8 @@ func TestParseExact(t *testing.T) {
 		want     int64
 		wantErr  error
 	}{
-		// Exactness matrix pinned by spec §4.
+		// Exactness matrix: exactly representable strings parse, inexact
+		// ones error — never silently rounded.
 		{"0.1", 8, 10000000, nil},
 		{"0.100000000", 8, 10000000, nil},          // zeros beyond scale are exact
 		{"0.000000005", 8, 0, ErrPrecisionLoss},    // never silently rounded

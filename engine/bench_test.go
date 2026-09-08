@@ -3,7 +3,6 @@ package engine
 import (
 	"fmt"
 	"math/rand"
-	"os"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -19,9 +18,9 @@ const (
 	sweepBandHi  = 200 // GTE targets live in (sweepBandLo, sweepBandHi]
 )
 
-// sweepSchedule is a fully precomputed sustained-load scenario: per-symbol
-// alert specs, per-symbol tick timelines in firing order, and the oracle —
-// the exact number of alerts the schedule fires, computed by frontier replay.
+// sweepSchedule is a precomputed sustained-load scenario: per-symbol alert
+// specs, per-symbol tick timelines in firing order, and the oracle — the
+// exact number of alerts the schedule fires.
 type sweepSchedule struct {
 	alerts    [][]AlertSpec
 	ticks     [][]Tick
@@ -32,13 +31,12 @@ type sweepSchedule struct {
 // comboDims returns the dim vector for permutation c (0..8): (c/3, c%3).
 func comboDims(c int) [dimMax]uint16 { return Dims(uint16(c/3), uint16(c%3)) }
 
-// genSweep builds the deterministic sweep scenario. alerts is spread evenly
-// over sweepSymbols, half GTE (targets evenly spaced in (100,200]) and half
-// LTE (evenly spaced in [0,100)) — disjoint bands, so a GTE-phase tick's
-// Descend probe never reaches LTE targets and an LTE-phase tick's Ascend
-// probe never reaches GTE targets. Each virtual second advances each
-// frontier by 5% of its band: GTE-phase ticks are uniform in the second's
-// sub-band (lo, hi], LTE-phase ticks mirrored below 100, shuffled together.
+// genSweep builds the deterministic sweep scenario. Alerts are spread evenly
+// over sweepSymbols, half GTE (evenly spaced in (100,200]) and half LTE
+// (evenly spaced in [0,100)) — disjoint bands, so a GTE-phase tick's Descend
+// probe never reaches LTE targets and an LTE-phase tick's Ascend probe never
+// reaches GTE targets. Each virtual second advances each frontier by 5% of
+// its band, with the second's ticks uniform in the sub-band and shuffled.
 // After sweepSeconds the population is ~60% depleted and both trees stay
 // live. The oracle replays the frontiers (running max per GTE dim combo,
 // running min per LTE dim combo) and counts exactly which alerts fire.
@@ -164,9 +162,8 @@ func TestSweepGeneratorDeterministic(t *testing.T) {
 	}
 }
 
-// TestSweepGeneratorCalibration checks the campaign property: every scenario
-// fires 50–70% of its population (~60% target) and schedules exactly
-// 500 × 200 × 12 = 1.2M ticks.
+// TestSweepGeneratorCalibration checks that every scenario fires 50–70% of
+// its population and schedules exactly 500 × 200 × 12 = 1.2M ticks.
 func TestSweepGeneratorCalibration(t *testing.T) {
 	scenarios := []struct {
 		alerts int
@@ -190,10 +187,9 @@ func TestSweepGeneratorCalibration(t *testing.T) {
 	}
 }
 
-// TestSweepOracleMatchesEngine is the harness's ground-truth check: feeding
-// the schedule to a real engine must fire exactly the alerts the oracle
-// predicts, with zero drops. If this fails, either the generator or the
-// oracle is wrong — the benchmark numbers would be meaningless.
+// TestSweepOracleMatchesEngine is the ground-truth check: feeding the
+// schedule to a real engine must fire exactly the alerts the oracle
+// predicts, with zero drops.
 func TestSweepOracleMatchesEngine(t *testing.T) {
 	for _, dimmed := range []bool{false, true} {
 		s := genSweep(1, 5_000, dimmed)
@@ -237,31 +233,11 @@ func TestSweepOracleMatchesEngine(t *testing.T) {
 	}
 }
 
-// benchSink keeps the baseline probe's loop from being optimized away.
-var benchSink Price
-
 // benchSweep runs one full sustained-load sweep as the benchmark body. The
-// schedule is precomputed (Task 1), the engine preloaded and synced, and a
-// trigger consumer drains out of band; the timed op is a striped worker
-// fan-out replaying the per-symbol tick arrays. b.N is pinned to the
-// schedule length, so run with -benchtime=1x. ns/op is per tick;
-// ticks/s = 1e9 / ns/op.
-//
-// Protocol: run via benchSweepPinned with `-benchtime=1x -count=3` and NO
-// -cpu flag; the gN sub-benchmark suffix is the pinned GOMAXPROCS. Discard
-// count 1 of every cell — the framework's discovery pass, which under
-// go1.27.0 runs at whatever ambient GOMAXPROCS the process has (with a
-// multi-value -cpu list that is the last value, and a b.N-overriding body
-// gets that run printed as its first row) — and take the median of counts
-// 2–3. GOMAXPROCS is pinned inside each sub-benchmark so parallelism is
-// correct by construction, discovery pass included.
-//
-// Workers are spawned manually rather than via b.RunParallel: RunParallel's
-// contract requires the body to exhaust pb.Next() (Go 1.27 fatals otherwise),
-// and draining 1.2M iterations through the framework's shared atomic cursor
-// would put a contended counter in the timed path — exactly the
-// generator-overhead contamination this benchmark exists to avoid. Manual
-// fan-out keyed on GOMAXPROCS(0) matches the pin with zero shared state.
+// schedule is precomputed, the engine preloaded and synced, and a trigger
+// consumer drains out of band; the timed op is a striped worker fan-out
+// replaying the per-symbol tick arrays. b.N is pinned to the schedule
+// length, so run with -benchtime=1x; ns/op is per tick.
 func benchSweep(b *testing.B, alerts int, dimmed bool) {
 	s := genSweep(1, alerts, dimmed)
 	if frac := float64(s.wantFires) / float64(alerts); frac < 0.50 || frac > 0.70 {
@@ -269,11 +245,8 @@ func benchSweep(b *testing.B, alerts int, dimmed bool) {
 	}
 	cfg := DefaultConfig()
 	// Queue capacity above any scenario's total possible fires — each alert
-	// fires at most once, so alerts bounds fires; rounded up to the next
-	// power of two (1M stays 1<<20, 5M gets 1<<23). The zero-drop assertion
-	// must measure engine/harness bugs, not whether the single consumer kept
-	// pace in this process (the 64k default overflowed deterministically on
-	// Sweep1MDims in the full campaign).
+	// fires at most once, so alerts bounds fires — rounded up to the next
+	// power of two.
 	qcap := 1 << 20
 	for qcap < alerts {
 		qcap <<= 1
@@ -294,8 +267,8 @@ func benchSweep(b *testing.B, alerts int, dimmed bool) {
 	e.Sync()
 
 	// run drives the striped fan-out under the benchmark timer: worker w
-	// replays symbols w, w+workers, ... — identical per-symbol timelines, so
-	// work is perfectly balanced and no worker shares a cursor.
+	// replays symbols w, w+workers, ..., so work is perfectly balanced and
+	// no worker shares a cursor.
 	workers := runtime.GOMAXPROCS(0)
 	run := func(match func(*Tick)) {
 		b.ResetTimer()
@@ -318,14 +291,6 @@ func benchSweep(b *testing.B, alerts int, dimmed bool) {
 
 	b.N = s.total
 	b.ReportAllocs()
-
-	// Generator-overhead probe (debug, not part of the campaign): the same
-	// striped fan-out with the engine call removed. Its ns/op is the floor
-	// every real number must dominate.
-	if os.Getenv("CHRONO_BENCH_BASELINE") == "1" {
-		run(func(t *Tick) { benchSink = t.Last })
-		return
-	}
 
 	done := make(chan struct{})
 	finished := make(chan struct{})
@@ -360,23 +325,12 @@ func benchSweep(b *testing.B, alerts int, dimmed bool) {
 	if d := e.Triggers().Dropped(); d != 0 {
 		b.Fatalf("%d triggers dropped — fire calibration invalid", d)
 	}
-	// Shedding log (opt-in, outside the timed region). Removals ≈ fires in
-	// these scenarios — every fired AutoDeactivate alert queues one removal —
-	// so wantFires is the drop-percentage denominator.
-	if os.Getenv("CHRONO_BENCH_DROPS") == "1" {
-		st := e.Stats()
-		b.Logf("mutation drops: %d (%.1f%% of %d removals)", st.MutationDrops,
-			100*float64(st.MutationDrops)/float64(s.wantFires), s.wantFires)
-	}
 }
 
 // benchSweepPinned runs the sweep scenario at GOMAXPROCS 1, 4, and 12 as
-// named sub-benchmarks. Parallelism is pinned inside each sub-benchmark
-// (before benchSweep's fan-out reads GOMAXPROCS(0)) so the harness cannot
-// be poisoned by ambient scheduler state: a multi-value -cpu list under
-// go1.27.0 executes the framework's discovery pass at the last -cpu value's
-// GOMAXPROCS, and a b.N-overriding body gets that run reported as a result.
-// Do not pass -cpu to the campaign; the gN suffix carries the value.
+// named sub-benchmarks, pinning parallelism inside each sub-benchmark before
+// the fan-out reads GOMAXPROCS(0). Do not pass -cpu; the gN suffix carries
+// the value.
 func benchSweepPinned(b *testing.B, alerts int, dimmed bool) {
 	for _, g := range []int{1, 4, 12} {
 		b.Run(fmt.Sprintf("g%d", g), func(b *testing.B) {
@@ -390,19 +344,17 @@ func benchSweepPinned(b *testing.B, alerts int, dimmed bool) {
 // BenchmarkSweep100k: 100k alerts across 500 symbols, no match dims.
 func BenchmarkSweep100k(b *testing.B) { benchSweepPinned(b, 100_000, false) }
 
-// BenchmarkSweep1M: 1M alerts across 500 symbols — 10× the alert density per
-// symbol, so each tick fires ~10× more alerts than the 100k row.
+// BenchmarkSweep1M: 1M alerts across 500 symbols.
 func BenchmarkSweep1M(b *testing.B) { benchSweepPinned(b, 1_000_000, false) }
 
 // BenchmarkSweep100kDims: the 100k scenario with 2 match dims (9
-// combinations); alerts and tick load are split evenly across the cells.
+// combinations).
 func BenchmarkSweep100kDims(b *testing.B) { benchSweepPinned(b, 100_000, true) }
 
 // BenchmarkSweep1MDims: the 1M scenario with 2 match dims (9 combinations).
 func BenchmarkSweep1MDims(b *testing.B) { benchSweepPinned(b, 1_000_000, true) }
 
-// BenchmarkSweep5M: 5M alerts across the same 500 symbols — 50× the 100k
-// alert density and the campaign's memory ceiling (~4.5 GB resident).
+// BenchmarkSweep5M: 5M alerts across the same 500 symbols.
 func BenchmarkSweep5M(b *testing.B) { benchSweepPinned(b, 5_000_000, false) }
 
 // BenchmarkSweep5MDims: the 5M scenario with 2 match dims (9 combinations).

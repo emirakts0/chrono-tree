@@ -68,7 +68,7 @@ func TestFormatExact(t *testing.T) {
 	}
 }
 
-// TestRoundTripPins pins both spec invariants: Format∘Parse normalizes, and
+// TestRoundTripPins pins both round-trip invariants: Format∘Parse normalizes, and
 // Parse∘Format is the identity for every in-range value.
 func TestRoundTripPins(t *testing.T) {
 	rng := rand.New(rand.NewSource(42))
