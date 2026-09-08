@@ -106,7 +106,7 @@ One package, no network, no I/O — everything follows one decision:
 ## Benchmarks
 
 ```
-go test ./engine -run '^$' -bench='Sweep(100k|1M)(Dims)?$' -benchtime=1x -benchmem -count=3
+go test ./engine -run '^$' -bench='Sweep(100k|1M|5M)(Dims)?$' -benchtime=1x -benchmem -count=3
 ```
 
 AMD Ryzen 5 5600H (6 cores / 12 threads; g12 is SMT), Linux/amd64, go1.27.0.
@@ -119,12 +119,18 @@ AMD Ryzen 5 5600H (6 cores / 12 threads; g12 is SMT), Linux/amd64, go1.27.0.
 | Sweep1M | 1 | 4227 | 178 | 0 | 1M alerts across the same 500 symbols |
 | Sweep1M | 4 | 753.6 | 217 | 0 | |
 | Sweep1M | 12 | 553.5 | 227 | 0 | |
+| Sweep5M | 1 | 13035 | 683 | 0 | 5M alerts across the same 500 symbols |
+| Sweep5M | 4 | 3351.5 | 726 | 0 | |
+| Sweep5M | 12 | 2632.5 | 557 | 0 | |
 | Sweep100kDims | 1 | 352.8 | 23 | 0 | Sweep100k with 2 match dims |
 | Sweep100kDims | 4 | 110.9 | 46 | 0 | |
 | Sweep100kDims | 12 | 66.0 | 34 | 0 | |
 | Sweep1MDims | 1 | 1109.5 | 164 | 0 | Sweep1M with 2 match dims |
 | Sweep1MDims | 4 | 312.1 | 267 | 0 | |
 | Sweep1MDims | 12 | 197.8 | 153 | 0 | |
+| Sweep5MDims | 1 | 3993.5 | 565 | 0 | Sweep5M with 2 match dims |
+| Sweep5MDims | 4 | 1218 | 558 | 0 | |
+| Sweep5MDims | 12 | 805.5 | 312 | 0 | |
 
 > **0 allocs/op, nonzero B/op:** `Match` itself never allocates — pinned by
 > `testing.AllocsPerRun` in `TestMatchZeroAllocs`/`TestMatchDimsZeroAllocs`.

@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// Sweep campaign constants (docs/superpowers/specs/2026-09-07-sweep-benchmarks-design.md).
+// Sweep campaign constants.
 const (
 	sweepSymbols = 500 // SYM000..SYM499
 	sweepSeconds = 12  // virtual seconds per run
@@ -172,7 +172,8 @@ func TestSweepGeneratorCalibration(t *testing.T) {
 		alerts int
 		dimmed bool
 	}{
-		{100_000, false}, {1_000_000, false}, {100_000, true}, {1_000_000, true},
+		{100_000, false}, {1_000_000, false}, {5_000_000, false},
+		{100_000, true}, {1_000_000, true}, {5_000_000, true},
 	}
 	for _, sc := range scenarios {
 		if testing.Short() && sc.alerts > 200_000 {
@@ -267,11 +268,17 @@ func benchSweep(b *testing.B, alerts int, dimmed bool) {
 		b.Fatalf("sweep generator out of calibration: fire fraction %.3f (want 0.50–0.70)", frac)
 	}
 	cfg := DefaultConfig()
-	// Queue capacity above any scenario's total possible fires (1M alerts):
-	// the zero-drop assertion must measure engine/harness bugs, not whether
-	// the single consumer kept pace in this process (the 64k default
-	// overflowed deterministically on Sweep1MDims in the full campaign).
-	cfg.TriggerQueueSize = 1 << 20
+	// Queue capacity above any scenario's total possible fires — each alert
+	// fires at most once, so alerts bounds fires; rounded up to the next
+	// power of two (1M stays 1<<20, 5M gets 1<<23). The zero-drop assertion
+	// must measure engine/harness bugs, not whether the single consumer kept
+	// pace in this process (the 64k default overflowed deterministically on
+	// Sweep1MDims in the full campaign).
+	qcap := 1 << 20
+	for qcap < alerts {
+		qcap <<= 1
+	}
+	cfg.TriggerQueueSize = qcap
 	if dimmed {
 		cfg.Dims = []string{"segment", "tier"}
 	}
@@ -393,3 +400,10 @@ func BenchmarkSweep100kDims(b *testing.B) { benchSweepPinned(b, 100_000, true) }
 
 // BenchmarkSweep1MDims: the 1M scenario with 2 match dims (9 combinations).
 func BenchmarkSweep1MDims(b *testing.B) { benchSweepPinned(b, 1_000_000, true) }
+
+// BenchmarkSweep5M: 5M alerts across the same 500 symbols — 50× the 100k
+// alert density and the campaign's memory ceiling (~4.5 GB resident).
+func BenchmarkSweep5M(b *testing.B) { benchSweepPinned(b, 5_000_000, false) }
+
+// BenchmarkSweep5MDims: the 5M scenario with 2 match dims (9 combinations).
+func BenchmarkSweep5MDims(b *testing.B) { benchSweepPinned(b, 5_000_000, true) }
