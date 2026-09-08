@@ -16,6 +16,10 @@ const (
 	sweepTPS     = 200 // ticks per symbol per virtual second; 1.2M total
 	sweepBandLo  = 100 // LTE targets live in [0, sweepBandLo)
 	sweepBandHi  = 200 // GTE targets live in (sweepBandLo, sweepBandHi]
+
+	// sweepHoldFires pins total fires in hold scenarios (genSweep
+	// fixedFires > 0), so ns/op varies with the resident population only.
+	sweepHoldFires = 50_000
 )
 
 // sweepSchedule is a precomputed sustained-load scenario: per-symbol alert
@@ -31,6 +35,34 @@ type sweepSchedule struct {
 // comboDims returns the dim vector for permutation c (0..8): (c/3, c%3).
 func comboDims(c int) [dimMax]uint16 { return Dims(uint16(c/3), uint16(c%3)) }
 
+// gteTarget places GTE target i of n. Standard mode (fireN 0) spreads all
+// targets over the full band. Hold mode puts the first fireN targets inside
+// the frontier span (they all fire) and the rest one unit beyond it — the +1
+// keeps integer truncation from landing a non-firing target on the span's
+// top price, which the frontier does reach.
+func gteTarget(i, n, fireN, span int) Price {
+	if fireN == 0 {
+		return Price(sweepBandLo + (sweepBandHi-sweepBandLo)*(2*i+1)/(2*n))
+	}
+	if i < fireN {
+		return Price(sweepBandLo + span*(2*i+1)/(2*fireN))
+	}
+	j, rest := i-fireN, n-fireN
+	return Price(sweepBandLo + span + 1 + (sweepBandHi-sweepBandLo-span-1)*(2*j+1)/(2*rest))
+}
+
+// lteTarget mirrors gteTarget below the band midpoint.
+func lteTarget(i, n, fireN, span int) Price {
+	if fireN == 0 {
+		return Price(sweepBandLo - sweepBandLo*(2*i+1)/(2*n))
+	}
+	if i < fireN {
+		return Price(sweepBandLo - span*(2*i+1)/(2*fireN))
+	}
+	j, rest := i-fireN, n-fireN
+	return Price((sweepBandLo - span - 1) * (2*j + 1) / (2 * rest))
+}
+
 // genSweep builds the deterministic sweep scenario. Alerts are spread evenly
 // over sweepSymbols, half GTE (evenly spaced in (100,200]) and half LTE
 // (evenly spaced in [0,100)) — disjoint bands, so a GTE-phase tick's Descend
@@ -40,7 +72,10 @@ func comboDims(c int) [dimMax]uint16 { return Dims(uint16(c/3), uint16(c%3)) }
 // After sweepSeconds the population is ~60% depleted and both trees stay
 // live. The oracle replays the frontiers (running max per GTE dim combo,
 // running min per LTE dim combo) and counts exactly which alerts fire.
-func genSweep(seed int64, alerts int, dimmed bool) *sweepSchedule {
+// With fixedFires > 0 (hold mode) the fire count is pinned instead: targets
+// inside the frontier span all fire and the rest sit beyond it, so the
+// schedule always fires fixedFires regardless of population.
+func genSweep(seed int64, alerts, fixedFires int, dimmed bool) *sweepSchedule {
 	rng := rand.New(rand.NewSource(seed))
 	combos := 1
 	if dimmed {
@@ -50,6 +85,20 @@ func genSweep(seed int64, alerts int, dimmed bool) *sweepSchedule {
 	nGTE := perSym / 2
 	nLTE := perSym - nGTE
 	advance := (sweepBandHi - sweepBandLo) / 20 // 5% of a 100-wide band
+	// Hold mode (fixedFires > 0) pins the fire count: fireGTE/fireLTE
+	// targets per symbol sit inside the frontier span and all fire; the
+	// rest sit beyond the final frontier, where no scan ever reaches.
+	fireGTE, fireLTE := 0, 0
+	if fixedFires > 0 {
+		perSymFires := fixedFires / sweepSymbols
+		if perSymFires%2 != 0 || perSymFires/2 > nGTE || perSymFires/2 > nLTE {
+			panic(fmt.Sprintf("genSweep: fixedFires %d not realizable for %d alerts", fixedFires, alerts))
+		}
+		fireGTE, fireLTE = perSymFires/2, perSymFires/2
+	}
+	// span is the frontier's total travel: every GTE target in
+	// (100, 100+span] and LTE target in [100-span, 100) is crossed.
+	span := advance * sweepSeconds
 
 	s := &sweepSchedule{
 		alerts: make([][]AlertSpec, sweepSymbols),
@@ -60,7 +109,7 @@ func genSweep(seed int64, alerts int, dimmed bool) *sweepSchedule {
 		idBase := uint32(sym * perSym)
 
 		for i := 0; i < nGTE; i++ {
-			t := Price(sweepBandLo + (sweepBandHi-sweepBandLo)*(2*i+1)/(2*nGTE))
+			t := gteTarget(i, nGTE, fireGTE, span)
 			s.alerts[sym] = append(s.alerts[sym], AlertSpec{
 				ID: mkID(idBase + uint32(i)), Symbol: symName,
 				PriceType: PriceLast, Direction: DirGTE, TargetPrice: t,
@@ -68,7 +117,7 @@ func genSweep(seed int64, alerts int, dimmed bool) *sweepSchedule {
 			})
 		}
 		for i := 0; i < nLTE; i++ {
-			t := Price(sweepBandLo - sweepBandLo*(2*i+1)/(2*nLTE))
+			t := lteTarget(i, nLTE, fireLTE, span)
 			s.alerts[sym] = append(s.alerts[sym], AlertSpec{
 				ID: mkID(idBase + uint32(nGTE+i)), Symbol: symName,
 				PriceType: PriceLast, Direction: DirLTE, TargetPrice: t,
@@ -140,49 +189,69 @@ func genSweep(seed int64, alerts int, dimmed bool) *sweepSchedule {
 // TestSweepGeneratorDeterministic pins the schedule's determinism: the same
 // seed must produce identical alerts, ticks, and oracle count.
 func TestSweepGeneratorDeterministic(t *testing.T) {
-	a := genSweep(1, 20_000, false)
-	b := genSweep(1, 20_000, false)
-	if a.total != b.total || a.wantFires != b.wantFires {
-		t.Fatalf("totals diverge: (%d,%d) vs (%d,%d)", a.total, a.wantFires, b.total, b.wantFires)
-	}
-	for sym := range a.ticks {
-		if len(a.alerts[sym]) != len(b.alerts[sym]) || len(a.ticks[sym]) != len(b.ticks[sym]) {
-			t.Fatalf("symbol %d: length mismatch", sym)
+	for _, tc := range []struct {
+		alerts     int
+		fixedFires int
+	}{{20_000, 0}, {100_000, sweepHoldFires}} {
+		a := genSweep(1, tc.alerts, tc.fixedFires, false)
+		b := genSweep(1, tc.alerts, tc.fixedFires, false)
+		if a.total != b.total || a.wantFires != b.wantFires {
+			t.Fatalf("fires=%d: totals diverge: (%d,%d) vs (%d,%d)",
+				tc.fixedFires, a.total, a.wantFires, b.total, b.wantFires)
 		}
-		for i := range a.ticks[sym] {
-			if a.ticks[sym][i] != b.ticks[sym][i] {
-				t.Fatalf("symbol %d tick %d diverged", sym, i)
+		for sym := range a.ticks {
+			if len(a.alerts[sym]) != len(b.alerts[sym]) || len(a.ticks[sym]) != len(b.ticks[sym]) {
+				t.Fatalf("fires=%d: symbol %d: length mismatch", tc.fixedFires, sym)
 			}
-		}
-		for i := range a.alerts[sym] {
-			if a.alerts[sym][i] != b.alerts[sym][i] {
-				t.Fatalf("symbol %d alert %d diverged", sym, i)
+			for i := range a.ticks[sym] {
+				if a.ticks[sym][i] != b.ticks[sym][i] {
+					t.Fatalf("fires=%d: symbol %d tick %d diverged", tc.fixedFires, sym, i)
+				}
+			}
+			for i := range a.alerts[sym] {
+				if a.alerts[sym][i] != b.alerts[sym][i] {
+					t.Fatalf("fires=%d: symbol %d alert %d diverged", tc.fixedFires, sym, i)
+				}
 			}
 		}
 	}
 }
 
-// TestSweepGeneratorCalibration checks that every scenario fires 50–70% of
-// its population and schedules exactly 500 × 200 × 12 = 1.2M ticks.
+// TestSweepGeneratorCalibration checks that every standard scenario fires
+// 50–70% of its population, every hold scenario fires 50k ± 1%, and all
+// schedule exactly 500 × 200 × 12 = 1.2M ticks.
 func TestSweepGeneratorCalibration(t *testing.T) {
 	scenarios := []struct {
-		alerts int
-		dimmed bool
+		alerts     int
+		fixedFires int
+		dimmed     bool
 	}{
-		{100_000, false}, {1_000_000, false}, {5_000_000, false},
-		{100_000, true}, {1_000_000, true}, {5_000_000, true},
+		{100_000, 0, false}, {1_000_000, 0, false}, {5_000_000, 0, false},
+		{100_000, 0, true}, {1_000_000, 0, true}, {5_000_000, 0, true},
+		{100_000, sweepHoldFires, false}, {1_000_000, sweepHoldFires, false}, {5_000_000, sweepHoldFires, false},
+		{100_000, sweepHoldFires, true}, {1_000_000, sweepHoldFires, true}, {5_000_000, sweepHoldFires, true},
 	}
 	for _, sc := range scenarios {
 		if testing.Short() && sc.alerts > 200_000 {
 			continue
 		}
-		s := genSweep(1, sc.alerts, sc.dimmed)
+		s := genSweep(1, sc.alerts, sc.fixedFires, sc.dimmed)
 		if want := sweepSymbols * sweepTPS * sweepSeconds; s.total != want {
-			t.Errorf("alerts=%d dimmed=%v: total ticks %d, want %d", sc.alerts, sc.dimmed, s.total, want)
+			t.Errorf("alerts=%d fires=%d dimmed=%v: total ticks %d, want %d",
+				sc.alerts, sc.fixedFires, sc.dimmed, s.total, want)
 		}
-		frac := float64(s.wantFires) / float64(sc.alerts)
-		if frac < 0.50 || frac > 0.70 {
-			t.Errorf("alerts=%d dimmed=%v: fire fraction %.3f, want 0.50–0.70", sc.alerts, sc.dimmed, frac)
+		switch {
+		case sc.fixedFires > 0:
+			if d := s.wantFires - sc.fixedFires; d < -sc.fixedFires/100 || d > sc.fixedFires/100 {
+				t.Errorf("alerts=%d dimmed=%v: fires %d, want %d ±1%%",
+					sc.alerts, sc.dimmed, s.wantFires, sc.fixedFires)
+			}
+		default:
+			frac := float64(s.wantFires) / float64(sc.alerts)
+			if frac < 0.50 || frac > 0.70 {
+				t.Errorf("alerts=%d dimmed=%v: fire fraction %.3f, want 0.50–0.70",
+					sc.alerts, sc.dimmed, frac)
+			}
 		}
 	}
 }
@@ -192,7 +261,7 @@ func TestSweepGeneratorCalibration(t *testing.T) {
 // predicts, with zero drops.
 func TestSweepOracleMatchesEngine(t *testing.T) {
 	for _, dimmed := range []bool{false, true} {
-		s := genSweep(1, 5_000, dimmed)
+		s := genSweep(1, 5_000, 0, dimmed)
 		frac := float64(s.wantFires) / 5_000
 		if frac < 0.50 || frac > 0.70 {
 			t.Fatalf("dimmed=%v: fire fraction %.3f, want 0.50–0.70", dimmed, frac)
@@ -239,7 +308,7 @@ func TestSweepOracleMatchesEngine(t *testing.T) {
 // replaying the per-symbol tick arrays. b.N is pinned to the schedule
 // length, so run with -benchtime=1x; ns/op is per tick.
 func benchSweep(b *testing.B, alerts int, dimmed bool) {
-	s := genSweep(1, alerts, dimmed)
+	s := genSweep(1, alerts, 0, dimmed)
 	if frac := float64(s.wantFires) / float64(alerts); frac < 0.50 || frac > 0.70 {
 		b.Fatalf("sweep generator out of calibration: fire fraction %.3f (want 0.50–0.70)", frac)
 	}
