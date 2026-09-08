@@ -107,6 +107,7 @@ One package, no network, no I/O — everything follows one decision:
 
 ```
 go test ./engine -run '^$' -bench='Sweep(100k|1M|5M)(Dims)?$' -benchtime=1x -benchmem -count=3
+go test ./engine -run '^$' -bench='SweepHold(100k|1M|5M)(Dims)?$' -benchtime=1x -benchmem -count=3
 ```
 
 AMD Ryzen 5 5600H (6 cores / 12 threads; g12 is SMT), Linux/amd64, go1.27.0.
@@ -138,6 +139,33 @@ AMD Ryzen 5 5600H (6 cores / 12 threads; g12 is SMT), Linux/amd64, go1.27.0.
 > reaper bookkeeping) that scales with the fire rate, not the tick rate;
 > `allocs/op` reads 0 only because that churn amortizes to well under one
 > allocation per tick.
+
+Fires pinned at 50k across all six (`SweepHold*`): population varies, work
+done does not. Per-tick cost stays nearly flat — 100k → 5M is only ~1.1–1.5×
+(e.g. plain g1: 555.5 → 648.2 ns) — so resident-population cost (tree depth,
+cache/heap pressure, slot-arena footprint) is minor; the far steeper growth in
+the table above is fire/density cost.
+
+| benchmark | threads | ns/op | B/op | allocs/op | |
+|---|---:|---:|---:|---:|---|
+| SweepHold100k | 1 | 555.5 | 24 | 0 | 100k alerts, 50k fires, no match dims |
+| SweepHold100k | 4 | 173.9 | 36 | 0 | |
+| SweepHold100k | 12 | 103.8 | 45 | 0 | |
+| SweepHold1M | 1 | 587.3 | 25 | 0 | 1M alerts, 50k fires |
+| SweepHold1M | 4 | 185.2 | 48 | 0 | |
+| SweepHold1M | 12 | 115.2 | 45 | 0 | |
+| SweepHold5M | 1 | 648.2 | 33 | 0 | 5M alerts, 50k fires |
+| SweepHold5M | 4 | 194.8 | 100 | 0 | |
+| SweepHold5M | 12 | 147.2 | 59 | 0 | |
+| SweepHold100kDims | 1 | 362.0 | 21 | 0 | SweepHold100k with 2 match dims |
+| SweepHold100kDims | 4 | 130.1 | 25 | 0 | |
+| SweepHold100kDims | 12 | 88.0 | 66 | 0 | |
+| SweepHold1MDims | 1 | 483.6 | 78 | 0 | SweepHold1M with 2 match dims |
+| SweepHold1MDims | 4 | 157.3 | 102 | 0 | |
+| SweepHold1MDims | 12 | 98.9 | 88 | 0 | |
+| SweepHold5MDims | 1 | 553.6 | 106 | 0 | SweepHold5M with 2 match dims |
+| SweepHold5MDims | 4 | 184.4 | 107 | 0 | |
+| SweepHold5MDims | 12 | 117.6 | 64 | 0 | |
 
 Sustained-load sweep: 500 symbols, 12 virtual seconds at 200 ticks per
 symbol-second (1.2M ticks per scenario), price-band frontiers advancing so
