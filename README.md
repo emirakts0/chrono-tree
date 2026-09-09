@@ -43,7 +43,7 @@
 flowchart LR
     T["Market Tick"]
 
-    subgraph DP["DATA PLANE · lock-free"]
+    subgraph DP["DATA PLANE · non-blocking hot path"]
         direction TB
         IN["Symbol Interning<br/>string → uint32, 0 alloc"]
         SNAP["Snapshot Load<br/>atomic.Pointer"]
@@ -65,12 +65,14 @@ flowchart LR
         RP["Reaper<br/>expiry · slot recycle"]
     end
 
-    OUT["Consumer<br/>Pop / PopBatch"]
+    OUT["Consumer<br/>Pop / PopBatch / C"]
 
     T -- "Match()" --> IN
     RING --> OUT
     FL -. "atomic publish" .-> SNAP
     RP -. "removals" .-> MQ
+    CAS -. "deferred removal (trySubmit)" .-> MQ
+    API -. "expiry registration (expQ)" .-> RP
 
     classDef input fill:#FFDE17,stroke:#111,stroke-width:2px,color:#111
     classDef data fill:#69D2E7,stroke:#111,stroke-width:2px,color:#111
