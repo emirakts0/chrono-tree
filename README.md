@@ -114,6 +114,13 @@ go test ./engine -run '^$' -bench='Sweep(100k|1M|5M)(Dims)?$' -benchtime=1x -ben
 
 AMD Ryzen 5 5600H (6 cores / 12 threads; g12 is SMT), Linux/amd64, go1.27.0.
 
+> **0 allocs/op, nonzero B/op:** `Match` itself never allocates — pinned by
+> `testing.AllocsPerRun` in `TestMatchZeroAllocs`/`TestMatchDimsZeroAllocs`.
+> The `B/op` is background control-plane churn (flusher COW node clones,
+> reaper bookkeeping) that scales with the fire rate, not the tick rate;
+> `allocs/op` reads 0 only because that churn amortizes to well under one
+> allocation per tick.
+
 Fires pinned at 50k across all six (`SweepHold*`): population varies, work
 done does not. Per-tick cost stays nearly flat — 100k → 5M is only ~1.1–1.55×
 (e.g. plain g1: 555.5 → 648.2 ns) — so resident-population cost (tree depth,
@@ -165,13 +172,6 @@ rate grow with alert density.
 | Sweep5MDims | 1 | 3993.5 | 565 | 0 | Sweep5M with 2 match dims |
 | Sweep5MDims | 4 | 1218 | 558 | 0 | |
 | Sweep5MDims | 12 | 805.5 | 312 | 0 | |
-
-> **0 allocs/op, nonzero B/op:** `Match` itself never allocates — pinned by
-> `testing.AllocsPerRun` in `TestMatchZeroAllocs`/`TestMatchDimsZeroAllocs`.
-> The `B/op` is background control-plane churn (flusher COW node clones,
-> reaper bookkeeping) that scales with the fire rate, not the tick rate;
-> `allocs/op` reads 0 only because that churn amortizes to well under one
-> allocation per tick.
 
 Sustained-load sweep, both families: 500 symbols, 12 virtual seconds at 200
 ticks per symbol-second (1.2M ticks per scenario), price-band frontiers
