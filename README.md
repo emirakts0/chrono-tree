@@ -180,5 +180,5 @@ advancing. A consumer drains triggers out of band.
 ---
 
 <p align="center">
-  <a href="mailto:emirakts00@gmail.com">emirakts0@gmail.com</a>
+  <a href="mailto:emirakts00@gmail.com">emirakts00@gmail.com</a>
 </p>
