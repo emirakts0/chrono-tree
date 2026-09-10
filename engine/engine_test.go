@@ -948,6 +948,68 @@ func TestDuplicateRemovalDoesNotAliasSlots(t *testing.T) {
 	}
 }
 
+// TestSameKeyUpsertRacingFireRemoval pins the delayed-removal aliasing bug:
+// fire CASes the slot ACTIVE→TRIGGERED but defers its mutRemove; a same-key
+// Upsert (only Expires differs) landing in that window used to be deleted by
+// the delayed removal, leaving the alert live in the ledger but invisible to
+// Match. The comparator's idx tie-break keeps handouts distinct, so the
+// removal deletes only its own record and the replacement's insert lands.
+func TestSameKeyUpsertRacingFireRemoval(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	e := New(DefaultConfig())
+	defer e.Close()
+
+	// Alert live and published.
+	spec := testSpec(1, "USDTRY", PriceBid, DirGTE, 425)
+	if err := e.Upsert(spec); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+	e.mu.Lock()
+	ref := e.refs[AlertID{1}]
+	e.mu.Unlock()
+	sid := ref.sid
+	oldEnt := ref.e
+	oldGen := e.slots.gen(oldEnt.idx)
+
+	// Fire's first half: CAS ACTIVE→TRIGGERED (exactly what fire does), then
+	// "pause" before trySubmit of the deferred removal. This reproduces the
+	// queue order the real preemption window yields: replacement insert first,
+	// delayed old-handout removal second.
+	if !e.slots.cas(oldEnt.idx, StatusActive, StatusTriggered) {
+		t.Fatal("setup: CAS ACTIVE→TRIGGERED failed")
+	}
+
+	// Same-key upsert in the pause window. Slot is terminal, so Upsert queues
+	// no replace-removal — only the insert of the new handout.
+	spec.Expires = 1 << 40
+	if err := e.Upsert(spec); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+
+	// The delayed fire removal finally lands — after the replacement's insert.
+	e.submit(mutation{op: mutRemove, sid: sid, e: oldEnt, gen: oldGen})
+	e.Sync()
+
+	// The replacement is live and must be indexed exactly once.
+	if s := e.Stats(); s.Live != 1 {
+		t.Fatalf("Live=%d, want 1", s.Live)
+	}
+	ti := treeIndex(PriceBid, DirGTE)
+	if n := e.states[sid].snap.Load().trees[ti].Len(); n != 1 {
+		t.Fatalf("tree Len=%d, want 1 (replacement must be indexed)", n)
+	}
+	// And it must fire on a crossing tick.
+	e.Match(&Tick{Symbol: "USDTRY", Bid: 430, Present: 1 << uint(PriceBid), TS: 2})
+	for _, tr := range drainTriggers(e) {
+		if tr.ID == (AlertID{1}) {
+			return
+		}
+	}
+	t.Fatal("replacement alert silently lost: live in ledger, invisible to Match")
+}
+
 // TestMatchOverLimitSymbolNoPanic pins the Match bounds bug: a symbol
 // interned past MaxSymbols is rejected by stateFor but stays in the
 // interner, so its sid indexes past states and Match used to panic.
