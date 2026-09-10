@@ -114,7 +114,18 @@ func makeEntryCompare(width uint8) func(a, b entry) int {
 		if a.price > b.price {
 			return 1
 		}
-		return bytes.Compare(a.id[:], b.id[:])
+		if c := bytes.Compare(a.id[:], b.id[:]); c != 0 {
+			return c
+		}
+		// Identity tie-break: same alert, different handout. A delayed removal
+		// of an old handout must never alias the replacement's live record.
+		switch {
+		case a.idx < b.idx:
+			return -1
+		case a.idx > b.idx:
+			return 1
+		}
+		return 0
 	}
 }
 
