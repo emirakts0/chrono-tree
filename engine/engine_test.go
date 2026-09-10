@@ -266,6 +266,55 @@ func TestInterner(t *testing.T) {
 	}
 }
 
+// TestInternerConcurrentIntern pins idempotence under concurrency: the same
+// symbol interned from many goroutines must map to one id, distinct symbols
+// to distinct ids, and the id space must stay dense (0..n-1).
+func TestInternerConcurrentIntern(t *testing.T) {
+	in := NewInterner()
+	const workers, syms = 8, 100
+	ids := make([][]SymbolID, workers)
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			ids[w] = make([]SymbolID, syms)
+			for i := 0; i < syms; i++ {
+				ids[w][i] = in.Intern(fmt.Sprintf("SYM%03d", i))
+			}
+		}(w)
+	}
+	wg.Wait()
+	for s := 0; s < syms; s++ {
+		for w := 1; w < workers; w++ {
+			if ids[w][s] != ids[0][s] {
+				t.Fatalf("symbol %d: worker %d got id %d, worker 0 got %d",
+					s, w, ids[w][s], ids[0][s])
+			}
+		}
+	}
+	seen := make(map[SymbolID]bool)
+	for s := 0; s < syms; s++ {
+		if seen[ids[0][s]] {
+			t.Fatalf("distinct symbols share id %d", ids[0][s])
+		}
+		seen[ids[0][s]] = true
+	}
+	if len(seen) != syms {
+		t.Fatalf("id space not dense: %d distinct ids for %d symbols", len(seen), syms)
+	}
+}
+
+// TestInternerNameUnknown pins the forgiving Name contract: an id that was
+// never assigned returns "" instead of panicking.
+func TestInternerNameUnknown(t *testing.T) {
+	in := NewInterner()
+	in.Intern("USDTRY")
+	if got := in.Name(SymbolID(42)); got != "" {
+		t.Fatalf("Name(unknown) = %q, want empty", got)
+	}
+}
+
 func TestTreeIndexDistinct(t *testing.T) {
 	seen := map[int]bool{}
 	for pt := PriceType(0); pt < priceTypeCount; pt++ {
