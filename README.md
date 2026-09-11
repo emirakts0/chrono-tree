@@ -247,11 +247,8 @@ AMD Ryzen 5 5600H (6 cores / 12 threads; g12 is SMT), Linux/amd64, go1.27.0.
 > `allocs/op` reads 0 only because that churn amortizes to well under one
 > allocation per tick.
 
-Fires pinned at 50k across all six (`SweepHold*`): population varies, work
-done does not. Per-tick cost stays nearly flat — 100k → 5M is only ~1.1–1.55×
-(e.g. plain g1: 555.5 → 648.2 ns) — so resident-population cost (tree depth,
-cache/heap pressure, slot-arena footprint) is minor; the far steeper growth in
-the table below is fire/density cost.
+Fires pinned at 50k across all six (`SweepHold*`): population scales from 100k
+to 5M alerts while total fires stay constant.
 
 | benchmark | threads | ns/op | B/op | allocs/op | |
 |---|---:|---:|---:|---:|---|
