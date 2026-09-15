@@ -56,7 +56,7 @@ flowchart LR
     subgraph CP["CONTROL PLANE · single writer"]
         direction TB
         API["Upsert / Cancel /<br/>Pause"]
-        MQ["Bounded Mutation<br/>Queue"]
+        MQ["Mutation Queue<br/>lossless · unbounded"]
         FL["Flusher · COW publish"]
         API --> MQ --> FL
     end
@@ -101,10 +101,19 @@ One package, no network, no I/O — everything follows one decision:
   record of a same-key replacement upsert; 8 tables per symbol
   (4 price types × 2 directions), so every entry a scan visits qualifies by
   construction.
-- **Publication** — upserts and cancels batch through a bounded queue to a
-  single flusher, which applies them to tree copies and publishes with one
-  atomic store (RCU). Firing cannot mutate a snapshot: the CAS flips a status
-  slot, the tree removal is deferred to the flusher.
+- **Publication** — upserts and cancels batch through the unbounded, lossless
+  mutation queue to a single flusher, which applies them to tree copies and
+  publishes with one atomic store (RCU). Firing cannot mutate a snapshot: the
+  CAS flips a status slot, the tree removal is deferred to the flusher.
+- **Housekeeping** — the mutation queue is an unbounded, mutex-guarded MPSC
+  buffer with condvar wakeup and whole-batch draining: enqueue never blocks
+  and never drops, so a full queue can no longer shed removals and no
+  integrity backstop is needed. The expiry table registers only alerts with
+  real deadlines; entries for fired, cancelled, or replaced alerts linger
+  until their deadline passes, when the sweep drops them after a
+  ref-identity liveness check. Sweep stays ordered before slot recycle
+  inside the reaper goroutine — that ordering is what makes the gen-free,
+  status-only expiry CAS safe.
 - **Delivery** — winners land on a bounded buffered channel (`Pop` / `PopBatch` / `C`). A
   slow consumer means counted drops, never backpressure into `Match`.
 
@@ -188,8 +197,9 @@ e.Sync()                                 // everything submitted so far is publi
 
 - `Upsert` with an existing ID **replaces** the live alert (old entry removed,
   new inserted in queue order).
-- Control-plane calls go through a bounded queue and may block briefly when
-  it fills — keep them off the tick hot path.
+- Control-plane calls enqueue on the unbounded, lossless mutation queue —
+  they never block on a full queue and never drop. Keep them off the tick
+  hot path.
 - Zero values are meaningful: `ValidFrom: 0` is valid immediately, `Expires: 0`
   means never, `AutoDeactivate: false` keeps the alert re-usable via pause/resume.
 - Terminal alerts (`Triggered`, `Cancelled`, `Expired`) reject transitions with
