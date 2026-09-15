@@ -90,6 +90,9 @@ type Stats struct {
 }
 
 // alertRef locates an alert's index structures for control-plane ops.
+// Immutable after publish: created once at upsert, never field-mutated; the
+// e.refs map slot may be replaced or deleted, but old pointers stay valid —
+// the reaper's expiry table borrows them, so mutation would race sweeps.
 type alertRef struct {
 	sid SymbolID
 	e   entry
@@ -114,13 +117,16 @@ const (
 
 // expEntry registers an alert with the reaper's expiry table. gen is the slot
 // generation at handout: expiry entries outlive the recycle grace, so sweeps
-// must reject entries whose slot has been recycled (gen moved). Every alert
-// is registered, never-expiring ones with the expiryNever sentinel: the table
-// doubles as the integrity sweep's registry of live alerts.
+// must reject entries whose slot has been recycled (gen moved). ref borrows
+// the immutable alertRef published in e.refs — sid and the full entry are
+// read through it only when building a removal; idx stays denormalized so
+// the comparator never chases the pointer. Every alert is registered,
+// never-expiring ones with the expiryNever sentinel: the table doubles as the
+// integrity sweep's registry of live alerts.
 type expEntry struct {
 	expires int64
-	sid     SymbolID
-	e       entry
+	ref     *alertRef
+	idx     uint32
 	gen     uint32
 }
 

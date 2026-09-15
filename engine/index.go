@@ -237,8 +237,9 @@ func (e *Engine) Upsert(a AlertSpec) error {
 		idx:       idx,
 		flags:     makeFlags(a.PriceType, a.Direction, a.AutoDeactivate),
 	}
+	ref := &alertRef{sid: sid, e: ent}
 	e.mu.Lock()
-	e.refs[a.ID] = &alertRef{sid: sid, e: ent}
+	e.refs[a.ID] = ref
 	e.live++
 	e.mu.Unlock()
 
@@ -257,7 +258,7 @@ func (e *Engine) Upsert(a AlertSpec) error {
 	if exp == 0 {
 		exp = expiryNever
 	}
-	return e.submitExpiry(expEntry{expires: exp, sid: sid, e: ent, gen: gen})
+	return e.submitExpiry(expEntry{expires: exp, ref: ref, idx: ent.idx, gen: gen})
 }
 
 // submitExpiry registers an alert with the reaper's expiry table.

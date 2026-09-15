@@ -18,9 +18,9 @@ func compareExp(a, b expEntry) int {
 		return 1
 	}
 	switch {
-	case a.e.idx < b.e.idx:
+	case a.idx < b.idx:
 		return -1
-	case a.e.idx > b.e.idx:
+	case a.idx > b.idx:
 		return 1
 	}
 	switch {
@@ -94,8 +94,8 @@ func (e *Engine) sweep(now int64) int {
 		e.expiry.Delete(x) // after iteration completes; safe
 		// If the generation moved, the slot was retired, recycled, and reused
 		// since registration — a stale entry must not kill the new occupant.
-		if e.slots.casGenAny(x.e.idx, x.gen, StatusExpired, StatusActive, StatusPaused) {
-			e.submit(mutation{op: mutRemove, sid: x.sid, e: x.e, gen: x.gen})
+		if e.slots.casGenAny(x.idx, x.gen, StatusExpired, StatusActive, StatusPaused) {
+			e.submit(mutation{op: mutRemove, sid: x.ref.sid, e: x.ref.e, gen: x.gen})
 		}
 	}
 	return len(due)
@@ -110,7 +110,7 @@ func (e *Engine) sweep(now int64) int {
 func (e *Engine) integrity() {
 	var spent []expEntry
 	for x := range e.expiry.All() {
-		w := e.slots.get(x.e.idx).Load()
+		w := e.slots.get(x.idx).Load()
 		if w>>slotGenShift != x.gen {
 			spent = append(spent, x) // slot recycled: removal already landed
 			continue
@@ -120,7 +120,7 @@ func (e *Engine) integrity() {
 			continue
 		}
 		if slotStatus(w) == StatusTriggered {
-			e.submit(mutation{op: mutRemove, sid: x.sid, e: x.e, gen: x.gen})
+			e.submit(mutation{op: mutRemove, sid: x.ref.sid, e: x.ref.e, gen: x.gen})
 		}
 	}
 	for _, x := range spent { // after iteration completes; safe

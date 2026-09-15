@@ -20,6 +20,15 @@ func TestEntrySize(t *testing.T) {
 	}
 }
 
+func TestExpEntrySize(t *testing.T) {
+	// One registration per alert: ref borrows the shared alertRef so the
+	// table carries no entry copy; idx stays denormalized to keep the
+	// comparator pointer-free.
+	if got := unsafe.Sizeof(expEntry{}); got != 24 {
+		t.Fatalf("sizeof(expEntry) = %d, want 24 (check field order/padding)", got)
+	}
+}
+
 func TestFlagRoundTrip(t *testing.T) {
 	for _, pt := range []PriceType{PriceBid, PriceAsk, PriceMid, PriceLast} {
 		for _, dir := range []Direction{DirGTE, DirLTE} {
@@ -1227,7 +1236,7 @@ func TestExpiryRegistrySlotReuse(t *testing.T) {
 	bGen := e.slots.gen(bIdx)
 	found := 0
 	for x := range e.expiry.All() {
-		if x.e.id != (AlertID{2}) {
+		if x.ref.e.id != (AlertID{2}) {
 			continue
 		}
 		if x.expires != expiryNever {
