@@ -26,7 +26,7 @@ var (
 type Config struct {
 	MaxSymbols         uint32        // fixed symbolState array size
 	MaxAlerts          uint64        // live alert cap
-	MutationQueueDepth int           // bounded mutation queue
+	MutationQueueDepth int           // depth of the expiry-registration queue (expQ)
 	FlushBatch         int           // max ops applied per flush cycle
 	TriggerQueueSize   int           // trigger queue capacity
 	ReaperInterval     time.Duration // expiry sweep + slot recycle period

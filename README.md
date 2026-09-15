@@ -35,7 +35,7 @@
 - **Exactly-Once Firing** — the ACTIVE → TRIGGERED transition is a single CAS on a per-alert slot, so concurrent ticks and stale snapshots cannot double-fire.
 - **Up to 8 Match Dimensions** — caller-owned values such as venue or book tier fold into the tree key; a fire requires exact equality across all of them.
 - **Bounded Trigger Queue** — delivery is non-blocking and drop-and-count: a slow consumer means counted drops, never backpressure into the matching path.
-- **Background Reaper** — sweeps expiries, recycles alert slots, and reclaims removals shed by a full mutation queue; shutdown is goleak-verified.
+- **Background Reaper** — sweeps expiries and recycles alert slots; the mutation queue is unbounded and lossless (mutex-guarded MPSC buffer, batch-drained under one lock), so removals are never shed. Shutdown is goleak-verified.
 
 ## Architecture
 
@@ -71,7 +71,7 @@ flowchart LR
     RING --> OUT
     FL -. "atomic publish" .-> SNAP
     RP -. "removals" .-> MQ
-    CAS -. "deferred removal (trySubmit)" .-> MQ
+    CAS -. "deferred removal enqueue" .-> MQ
     API -. "expiry registration (expQ)" .-> RP
 
     classDef input fill:#FFDE17,stroke:#111,stroke-width:2px,color:#111
@@ -245,7 +245,9 @@ AMD Ryzen 5 5600H (6 cores / 12 threads; g12 is SMT), Linux/amd64, go1.27.0.
 > The `B/op` is background control-plane churn (flusher COW node clones,
 > reaper bookkeeping) that scales with the fire rate, not the tick rate;
 > `allocs/op` reads 0 only because that churn amortizes to well under one
-> allocation per tick.
+> allocation per tick. Enqueue allocates only when the mutation buffer grows
+> to absorb a burst; steady-state `Match` remains zero-allocation, pinned by
+> `TestMatchZeroAllocs`.
 
 Fires pinned at 50k across all six (`SweepHold*`): population scales from 100k
 to 5M alerts while total fires stay constant.
