@@ -1184,6 +1184,7 @@ func TestCloseWaitsForReaders(t *testing.T) {
 func TestNeverExpiringNotRegistered(t *testing.T) {
 	defer goleak.VerifyNone(t)
 	e := New(DefaultConfig())
+	defer e.Close() // idempotent with the mid-test Close; covers Upsert-failure paths
 	if err := e.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, 425)); err != nil {
 		t.Fatal(err)
 	}
@@ -1427,7 +1428,11 @@ func TestExpiryRegistryPointerTiebreak(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.Sync()
+	deadline = time.Now().Add(5 * time.Second)
 	for len(e.expQ) > 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("registrations not drained from expQ within 5s")
+		}
 		time.Sleep(5 * time.Millisecond)
 	}
 	e.Close() // quiesce; both registrations must be present and distinct

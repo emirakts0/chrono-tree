@@ -32,7 +32,7 @@ func benchMutQChan(b *testing.B, producers int) {
 			}
 		}
 	}()
-	per := b.N/producers + 1 // total sends == b.N, so ns/op is per item
+	per := b.N/producers + 1 // total sends == b.N + producers (rounding up), so ns/op is per item or better
 	var wgp sync.WaitGroup
 	for p := 0; p < producers; p++ {
 		wgp.Add(1)
@@ -93,7 +93,7 @@ func benchMutQUMPSC(b *testing.B, producers int) {
 			batch = q.drain(batch)
 		}
 	}()
-	per := b.N/producers + 1 // total sends == b.N, so ns/op is per item
+	per := b.N/producers + 1 // total sends == b.N + producers (rounding up), so ns/op is per item or better
 	var wgp sync.WaitGroup
 	for p := 0; p < producers; p++ {
 		wgp.Add(1)
@@ -126,7 +126,7 @@ func benchMutQMutex(b *testing.B, producers int) {
 			batch = q.drain(batch)
 		}
 	}()
-	per := b.N/producers + 1 // total sends == b.N, so ns/op is per item
+	per := b.N/producers + 1 // total sends == b.N + producers (rounding up), so ns/op is per item or better
 	var wgp sync.WaitGroup
 	for p := 0; p < producers; p++ {
 		wgp.Add(1)

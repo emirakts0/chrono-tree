@@ -262,35 +262,11 @@ func (a *slotArena) gen(idx uint32) uint32 {
 	return a.get(idx).Load() >> slotGenShift
 }
 
-// casGen is cas restricted to a specific generation, rejecting callers that
-// hold a reference from an older generation even though the current status
-// matches.
-func (a *slotArena) casGen(idx uint32, gen uint32, from, to Status) bool {
-	s := a.get(idx)
-	w := s.Load()
-	if w>>slotGenShift != gen || slotStatus(w) != from {
-		return false
-	}
-	return s.CompareAndSwap(w, w&^0xff|uint32(to))
-}
-
-// casGenAny attempts the generation-checked transition to from each of
-// froms once. Accepted ABA window: the 23-bit generation wraps after
-// 8,388,608 handouts of a single slot — bounded, non-cascading, accepted.
-func (a *slotArena) casGenAny(idx uint32, gen uint32, to Status, froms ...Status) bool {
-	for _, from := range froms {
-		if a.casGen(idx, gen, from, to) {
-			return true
-		}
-	}
-	return false
-}
-
 // casStatusAny attempts the transition to from each of froms, retrying
 // while the word keeps moving between matched states, and returns the
-// generation bits of the word it wrote on success. Unlike casGenAny it
-// carries no expected generation: callers must have established slot
-// liveness by other means (the sweep's ref-identity check).
+// generation bits of the word it wrote on success. It carries no expected
+// generation: callers must have established slot liveness by other means
+// (the sweep's ref-identity check).
 func (a *slotArena) casStatusAny(idx uint32, to Status, froms ...Status) (uint32, bool) {
 	s := a.get(idx)
 	for {

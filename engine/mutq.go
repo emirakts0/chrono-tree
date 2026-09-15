@@ -19,8 +19,12 @@ type mutQueue struct {
 	head int
 }
 
+// mutQueueInitialCap pre-sizes the buffer at DefaultConfig's
+// MutationQueueDepth scale; it is not cfg-driven (expQ owns that field).
+const mutQueueInitialCap = 4096
+
 func newMutQueue() *mutQueue {
-	q := &mutQueue{buf: make([]mutation, 0, 4096)}
+	q := &mutQueue{buf: make([]mutation, 0, mutQueueInitialCap)}
 	q.cond.L = &q.mu
 	return q
 }

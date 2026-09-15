@@ -16,9 +16,9 @@ import (
 //
 //  1. no terminal-status entry remains indexed in any tree
 //  2. e.refs, the trees, and the live counter hold the same alert set
-//  3. every live expiring alert has exactly one expiry registration;
-//     registrations for dead handouts may linger until their deadline
-//     (accepted design trade) but must all belong to known dead ids
+//  3. every live expiring alert has exactly one expiry registration and no
+//     ref is registered twice; registrations for dead handouts are
+//     permitted to linger until their deadline (accepted design trade)
 //  4. no slot stays parked in the retire list after the grace period
 //
 // Deterministic via a fixed seed; timing margins are wide (shortest TTL
@@ -91,7 +91,9 @@ func TestChurnInvariants(t *testing.T) {
 	e.Sync()
 
 	// Census 1+2: trees hold only live-status entries; per-symbol counts
-	// match refs and live.
+	// match refs and live. Safe unpinned: post-Sync quiescence means no
+	// publishes can occur, so the snapshot reads are race-free by
+	// construction.
 	e.mu.Lock()
 	refsSnapshot := make(map[AlertID]*alertRef, len(e.refs))
 	for id, r := range e.refs {
