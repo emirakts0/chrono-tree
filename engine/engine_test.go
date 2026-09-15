@@ -22,10 +22,11 @@ func TestEntrySize(t *testing.T) {
 
 func TestExpEntrySize(t *testing.T) {
 	// One registration per alert: ref borrows the shared alertRef so the
-	// table carries no entry copy; idx stays denormalized to keep the
-	// comparator pointer-free.
-	if got := unsafe.Sizeof(expEntry{}); got != 24 {
-		t.Fatalf("sizeof(expEntry) = %d, want 24 (check field order/padding)", got)
+	// table carries no entry copy, idx, or generation — liveness is checked
+	// by pointer identity, and the comparator's tie-break is the pointer
+	// itself.
+	if got := unsafe.Sizeof(expEntry{}); got != 16 {
+		t.Fatalf("sizeof(expEntry) = %d, want 16 (check field order/padding)", got)
 	}
 }
 
@@ -1262,5 +1263,182 @@ func TestSnapshotPerTreeCOW(t *testing.T) {
 	// 8 GTE targets all at/under 150; exactly the cancelled one is gone.
 	if want := 8 - 1; n != want {
 		t.Fatalf("fired %d, want %d", n, want)
+	}
+}
+
+// TestSweepSkipsStaleEntryOnRecycledSlot pins the ABA guard without gen:
+// A (short TTL) is cancelled, its slot recycled and taken by B (long TTL).
+// A's lingering registration comes due while B occupies the slot; the sweep
+// must validate liveness by ref identity and never touch B. Safe-by-order:
+// recycle runs in the same reaper goroutine, after sweep.
+func TestSweepSkipsStaleEntryOnRecycledSlot(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	cfg := DefaultConfig()
+	cfg.ReaperInterval = 20 * time.Millisecond
+	e := New(cfg)
+	defer e.Close()
+	a := AlertSpec{ID: AlertID{1}, Symbol: "ABA", PriceType: PriceBid,
+		Direction: DirGTE, TargetPrice: 100, ValidFrom: 1,
+		Expires: time.Now().Add(300 * time.Millisecond).UnixNano()}
+	if err := e.Upsert(a); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+	e.mu.Lock()
+	aIdx := e.refs[AlertID{1}].e.idx
+	e.mu.Unlock()
+	if err := e.Cancel(AlertID{1}); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		e.slots.mu.Lock()
+		freed := slices.Contains(e.slots.free, aIdx)
+		e.slots.mu.Unlock()
+		if freed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("slot %d not recycled within 5s", aIdx)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	b := AlertSpec{ID: AlertID{2}, Symbol: "ABA", PriceType: PriceBid,
+		Direction: DirGTE, TargetPrice: 100, ValidFrom: 1,
+		Expires: time.Now().Add(time.Hour).UnixNano()}
+	if err := e.Upsert(b); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+	e.mu.Lock()
+	bIdx := e.refs[AlertID{2}].e.idx
+	e.mu.Unlock()
+	if bIdx != aIdx {
+		t.Fatalf("setup failed: B got slot %d, wanted recycled %d", bIdx, aIdx)
+	}
+	// A's deadline (300ms) passes; several sweeps run against B's slot.
+	time.Sleep(600 * time.Millisecond)
+	if st := e.slots.status(bIdx); st != StatusActive {
+		t.Fatalf("B status = %v, want Active — stale entry killed the recycled slot's occupant", st)
+	}
+	e.Close() // quiesce; the table is safe to inspect
+	for x := range e.expiry.All() {
+		if x.ref.e.id == (AlertID{1}) {
+			t.Fatal("stale registration lingered past its deadline")
+		}
+	}
+}
+
+// TestSweepSkipsReplacedHandout pins the same guard against same-ID
+// replacement: the old handout's registration comes due after the map
+// already points at the new ref; the replacement must survive to its own
+// deadline.
+func TestSweepSkipsReplacedHandout(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	cfg := DefaultConfig()
+	cfg.ReaperInterval = 20 * time.Millisecond
+	e := New(cfg)
+	defer e.Close()
+	old := AlertSpec{ID: AlertID{7}, Symbol: "REP", PriceType: PriceLast,
+		Direction: DirGTE, TargetPrice: 100, ValidFrom: 1,
+		Expires: time.Now().Add(200 * time.Millisecond).UnixNano()}
+	if err := e.Upsert(old); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+	repl := old
+	repl.TargetPrice = 150
+	repl.Expires = time.Now().Add(time.Hour).UnixNano()
+	if err := e.Upsert(repl); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+	time.Sleep(500 * time.Millisecond) // old deadline passes
+	e.mu.Lock()
+	ref, ok := e.refs[AlertID{7}]
+	e.mu.Unlock()
+	if !ok {
+		t.Fatal("replacement removed from refs")
+	}
+	if st := e.slots.status(ref.e.idx); st != StatusActive {
+		t.Fatalf("replacement status = %v, want Active — old handout's registration expired it", st)
+	}
+	if ref.e.price != 150 {
+		t.Fatalf("refs points at price %d, want the replacement's 150", ref.e.price)
+	}
+	e.Close()
+	regs := 0
+	for x := range e.expiry.All() {
+		if x.ref.e.id == (AlertID{7}) {
+			regs++
+			if x.ref != ref {
+				t.Fatal("old handout's registration lingered past its deadline")
+			}
+		}
+	}
+	if regs != 1 {
+		t.Fatalf("replacement has %d registrations, want 1", regs)
+	}
+}
+
+// TestExpiryRegistryPointerTiebreak pins comparator uniqueness without gen:
+// a recycled slot's new registration must coexist with the previous
+// occupant's lingering stale entry even at an identical absolute deadline —
+// btype Insert is a no-op on equal keys, so a field-based tie-break would
+// silently drop the new registration.
+func TestExpiryRegistryPointerTiebreak(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	cfg := DefaultConfig()
+	cfg.ReaperInterval = 20 * time.Millisecond
+	e := New(cfg)
+	defer e.Close()
+	exp := time.Now().Add(500 * time.Millisecond).UnixNano()
+	a := AlertSpec{ID: AlertID{1}, Symbol: "PTB", PriceType: PriceBid,
+		Direction: DirGTE, TargetPrice: 100, ValidFrom: 1, Expires: exp}
+	if err := e.Upsert(a); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+	e.mu.Lock()
+	aIdx := e.refs[AlertID{1}].e.idx
+	e.mu.Unlock()
+	if err := e.Cancel(AlertID{1}); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		e.slots.mu.Lock()
+		freed := slices.Contains(e.slots.free, aIdx)
+		e.slots.mu.Unlock()
+		if freed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("slot %d not recycled within 5s", aIdx)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// B: same slot, same absolute deadline as A's stale registration.
+	b := AlertSpec{ID: AlertID{2}, Symbol: "PTB", PriceType: PriceBid,
+		Direction: DirGTE, TargetPrice: 100, ValidFrom: 1, Expires: exp}
+	if err := e.Upsert(b); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+	for len(e.expQ) > 0 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	e.Close() // quiesce; both registrations must be present and distinct
+	n := 0
+	for x := range e.expiry.All() {
+		n++
+		if x.expires != exp {
+			t.Fatalf("registration expires=%d, want %d", x.expires, exp)
+		}
+	}
+	if n != 2 {
+		t.Fatalf("table holds %d registrations, want 2 (collision dropped one)", n)
 	}
 }

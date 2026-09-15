@@ -108,18 +108,13 @@ const (
 	mutClose // sentinel: Close enqueues it; the flusher drains to it and exits
 )
 
-// expEntry registers an alert with the reaper's expiry table. gen is the slot
-// generation at handout: expiry entries outlive the recycle grace, so sweeps
-// must reject entries whose slot has been recycled (gen moved). ref borrows
-// the immutable alertRef published in e.refs — sid and the full entry are
-// read through it only when building a removal; idx stays denormalized so
-// the comparator never chases the pointer. Only alerts with a real deadline
-// are registered.
+// expEntry registers an expiring alert with the reaper's expiry table. ref
+// borrows the immutable alertRef published in e.refs; liveness at sweep time
+// is checked by pointer identity against that map, so no slot index or
+// generation is carried here. Never-expiring alerts are not registered.
 type expEntry struct {
 	expires int64
 	ref     *alertRef
-	idx     uint32
-	gen     uint32
 }
 
 // Engine is the alert evaluation engine. Zero network, zero I/O.

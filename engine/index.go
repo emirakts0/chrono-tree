@@ -206,11 +206,6 @@ func (e *Engine) Upsert(a AlertSpec) error {
 
 	idx := e.slots.alloc()
 	e.slots.setStatus(idx, StatusActive)
-	// Capture the handout generation before refs are published and before any
-	// blocking submit: once refs are visible, another goroutine can cancel
-	// this alert — retire, recycle, reuse — so a later gen read could be the
-	// new occupant's. Nothing can retire an unpublished idx, so this is safe.
-	gen := e.slots.gen(idx)
 	ent := entry{
 		price:     a.TargetPrice,
 		id:        a.ID,
@@ -238,7 +233,7 @@ func (e *Engine) Upsert(a AlertSpec) error {
 	// Only real deadlines are registered; never-expiring alerts have no
 	// expiry-table presence at all.
 	if a.Expires != 0 {
-		return e.submitExpiry(expEntry{expires: a.Expires, ref: ref, idx: ent.idx, gen: gen})
+		return e.submitExpiry(expEntry{expires: a.Expires, ref: ref})
 	}
 	return nil
 }

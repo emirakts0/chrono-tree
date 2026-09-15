@@ -286,6 +286,32 @@ func (a *slotArena) casGenAny(idx uint32, gen uint32, to Status, froms ...Status
 	return false
 }
 
+// casStatusAny attempts the transition to from each of froms, retrying
+// while the word keeps moving between matched states, and returns the
+// generation bits of the word it wrote on success. Unlike casGenAny it
+// carries no expected generation: callers must have established slot
+// liveness by other means (the sweep's ref-identity check).
+func (a *slotArena) casStatusAny(idx uint32, to Status, froms ...Status) (uint32, bool) {
+	s := a.get(idx)
+	for {
+		w := s.Load()
+		st := slotStatus(w)
+		matched := false
+		for _, from := range froms {
+			if st == from {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return 0, false
+		}
+		if s.CompareAndSwap(w, w&^0xff|uint32(to)) {
+			return w >> slotGenShift, true
+		}
+	}
+}
+
 // retire parks a freed slot until recycle moves it past its grace period.
 // Low-level: it does not touch the slot word; production paths use retireGen.
 func (a *slotArena) retire(idx uint32, at time.Time) {
