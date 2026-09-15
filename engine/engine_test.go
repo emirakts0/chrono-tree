@@ -1175,87 +1175,43 @@ func TestCloseWaitsForReaders(t *testing.T) {
 	}
 }
 
-// TestExpiryRegistrySlotReuse pins the comparator-collision hole: the expiry
-// registry keyed by (expires, idx) alone made a recycled slot's new
-// registration equal to its previous occupant's stale entry, and btype
-// Insert is a no-op on equal keys — the new registration was silently
-// dropped. The gen tie-break must keep both entries distinct.
-func TestExpiryRegistrySlotReuse(t *testing.T) {
+// TestNeverExpiringNotRegistered pins the registration contract: alerts
+// with Expires == 0 never enter the expiry table — the table holds only
+// real deadlines. (The old variant asserted the never-due sentinel; the
+// sentinel existed only to feed the integrity sweep's live-alert registry,
+// which is gone.)
+func TestNeverExpiringNotRegistered(t *testing.T) {
 	defer goleak.VerifyNone(t)
-	cfg := DefaultConfig()
-	// Slow reaper: recycle grace 400ms, integrity cadence 30 ticks = 6s, so
-	// the stale registration deterministically outlives this test and the
-	// collision window is wide open when B registers.
-	cfg.ReaperInterval = 200 * time.Millisecond
-	e := New(cfg)
-	defer e.Close() // any Fatalf below must not leak engine goroutines into later tests
-	// A: never-expiring; gets slot X plus a sentinel registration.
+	e := New(DefaultConfig())
 	if err := e.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, 425)); err != nil {
 		t.Fatal(err)
 	}
-	e.Sync()
-	e.mu.Lock()
-	aIdx := e.refs[AlertID{1}].e.idx
-	e.mu.Unlock()
-	if err := e.Cancel(AlertID{1}); err != nil {
+	exp := time.Now().Add(time.Hour).UnixNano()
+	a := AlertSpec{ID: AlertID{2}, Symbol: "USDTRY", PriceType: PriceBid,
+		Direction: DirGTE, TargetPrice: 430, ValidFrom: 1, Expires: exp}
+	if err := e.Upsert(a); err != nil {
 		t.Fatal(err)
 	}
 	e.Sync()
-	// Wait for the reaper to return slot X to the free list. The grace is
-	// 2× interval (400ms), but recycling only happens on a reaper tick, and
-	// the qualifying tick's phase plus scheduling under load can push the
-	// recycle past any fixed sleep — poll the condition instead.
 	deadline := time.Now().Add(5 * time.Second)
-	for {
-		e.slots.mu.Lock()
-		freed := slices.Contains(e.slots.free, aIdx)
-		e.slots.mu.Unlock()
-		if freed {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("slot %d not recycled within 5s", aIdx)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	// B: never-expiring; must recycle slot X and register with a NEW gen.
-	if err := e.Upsert(testSpec(2, "USDTRY", PriceBid, DirGTE, 430)); err != nil {
-		t.Fatal(err)
-	}
-	e.Sync()
-	e.mu.Lock()
-	bIdx := e.refs[AlertID{2}].e.idx
-	e.mu.Unlock()
-	if bIdx != aIdx {
-		t.Fatalf("setup failed: B got slot %d, wanted recycled %d", bIdx, aIdx)
-	}
-	// Let the reaper drain B's registration (channel length is safe to poll;
-	// the table itself stays reaper-owned until Close quiesces it), then
-	// stop it: after Close the expiry table is quiescent and safe to inspect.
-	deadline = time.Now().Add(5 * time.Second)
 	for len(e.expQ) > 0 {
 		if time.Now().After(deadline) {
-			t.Fatal("B registration not drained from expQ within 5s")
+			t.Fatal("registrations not drained from expQ within 5s")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	e.Close()
-	bGen := e.slots.gen(bIdx)
-	found := 0
+	e.Close() // quiesces the table; safe to inspect
+	n := 0
 	for x := range e.expiry.All() {
-		if x.ref.e.id != (AlertID{2}) {
-			continue
+		if x.ref.e.id == (AlertID{1}) {
+			t.Fatal("never-expiring alert registered in the expiry table")
 		}
-		if x.expires != expiryNever {
-			t.Fatalf("B registration expires=%d, want the never-due sentinel", x.expires)
+		if x.ref.e.id == (AlertID{2}) {
+			n++
 		}
-		if x.gen != bGen {
-			t.Fatalf("stale registration for B: gen %d, want the new occupant's %d", x.gen, bGen)
-		}
-		found++
 	}
-	if found != 1 {
-		t.Fatalf("registry holds %d registrations for B, want exactly 1 (collision dropped it)", found)
+	if n != 1 {
+		t.Fatalf("expiring alert has %d registrations, want 1", n)
 	}
 }
 

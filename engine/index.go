@@ -235,13 +235,12 @@ func (e *Engine) Upsert(a AlertSpec) error {
 	if err := e.submit(mutation{op: mutInsert, sid: sid, e: ent}); err != nil {
 		return err
 	}
-	// Never-expiring alerts carry the expiryNever sentinel so the integrity
-	// sweep can find them.
-	exp := a.Expires
-	if exp == 0 {
-		exp = expiryNever
+	// Only real deadlines are registered; never-expiring alerts have no
+	// expiry-table presence at all.
+	if a.Expires != 0 {
+		return e.submitExpiry(expEntry{expires: a.Expires, ref: ref, idx: ent.idx, gen: gen})
 	}
-	return e.submitExpiry(expEntry{expires: exp, ref: ref, idx: ent.idx, gen: gen})
+	return nil
 }
 
 // submitExpiry registers an alert with the reaper's expiry table.

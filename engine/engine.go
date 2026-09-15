@@ -3,7 +3,6 @@ package engine
 import (
 	"errors"
 	"fmt"
-	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -114,19 +113,14 @@ const (
 // must reject entries whose slot has been recycled (gen moved). ref borrows
 // the immutable alertRef published in e.refs — sid and the full entry are
 // read through it only when building a removal; idx stays denormalized so
-// the comparator never chases the pointer. Every alert is registered,
-// never-expiring ones with the expiryNever sentinel: the table doubles as the
-// integrity sweep's registry of live alerts.
+// the comparator never chases the pointer. Only alerts with a real deadline
+// are registered.
 type expEntry struct {
 	expires int64
 	ref     *alertRef
 	idx     uint32
 	gen     uint32
 }
-
-// expiryNever is the never-due deadline sentinel: the expiry sweep skips it;
-// only the integrity sweep ever acts on sentinel entries.
-const expiryNever = math.MaxInt64
 
 // Engine is the alert evaluation engine. Zero network, zero I/O.
 type Engine struct {
