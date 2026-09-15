@@ -34,14 +34,12 @@ func compareExp(a, b expEntry) int {
 
 // runReaper is the sole owner of the expiry table: it drains expQ
 // registrations, sweeps entries past their deadline, and recycles slots past
-// their grace period. Every IntegrityEvery-th tick it runs the integrity
-// sweep, the backstop for removals lost to a full mutation queue.
+// their grace period.
 func (e *Engine) runReaper() {
 	defer e.reapWG.Done()
 	e.expiry = *btype.NewTableOptions(btype.TableOptions[expEntry]{Compare: compareExp})
 	ticker := time.NewTicker(e.cfg.ReaperInterval)
 	defer ticker.Stop()
-	ticks := 0
 	for {
 		select {
 		case x := <-e.expQ:
@@ -58,12 +56,8 @@ func (e *Engine) runReaper() {
 				}
 			}
 		case now := <-ticker.C:
-			ticks++
 			e.sweep(now.UnixNano())
 			e.slots.recycle(time.Now().Add(-2 * e.cfg.ReaperInterval))
-			if ticks%e.cfg.IntegrityEvery == 0 {
-				e.integrity()
-			}
 		case <-e.done:
 			for {
 				select {
@@ -99,31 +93,4 @@ func (e *Engine) sweep(now int64) int {
 		}
 	}
 	return len(due)
-}
-
-// integrity is the backstop for lost removals: fire's removal enqueue is
-// best-effort, so a TRIGGERED entry whose enqueue failed would stay indexed
-// forever (the expiry sweep only CASes Active/Paused). This pass re-submits
-// the removal for any entry whose slot is still TRIGGERED at the registered
-// generation; retireGen dedupes, so a double submission is harmless. Spent
-// registrations are deleted so the table tracks live alerts, not history.
-func (e *Engine) integrity() {
-	var spent []expEntry
-	for x := range e.expiry.All() {
-		w := e.slots.get(x.idx).Load()
-		if w>>slotGenShift != x.gen {
-			spent = append(spent, x) // slot recycled: removal already landed
-			continue
-		}
-		if w&slotRetiredBit != 0 {
-			spent = append(spent, x) // removal already landed
-			continue
-		}
-		if slotStatus(w) == StatusTriggered {
-			e.submit(mutation{op: mutRemove, sid: x.ref.sid, e: x.ref.e, gen: x.gen})
-		}
-	}
-	for _, x := range spent { // after iteration completes; safe
-		e.expiry.Delete(x)
-	}
 }

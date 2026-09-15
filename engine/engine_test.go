@@ -1142,44 +1142,6 @@ func TestMatchOverLimitSymbolNoPanic(t *testing.T) {
 	}
 }
 
-// TestIntegritySweepCleansLeakedTriggered pins the lost-enqueue leak: a
-// TRIGGERED entry whose removal never reached the mutation queue used to
-// stay indexed forever. The integrity sweep must re-submit it.
-func TestIntegritySweepCleansLeakedTriggered(t *testing.T) {
-	defer goleak.VerifyNone(t)
-	cfg := DefaultConfig()
-	cfg.ReaperInterval = 5 * time.Millisecond
-	cfg.IntegrityEvery = 2 // integrity every 10ms
-	e := New(cfg)
-	defer e.Close()
-	if err := e.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, 425)); err != nil {
-		t.Fatal(err) // Expires 0 → sentinel registration
-	}
-	e.Sync()
-	// Simulate a lost enqueue: transition Active→Triggered directly,
-	// bypassing fire's enqueue entirely.
-	e.mu.Lock()
-	ref := e.refs[AlertID{1}]
-	e.mu.Unlock()
-	s := e.slots.get(ref.e.idx)
-	w := s.Load()
-	if !s.CompareAndSwap(w, w&^0xff|uint32(StatusTriggered)) {
-		t.Fatal("setup CAS failed")
-	}
-	deadline := time.Now().Add(2 * time.Second)
-	for e.Stats().Live != 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("leaked TRIGGERED entry never cleaned by the integrity sweep")
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-	e.Sync()
-	sid, _ := e.syms.Get("USDTRY")
-	if n := e.states[sid].snap.Load().trees[treeIndex(PriceBid, DirGTE)].Len(); n != 0 {
-		t.Fatalf("tree not empty after integrity sweep: %d entries", n)
-	}
-}
-
 // TestCloseWaitsForReaders pins the Close enforcement: trees must not be
 // released while a reader still holds a pin, and Close must complete once
 // the reader drains.

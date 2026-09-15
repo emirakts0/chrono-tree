@@ -30,13 +30,8 @@ type Config struct {
 	FlushBatch         int           // max ops applied per flush cycle
 	TriggerQueueSize   int           // trigger queue capacity
 	ReaperInterval     time.Duration // expiry sweep + slot recycle period
-	IntegrityEvery     int           // integrity sweep cadence, in reaper ticks (<=0 → default)
 	Dims               []string      // positional dimension names; slot i = Dims[i]; max 8
 }
-
-// defaultIntegrityEvery is the integrity sweep cadence in reaper ticks; a
-// leaked entry is cleaned within this × ReaperInterval + flush lag.
-const defaultIntegrityEvery = 30
 
 func DefaultConfig() Config {
 	return Config{
@@ -46,7 +41,6 @@ func DefaultConfig() Config {
 		FlushBatch:         256,
 		TriggerQueueSize:   1 << 16,
 		ReaperInterval:     time.Second,
-		IntegrityEvery:     defaultIntegrityEvery,
 	}
 }
 
@@ -160,9 +154,6 @@ type Engine struct {
 }
 
 func New(cfg Config) *Engine {
-	if cfg.IntegrityEvery <= 0 {
-		cfg.IntegrityEvery = defaultIntegrityEvery
-	}
 	if len(cfg.Dims) > dimMax {
 		panic(fmt.Sprintf("chrono-tree: at most %d dims, got %d", dimMax, len(cfg.Dims)))
 	}
