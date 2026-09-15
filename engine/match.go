@@ -95,7 +95,7 @@ func (e *Engine) Match(t *Tick) {
 }
 
 // fire performs the exactly-once transition for one candidate entry: lazy
-// validity window, CAS ACTIVE→TRIGGERED, dispatch, deferred removal.
+// validity window, CAS ACTIVE→TRIGGERED, dispatch, reliable removal enqueue.
 func (e *Engine) fire(sid SymbolID, en *entry, price Price, ts int64) {
 	if ts < en.validFrom {
 		return
@@ -118,5 +118,5 @@ func (e *Engine) fire(sid SymbolID, en *entry, price Price, ts int64) {
 		}
 	}
 	e.triggers.TryPush(Trigger{ID: en.id, Price: price, TS: ts})
-	e.trySubmit(mutation{op: mutRemove, sid: sid, e: *en, gen: gen})
+	e.mutQ.enqueue(mutation{op: mutRemove, sid: sid, e: *en, gen: gen})
 }

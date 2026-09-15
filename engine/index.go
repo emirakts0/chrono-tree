@@ -21,35 +21,18 @@ func (e *Engine) stateFor(sym string) (SymbolID, error) {
 	return sid, nil
 }
 
-// submit blocks until m is queued (control plane only; the hot path uses
-// trySubmit). Returns ErrClosed when the engine is shutting down.
+// submit queues m for the flusher. It never blocks and never drops: bursts
+// are absorbed by the unbounded queue, bounded in turn by MaxAlerts. The
+// only error is ErrClosed, on a best-effort basis — a residual race with
+// Close is accepted by design.
 func (e *Engine) submit(m mutation) error {
 	select {
 	case <-e.done:
 		return ErrClosed
 	default:
 	}
-	select {
-	case e.mutQ <- m:
-		return nil
-	case <-e.done:
-		return ErrClosed
-	}
-}
-
-// trySubmit is the hot path's best-effort, never-blocking enqueue. A miss
-// only defers cleanup (the integrity sweep re-submits later); it can never
-// cause a missed or duplicate trigger. Drops are counted in e.mutDrops so
-// shedding is observable via Stats — the atomic add runs only on the miss
-// path; the success path stays one channel send, zero allocs, never blocks.
-func (e *Engine) trySubmit(m mutation) bool {
-	select {
-	case e.mutQ <- m:
-		return true
-	default:
-		e.mutDrops.Add(1)
-		return false
-	}
+	e.mutQ.enqueue(m)
+	return nil
 }
 
 // Sync blocks until every mutation submitted before Sync has been applied.
@@ -63,39 +46,26 @@ func (e *Engine) Sync() {
 
 // runFlusher is the single writer: it drains the mutation queue in batches,
 // applies each batch to COW copies, and republishes per-symbol snapshots.
+// The queue's pending count closes a batch; mutClose is the shutdown
+// sentinel — everything enqueued before it is applied, then the loop exits.
+// The sentinel is detected by applyBatch too: drain can pull it into the
+// middle of a batch, where a dequeue-side check alone would never see it
+// and the flusher would park forever with Close waiting on flushWG.
 func (e *Engine) runFlusher() {
 	defer e.flushWG.Done()
 	batch := make([]mutation, 0, e.cfg.FlushBatch)
 	for {
-		select {
-		case m := <-e.mutQ:
-			batch = append(batch, m)
-		drain:
-			for len(batch) < cap(batch) {
-				select {
-				case m := <-e.mutQ:
-					batch = append(batch, m)
-				default:
-					break drain
-				}
-			}
+		m := e.mutQ.dequeue() // parks while idle
+		if m.op == mutClose {
 			e.applyBatch(batch)
-			batch = batch[:0]
-		case <-e.done:
-			for {
-				select {
-				case m := <-e.mutQ:
-					batch = append(batch, m)
-					if len(batch) == cap(batch) {
-						e.applyBatch(batch)
-						batch = batch[:0]
-					}
-				default:
-					e.applyBatch(batch)
-					return
-				}
-			}
+			return
 		}
+		batch = append(batch, m)
+		batch = e.mutQ.drain(batch)
+		if e.applyBatch(batch) {
+			return
+		}
+		batch = batch[:0]
 	}
 }
 
@@ -108,7 +78,9 @@ type refClean struct {
 
 // applyBatch applies ops grouped by symbol so each symbol is copied once,
 // then publishes all snapshots atomically before releasing the old ones.
-func (e *Engine) applyBatch(batch []mutation) {
+// It reports whether the mutClose sentinel was in the batch: everything
+// before it has been applied, and the flusher must exit.
+func (e *Engine) applyBatch(batch []mutation) (stop bool) {
 	type pending struct {
 		st   *symbolState
 		old  *snapshot
@@ -122,6 +94,16 @@ func (e *Engine) applyBatch(batch []mutation) {
 		switch m.op {
 		case mutSync:
 			syncs = append(syncs, m.done)
+			continue
+		case mutClose:
+			// Shutdown sentinel — and the only place a mid-batch sentinel
+			// is seen: drain can pull it in with the batch, where the
+			// dequeue-side check in runFlusher never looks. Swallowing it
+			// here would park the flusher forever with Close blocked on
+			// flushWG. Everything FIFO-before it has been applied, and any
+			// later items already in this batch are harmless removals on an
+			// engine being torn down.
+			stop = true
 			continue
 		}
 		p := bySym[m.sid]
@@ -174,6 +156,7 @@ func (e *Engine) applyBatch(batch []mutation) {
 	for _, d := range syncs {
 		close(d)
 	}
+	return stop
 }
 
 // Upsert inserts a new alert or atomically replaces the one with the same ID.

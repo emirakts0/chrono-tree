@@ -403,51 +403,99 @@ func TestFlusherAppliesMutations(t *testing.T) {
 	}
 }
 
-// TestStatsMutationDrops exposes trySubmit shedding: holding e.mu stalls the
-// flusher inside applyBatch's refs cleanup, the mutation queue fills, and
-// further trySubmit removals must be dropped and counted exactly in Stats.
-func TestStatsMutationDrops(t *testing.T) {
+// TestMutationQueueNeverDrops replaces the old shedding test: with the
+// unbounded mutQueue, removals submitted while the flusher is stalled
+// accumulate instead of dropping, and all of them land after the stall —
+// no counter, no integrity backstop.
+func TestMutationQueueNeverDrops(t *testing.T) {
 	defer goleak.VerifyNone(t)
-	cfg := DefaultConfig()
-	cfg.MutationQueueDepth = 4
-	e := New(cfg)
+	e := New(DefaultConfig())
 	defer e.Close()
-	if s := e.Stats(); s.MutationDrops != 0 {
-		t.Fatalf("fresh engine MutationDrops = %d, want 0", s.MutationDrops)
-	}
 	sid, err := e.stateFor("USDTRY")
 	if err != nil {
 		t.Fatal(err)
 	}
-	next := 0
-	newRemoval := func() mutation {
-		next++
+	const n = 8_000 // twice the old channel depth
+	idxs := make([]uint32, 0, n+1)
+	// Stall the flusher inside applyBatch's refs pass: one real mutRemove
+	// wakes the flusher into the stall (a mutSync would panic on its nil
+	// done channel), then submits must still return immediately (enqueue
+	// never blocks) and survive the stall.
+	e.mu.Lock()
+	idx0 := e.slots.alloc()
+	e.slots.setStatus(idx0, StatusActive)
+	if err := e.submit(mutation{op: mutRemove, sid: sid,
+		e: entry{price: 99, id: mkID(0), idx: idx0, validFrom: 1,
+			flags: makeFlags(PriceLast, DirGTE, true)}, gen: e.slots.gen(idx0)}); err != nil {
+		e.mu.Unlock()
+		t.Fatal(err)
+	}
+	idxs = append(idxs, idx0)
+	time.Sleep(10 * time.Millisecond) // let the flusher reach the held lock
+	for i := 0; i < n; i++ {
 		idx := e.slots.alloc()
 		e.slots.setStatus(idx, StatusActive)
-		ent := entry{price: Price(100 + next), id: AlertID{byte(next)},
+		idxs = append(idxs, idx)
+		ent := entry{price: Price(100 + i), id: mkID(uint32(i + 1)),
 			idx: idx, validFrom: 1, flags: makeFlags(PriceLast, DirGTE, true)}
-		return mutation{op: mutRemove, sid: sid, e: ent, gen: e.slots.gen(idx)}
-	}
-	// Every submitted mutation is a mutRemove, so the flusher's first batch
-	// stalls in applyBatch on the held lock; submit until the queue is full.
-	e.mu.Lock()
-	for len(e.mutQ) < cap(e.mutQ) {
-		if err := e.submit(newRemoval()); err != nil {
+		if err := e.submit(mutation{op: mutRemove, sid: sid, e: ent, gen: e.slots.gen(idx)}); err != nil {
 			e.mu.Unlock()
 			t.Fatal(err)
 		}
 	}
-	const drops = 3
-	for i := 0; i < drops; i++ {
-		if e.trySubmit(newRemoval()) {
+	e.mu.Unlock()
+	e.Sync()
+	if left := e.mutQ.pending(); left != 0 {
+		t.Fatalf("pending = %d after Sync, want 0 — removals lost", left)
+	}
+	retired := 0
+	for _, idx := range idxs {
+		if e.slots.get(idx).Load()&slotRetiredBit != 0 {
+			retired++
+		}
+	}
+	if retired != n+1 {
+		t.Fatalf("%d/%d removals retired their slot", retired, n+1)
+	}
+}
+
+// TestCloseDuringDrain pins the shutdown drain: Close racing a flusher that
+// is still working through a deep mutation backlog must terminate reliably.
+// The mutClose sentinel can land mid-batch (pulled in by drain, invisible to
+// runFlusher's dequeue-side check), so applyBatch must be the one to see it —
+// otherwise the flusher parks on the emptied queue and Close hangs on
+// flushWG forever.
+func TestCloseDuringDrain(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	e := New(DefaultConfig())
+	sid, err := e.stateFor("USDTRY")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const n = 20_000 // many FlushBatch-sized rounds pending at Close
+	// Hold e.mu so the flusher stalls inside applyBatch's refs pass while the
+	// backlog builds — Close then races a drain that is many batches behind.
+	e.mu.Lock()
+	for i := 0; i < n; i++ {
+		idx := e.slots.alloc()
+		e.slots.setStatus(idx, StatusActive)
+		ent := entry{price: Price(100 + i%97), id: mkID(uint32(i + 1)),
+			idx: idx, validFrom: 1, flags: makeFlags(PriceLast, DirGTE, true)}
+		if err := e.submit(mutation{op: mutRemove, sid: sid, e: ent, gen: e.slots.gen(idx)}); err != nil {
 			e.mu.Unlock()
-			t.Fatal("trySubmit succeeded on a full queue")
+			t.Fatal(err)
 		}
 	}
 	e.mu.Unlock()
-	e.Sync()
-	if s := e.Stats(); s.MutationDrops != drops {
-		t.Fatalf("MutationDrops = %d, want %d", s.MutationDrops, drops)
+	done := make(chan struct{})
+	go func() {
+		e.Close()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Close hung draining the mutation backlog — sentinel lost mid-batch")
 	}
 }
 
@@ -541,9 +589,6 @@ func TestStressConcurrentMixedOps(t *testing.T) {
 	st := e.Stats()
 	if st.Live != 0 {
 		t.Fatalf("Live = %d after final Sync, want 0", st.Live)
-	}
-	if st.MutationDrops != 0 {
-		t.Fatalf("MutationDrops = %d, want 0 — stress shed removals", st.MutationDrops)
 	}
 	if st.DroppedTriggers != 0 {
 		t.Fatalf("DroppedTriggers = %d, want 0", st.DroppedTriggers)
@@ -1031,7 +1076,7 @@ func TestSameKeyUpsertRacingFireRemoval(t *testing.T) {
 	oldGen := e.slots.gen(oldEnt.idx)
 
 	// Fire's first half: CAS ACTIVE→TRIGGERED (exactly what fire does), then
-	// "pause" before trySubmit of the deferred removal. This reproduces the
+	// "pause" before enqueuing the deferred removal. This reproduces the
 	// queue order the real preemption window yields: replacement insert first,
 	// delayed old-handout removal second.
 	if !e.slots.cas(oldEnt.idx, StatusActive, StatusTriggered) {
@@ -1112,7 +1157,7 @@ func TestIntegritySweepCleansLeakedTriggered(t *testing.T) {
 	}
 	e.Sync()
 	// Simulate a lost enqueue: transition Active→Triggered directly,
-	// bypassing fire's trySubmit entirely.
+	// bypassing fire's enqueue entirely.
 	e.mu.Lock()
 	ref := e.refs[AlertID{1}]
 	e.mu.Unlock()

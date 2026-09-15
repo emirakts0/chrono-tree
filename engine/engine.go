@@ -86,7 +86,6 @@ func (a *AlertSpec) validate() error {
 type Stats struct {
 	Live            uint64
 	DroppedTriggers uint64
-	MutationDrops   uint64 // removals shed by trySubmit on a full mutation queue
 }
 
 // alertRef locates an alert's index structures for control-plane ops.
@@ -113,6 +112,7 @@ const (
 	mutInsert mutOp = iota
 	mutRemove
 	mutSync
+	mutClose // sentinel: Close enqueues it; the flusher drains to it and exits
 )
 
 // expEntry registers an alert with the reaper's expiry table. gen is the slot
@@ -142,14 +142,12 @@ type Engine struct {
 	states   []symbolState // fixed len MaxSymbols, indexed by SymbolID
 	slots    *slotArena
 
-	mutQ     chan mutation
+	mutQ     *mutQueue
 	expQ     chan expEntry
 	triggers *TriggerQueue
 	expiry   btype.Table[expEntry] // owned by the reaper only
 	parked   []*snapshot           // flusher-owned: retired snapshots awaiting reader drain
 	refBuf   []refClean            // flusher-owned: per-batch refs-cleanup scratch
-
-	mutDrops atomic.Uint64 // trySubmit misses (full mutQ); drop path only
 
 	mu   sync.Mutex // guards refs, live
 	refs map[AlertID]*alertRef
@@ -179,7 +177,7 @@ func New(cfg Config) *Engine {
 		syms:     NewInterner(),
 		states:   make([]symbolState, cfg.MaxSymbols),
 		slots:    newSlotArena(cfg.MaxAlerts),
-		mutQ:     make(chan mutation, cfg.MutationQueueDepth),
+		mutQ:     newMutQueue(),
 		expQ:     make(chan expEntry, cfg.MutationQueueDepth),
 		triggers: NewTriggerQueue(cfg.TriggerQueueSize),
 		refs:     make(map[AlertID]*alertRef),
@@ -202,6 +200,7 @@ func (e *Engine) Close() {
 		return
 	}
 	close(e.done)
+	e.mutQ.enqueue(mutation{op: mutClose}) // flusher drains to this, then exits
 	e.flushWG.Wait()
 	e.reapWG.Wait()
 	for i := range e.states {
@@ -220,7 +219,7 @@ func (e *Engine) Close() {
 // Triggers exposes the trigger ring for downstream consumption.
 func (e *Engine) Triggers() *TriggerQueue { return e.triggers }
 
-// Stats reports live alerts, dropped triggers, and shed mutations.
+// Stats reports live alerts and dropped triggers.
 func (e *Engine) Stats() Stats {
 	e.mu.Lock()
 	live := e.live
@@ -228,6 +227,5 @@ func (e *Engine) Stats() Stats {
 	return Stats{
 		Live:            live,
 		DroppedTriggers: e.triggers.Dropped(),
-		MutationDrops:   e.mutDrops.Load(),
 	}
 }
