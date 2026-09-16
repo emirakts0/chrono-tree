@@ -11,7 +11,7 @@ import (
 // from every producer must come out exactly once, and pending must return
 // to zero once drained — no drop path exists.
 func TestMutQueueDeliversAllUnderBurst(t *testing.T) {
-	q := newMutQueue()
+	q := newChunkQueue[mutation](mutQueueChunk)
 	const producers, each = 8, 10_000
 	var wg sync.WaitGroup
 	for p := 0; p < producers; p++ {
@@ -54,7 +54,7 @@ func TestMutQueueDeliversAllUnderBurst(t *testing.T) {
 // after a full drain the recycled free list must serve a second burst
 // (steady-state alloc-free) without corruption or loss.
 func TestMutQueueRollsChunksAndRecycles(t *testing.T) {
-	q := newMutQueue()
+	q := newChunkQueue[mutation](mutQueueChunk)
 	const producers = 4
 	each := 3*mutQueueChunk + 17 // crosses several chunk boundaries
 
@@ -102,7 +102,7 @@ func TestMutQueueRollsChunksAndRecycles(t *testing.T) {
 // TestMutQueueDrainStopsAtEmpty pins the batch-closing contract the flusher
 // relies on: drain returns without parking when nothing is claimed.
 func TestMutQueueDrainStopsAtEmpty(t *testing.T) {
-	q := newMutQueue()
+	q := newChunkQueue[mutation](mutQueueChunk)
 	q.enqueue(mutation{op: mutInsert})
 	batch := q.drain(make([]mutation, 0, 256))
 	if len(batch) != 1 {
@@ -123,7 +123,7 @@ func TestMutQueueDrainStopsAtEmpty(t *testing.T) {
 // TestMutQueueDequeueBlocks pins the handoff contract: dequeue parks on
 // empty and is woken by the very next enqueue.
 func TestMutQueueDequeueBlocks(t *testing.T) {
-	q := newMutQueue()
+	q := newChunkQueue[mutation](mutQueueChunk)
 	got := make(chan mutation, 1)
 	go func() { got <- q.dequeue() }()
 	q.enqueue(mutation{op: mutInsert, sid: 7})

@@ -15,7 +15,7 @@ import (
 // block when full — the channel's only non-drop option; the hot path today
 // would drop instead, so this is the channel's best case for comparison.
 func benchMutQChan(b *testing.B, producers int) {
-	const depth = 4096 // DefaultConfig().MutationQueueDepth
+	const depth = 4096 // mutQueueChunk
 	q := make(chan mutation, depth)
 	batch := make([]mutation, 0, 256) // DefaultConfig().FlushBatch
 	go func() {                       // consumer: abandoned at bench end, like the engine's flusher
@@ -118,7 +118,7 @@ func BenchmarkMutQUMPSCContended(b *testing.B) { benchMutQUMPSC(b, 4) }
 // producers, same batching shape. Tail-drain spin uses the locked pending
 // read (exact under the same mutex).
 func benchMutQMutex(b *testing.B, producers int) {
-	q := newMutQueue()
+	q := newChunkQueue[mutation](mutQueueChunk)
 	batch := make([]mutation, 0, 256)
 	go func() { // consumer: abandoned at bench end, like the engine's flusher
 		for {

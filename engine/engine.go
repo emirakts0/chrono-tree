@@ -125,7 +125,7 @@ type Engine struct {
 	states   []symbolState // fixed len MaxSymbols, indexed by SymbolID
 	slots    *slotArena
 
-	mutQ     *mutQueue
+	mutQ     *chunkQueue[mutation]
 	expQ     chan expEntry
 	triggers *TriggerQueue
 	expiry   btype.Table[expEntry] // owned by the reaper only
@@ -157,7 +157,7 @@ func New(cfg Config) *Engine {
 		syms:     NewInterner(),
 		states:   make([]symbolState, cfg.MaxSymbols),
 		slots:    newSlotArena(cfg.MaxAlerts),
-		mutQ:     newMutQueue(),
+		mutQ:     newChunkQueue[mutation](mutQueueChunk),
 		expQ:     make(chan expEntry, cfg.MutationQueueDepth),
 		triggers: NewTriggerQueue(cfg.TriggerQueueSize),
 		refs:     make(map[AlertID]*alertRef),
