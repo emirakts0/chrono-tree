@@ -55,6 +55,15 @@ func (m *chunkQueue[T]) getChunk() *qChunk[T] {
 	return &qChunk[T]{items: make([]T, m.chunk)}
 }
 
+// popLen reports how many populated slots the head chunk holds. Lock held;
+// head != tail implies a full chunk ahead.
+func (m *chunkQueue[T]) popLen() int {
+	if m.head == m.tail {
+		return m.tailLen
+	}
+	return m.chunk
+}
+
 // advanceLocked recycles a fully consumed head chunk. If it is also the
 // tail (queue now empty), its positions reset in place; otherwise head
 // moves to the next chunk. Lock held.
@@ -101,11 +110,7 @@ func (m *chunkQueue[T]) dequeue() T {
 	v := m.head.items[m.headIdx]
 	m.headIdx++
 	m.count--
-	pop := m.chunk // head != tail implies a full chunk
-	if m.head == m.tail {
-		pop = m.tailLen
-	}
-	if m.headIdx == pop {
+	if m.headIdx == m.popLen() {
 		m.advanceLocked()
 	}
 	m.mu.Unlock()
@@ -121,10 +126,7 @@ func (m *chunkQueue[T]) drain(dst []T) []T {
 		n = room
 	}
 	for n > 0 {
-		pop := m.chunk // head != tail implies a full chunk
-		if m.head == m.tail {
-			pop = m.tailLen
-		}
+		pop := m.popLen()
 		c := pop - m.headIdx
 		if c > n {
 			c = n
