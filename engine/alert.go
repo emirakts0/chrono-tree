@@ -195,6 +195,12 @@ func (a *slotArena) alloc() uint32 {
 		a.next++
 	}
 	ci := idx >> slotChunkBits
+	if int(ci) >= len(a.chunks) {
+		// Exhausted: sustained replace churn allocates past the MaxAlerts
+		// bound while retired slots wait out the recycle grace. Fail loudly
+		// instead of a bare index out of range.
+		panic("chrono-tree: slot arena exhausted: increase MaxAlerts or ReaperInterval")
+	}
 	if a.chunks[ci] == nil {
 		a.chunks[ci] = new(slotChunk)
 	}

@@ -1779,3 +1779,25 @@ func TestNewRejectsNonPositiveReaperInterval(t *testing.T) {
 		}()
 	}
 }
+
+// TestSlotArenaExhaustionMessage pins the A2-1 fix: exhausting the arena
+// must fail with an explicit, actionable message — not a bare index out of
+// range from deep inside alloc. Sustained same-ID replace churn allocates
+// past the MaxAlerts-derived chunk bound while retired slots wait out the
+// recycle grace, so exhaustion is reachable in production configurations.
+func TestSlotArenaExhaustionMessage(t *testing.T) {
+	a := newSlotArena(4) // ceil(4/65536)=1 chunk + 1 margin = 2 chunks
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic on arena exhaustion")
+		}
+		msg, ok := r.(string)
+		if !ok || msg != "chrono-tree: slot arena exhausted: increase MaxAlerts or ReaperInterval" {
+			t.Fatalf("panic = %v, want explicit exhaustion message", r)
+		}
+	}()
+	for i := 0; i < 2*slotChunkSize+1; i++ {
+		a.alloc()
+	}
+}
