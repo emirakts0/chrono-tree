@@ -85,13 +85,14 @@ func (e *Engine) drainExp() {
 // word the CAS wins.
 func (e *Engine) sweep(now int64) {
 	const maxPerSweep = 10_000
-	var due []expEntry
+	due := e.dueBuf[:0]             // reaper-owned scratch, like expBuf
 	for x := range e.expiry.All() { // table is expiry-ordered
 		if x.expires > now || len(due) >= maxPerSweep {
 			break
 		}
 		due = append(due, x)
 	}
+	e.dueBuf = due
 	for _, x := range due {
 		e.expiry.Delete(x) // after iteration completes; safe
 		e.mu.Lock()

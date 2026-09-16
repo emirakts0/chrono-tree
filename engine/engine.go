@@ -138,6 +138,7 @@ type Engine struct {
 	expQ      *chunkQueue[expCmd] // lossless register/dereg command queue
 	expNotify chan struct{}       // cap 1: non-blocking reaper wakeup token
 	expBuf    []expCmd            // reaper-owned drain scratch
+	dueBuf    []expEntry          // reaper-owned sweep scratch
 	expLen    atomic.Int64        // reaper-written gauge of expiry.Len(); race-free test/diag view
 	triggers  *TriggerQueue
 	expiry    btype.Table[expEntry] // owned by the reaper only
@@ -176,6 +177,7 @@ func New(cfg Config) *Engine {
 		expQ:      newChunkQueue[expCmd](expChunk),
 		expNotify: make(chan struct{}, 1),
 		expBuf:    make([]expCmd, 0, expChunk),
+		dueBuf:    make([]expEntry, 0, 1024), // grows to sweep high-water, ≤ maxPerSweep
 		triggers:  NewTriggerQueue(cfg.TriggerQueueSize),
 		refs:      make(map[AlertID]*alertRef),
 		done:      make(chan struct{}),
