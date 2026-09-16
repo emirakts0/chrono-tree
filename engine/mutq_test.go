@@ -49,6 +49,56 @@ func TestMutQueueDeliversAllUnderBurst(t *testing.T) {
 	}
 }
 
+// TestMutQueueRollsChunksAndRecycles pins the chunked-buffer path: bursts
+// larger than one chunk must roll across chunk boundaries losslessly, and
+// after a full drain the recycled free list must serve a second burst
+// (steady-state alloc-free) without corruption or loss.
+func TestMutQueueRollsChunksAndRecycles(t *testing.T) {
+	q := newMutQueue()
+	const producers = 4
+	each := 3*mutQueueChunk + 17 // crosses several chunk boundaries
+
+	runBurst := func(tag string) {
+		var wg sync.WaitGroup
+		for p := 0; p < producers; p++ {
+			wg.Add(1)
+			go func(p int) {
+				defer wg.Done()
+				for i := 0; i < each; i++ {
+					q.enqueue(mutation{op: mutRemove, sid: SymbolID(p)})
+				}
+			}(p)
+		}
+		got := make(map[SymbolID]int)
+		batch := make([]mutation, 0, 128) // small batch: forces many drains across chunks
+		total := 0
+		for total < producers*each {
+			batch = q.drain(batch)
+			if len(batch) == 0 {
+				runtime.Gosched() // producers still in flight; yield and retry
+				continue
+			}
+			for _, m := range batch {
+				got[m.sid]++
+				total++
+			}
+			batch = batch[:0]
+		}
+		wg.Wait()
+		for p := 0; p < producers; p++ {
+			if got[SymbolID(p)] != each {
+				t.Fatalf("%s: producer %d delivered %d, want %d", tag, p, got[SymbolID(p)], each)
+			}
+		}
+		if n := q.pending(); n != 0 {
+			t.Fatalf("%s: pending = %d after full drain, want 0", tag, n)
+		}
+	}
+
+	runBurst("first burst")
+	runBurst("second burst") // exercises chunk recycling from the free list
+}
+
 // TestMutQueueDrainStopsAtEmpty pins the batch-closing contract the flusher
 // relies on: drain returns without parking when nothing is claimed.
 func TestMutQueueDrainStopsAtEmpty(t *testing.T) {
