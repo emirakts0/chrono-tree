@@ -249,8 +249,11 @@ func (a *slotArena) gen(idx uint32) uint32 {
 // casStatusAny attempts the transition to from each of froms, retrying
 // while the word keeps moving between matched states, and returns the
 // generation bits of the word it wrote on success. It carries no expected
-// generation: callers must have established slot liveness by other means
-// (the sweep's ref-identity check).
+// generation: callers establish slot liveness by other means — the sweep by
+// ref-identity against e.refs, control-plane paths by holding the refs-map
+// entry — while the full-word CAS itself preserves generation bits, so a
+// stale word from an older handout can never win. Not used by fire: the
+// variadic froms loop costs ~8% on fire-heavy serial scans.
 func (a *slotArena) casStatusAny(idx uint32, to Status, froms ...Status) (uint32, bool) {
 	s := a.get(idx)
 	for {

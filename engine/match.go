@@ -111,7 +111,8 @@ func (e *Engine) fire(sid SymbolID, en *entry, price Price, ts int64) {
 			return // paused, or already fired/retired by another path
 		}
 		// Full-word CAS preserves the generation: a stale entry from an older
-		// generation can never win.
+		// generation can never win. Inlined rather than casStatusAny: the
+		// helper's variadic froms loop costs ~8% on fire-heavy serial scans.
 		if s.CompareAndSwap(cur, cur&^0xff|uint32(StatusTriggered)) {
 			gen = cur >> slotGenShift
 			break

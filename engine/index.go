@@ -199,23 +199,13 @@ func (e *Engine) Upsert(a AlertSpec) error {
 		// Gated replace: queue the old entry's removal only if we win the
 		// CAS to CANCELLED. A terminal slot means another path already owns
 		// the removal — a second one would retire the slot twice.
-		s := e.slots.get(ref.e.idx)
-		for {
-			w := s.Load()
-			if st := slotStatus(w); st != StatusActive && st != StatusPaused {
-				// Terminal: another path owns the removal, but this
-				// goroutine holds the ref, so it owns the expiry dereg —
-				// the flusher's pass will miss the replaced ref.
-				e.deregExpiry(ref)
-				break
-			}
-			if s.CompareAndSwap(w, w&^0xff|uint32(StatusCancelled)) {
-				replace = mutation{op: mutRemove, sid: ref.sid, e: ref.e, gen: w >> slotGenShift}
-				e.deregExpiry(ref)
-				hasReplace = true
-				break
-			}
+		if gen, ok := e.slots.casStatusAny(ref.e.idx, StatusCancelled, StatusActive, StatusPaused); ok {
+			replace = mutation{op: mutRemove, sid: ref.sid, e: ref.e, gen: gen}
+			hasReplace = true
 		}
+		// Either way this goroutine holds the ref, so it owns the expiry
+		// dereg — the flusher's pass will miss the replaced ref.
+		e.deregExpiry(ref)
 		delete(e.refs, a.ID)
 		e.live--
 	}
@@ -295,17 +285,12 @@ func (e *Engine) removeIfLive(id AlertID, want Status) (mutation, error) {
 	if !ok {
 		return mutation{}, ErrNotFound
 	}
-	s := e.slots.get(ref.e.idx)
-	for {
-		w := s.Load()
-		if st := slotStatus(w); st != StatusActive && st != StatusPaused {
-			return mutation{}, ErrInvalidTransition
-		}
-		if s.CompareAndSwap(w, w&^0xff|uint32(want)) {
-			e.deregExpiry(ref)
-			return mutation{op: mutRemove, sid: ref.sid, e: ref.e, gen: w >> slotGenShift}, nil
-		}
+	gen, ok := e.slots.casStatusAny(ref.e.idx, want, StatusActive, StatusPaused)
+	if !ok {
+		return mutation{}, ErrInvalidTransition
 	}
+	e.deregExpiry(ref)
+	return mutation{op: mutRemove, sid: ref.sid, e: ref.e, gen: gen}, nil
 }
 
 // Cancel permanently retires an alert.
