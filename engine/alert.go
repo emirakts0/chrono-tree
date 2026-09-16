@@ -126,14 +126,17 @@ func entryKey(dims [dimMax]uint16, price Price) entry {
 	return entry{dims: dims, price: price}
 }
 
+// maxAlertID is the all-ones UUID: it sorts after every real id, for
+// Descend probes.
+var maxAlertID = AlertID{
+	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+}
+
 // entryKeyMax builds a probe whose id sorts after every real UUID, for
 // Descend: yields every entry with the probe's dims and price <= probe.
 func entryKeyMax(dims [dimMax]uint16, price Price) entry {
-	var maxID AlertID
-	for i := range maxID {
-		maxID[i] = 0xff
-	}
-	return entry{dims: dims, price: price, id: maxID}
+	return entry{dims: dims, price: price, id: maxAlertID}
 }
 
 // slotArena hands out dense uint32 indices into fixed-size chunks of atomic
