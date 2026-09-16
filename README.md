@@ -34,8 +34,6 @@
 - **Copy-on-Write Snapshots** — mutations apply to tree copies and publish with a single atomic store. Ticks never block writers; writers never block ticks.
 - **Exactly-Once Firing** — the ACTIVE → TRIGGERED transition is a single CAS on a per-alert slot, so concurrent ticks and stale snapshots cannot double-fire.
 - **Up to 8 Match Dimensions** — caller-owned values such as venue or book tier fold into the tree key; a fire requires exact equality across all of them.
-- **Bounded Trigger Queue** — delivery is non-blocking and drop-and-count: a slow consumer means counted drops, never backpressure into the matching path.
-- **Background Reaper** — sweeps expiries and recycles alert slots; the mutation and expiry-command queues are unbounded and lossless (mutex-guarded MPSC chunked buffers, batch-drained under one lock), so removals and expiry commands are never shed. Shutdown is goleak-verified.
 
 ## Architecture
 
@@ -45,35 +43,38 @@ flowchart LR
 
     subgraph DP["DATA PLANE · non-blocking hot path"]
         direction TB
-        IN["Symbol Interning<br/>string → uint32, 0 alloc"]
-        SNAP["Snapshot Load<br/>atomic.Pointer"]
-        TREES["8 B-Trees per symbol<br/>4 price types × 2 directions<br/>key: (dims, price, id)"]
-        CAS["Exactly-Once Gate<br/>CAS ACTIVE → TRIGGERED"]
+        IN["Symbol Interning<br/>string → uint32 · 0 alloc"]
+        SNAP["Snapshot Load<br/>atomic.Pointer · pin/unpin"]
+        TREES["8 B-Trees per symbol<br/>4 price types × 2 directions<br/>key: (dims, price, id, idx)<br/>GTE descends · LTE ascends"]
+        CAS["Exactly-Once Gate<br/>validity window → CAS<br/>ACTIVE → TRIGGERED"]
         RING["Trigger Channel<br/>bounded · drop-and-count"]
         IN --> SNAP --> TREES --> CAS --> RING
     end
 
     subgraph CP["CONTROL PLANE · single writer"]
         direction TB
-        API["Upsert / Cancel /<br/>Pause"]
-        MQ["Mutation Queue<br/>lossless · unbounded"]
-        FL["Flusher · COW publish"]
+        API["Upsert / Cancel /<br/>Pause / Sync"]
+        MQ["Mutation Queue<br/>lossless · unbounded<br/>chunked MPSC"]
+        FL["Flusher<br/>COW clone · atomic publish"]
         API --> MQ --> FL
     end
 
     subgraph HK["HOUSEKEEPING"]
-        RP["Reaper<br/>expiry · slot recycle"]
+        direction TB
+        EXQ["Expiry Commands<br/>lossless · unbounded"]
+        RP["Reaper<br/>expiry sweep · slot recycle"]
+        EXQ --> RP
     end
 
     OUT["Consumer<br/>Pop / PopBatch / C"]
 
     T -- "Match()" --> IN
     RING --> OUT
-    FL -. "atomic publish" .-> SNAP
-    RP -. "removals" .-> MQ
-    CAS -. "deferred removal enqueue" .-> MQ
-    API -. "expiry commands (expQ)" .-> RP
-    FL -. "expiry deregs (expQ)" .-> RP
+    FL -. "atomic publish · retire, await readers" .-> SNAP
+    CAS -. "removal (applied by flusher)" .-> MQ
+    RP -. "expiry removals" .-> MQ
+    API -. "register / dereg (expQ)" .-> EXQ
+    FL -. "deregs (expQ)" .-> EXQ
 
     classDef input fill:#FFDE17,stroke:#111,stroke-width:2px,color:#111
     classDef data fill:#69D2E7,stroke:#111,stroke-width:2px,color:#111
@@ -84,7 +85,7 @@ flowchart LR
     class T input
     class IN,SNAP,TREES,CAS,RING data
     class API,MQ,FL control
-    class RP house
+    class EXQ,RP house
     class OUT comp
 
     style DP fill:#E8F7FB,stroke:#111,stroke-width:2px,color:#111
@@ -106,16 +107,6 @@ One package, no network, no I/O — everything follows one decision:
   mutation queue to a single flusher, which applies them to tree copies and
   publishes with one atomic store (RCU). Firing cannot mutate a snapshot: the
   CAS flips a status slot, the tree removal is deferred to the flusher.
-- **Housekeeping** — both background queues are unbounded, mutex-guarded MPSC
-  chunked buffers with condvar wakeup and whole-batch draining: enqueue never
-  blocks and never drops, so bursts are absorbed and nothing is shed. The
-  expiry table registers only alerts with real deadlines; fired, cancelled,
-  or replaced alerts are deregistered eagerly — an exact-key delete flows to
-  the reaper wherever the ref is dropped, and fire's dereg rides its removal
-  through the flusher — with the sweep's ref-identity liveness check as the
-  backstop at the deadline itself. Sweep stays ordered before slot recycle
-  inside the reaper goroutine — that ordering is what makes the gen-free,
-  status-only expiry CAS safe.
 - **Delivery** — winners land on a bounded buffered channel (`Pop` / `PopBatch` / `C`). A
   slow consumer means counted drops, never backpressure into `Match`.
 
@@ -257,9 +248,7 @@ AMD Ryzen 5 5600H (6 cores / 12 threads; g12 is SMT), Linux/amd64, go1.27.0.
 > The `B/op` is background control-plane churn (flusher COW node clones,
 > reaper bookkeeping) that scales with the fire rate, not the tick rate;
 > `allocs/op` reads 0 only because that churn amortizes to well under one
-> allocation per tick. Enqueue allocates only when the mutation buffer grows
-> to absorb a burst; steady-state `Match` remains zero-allocation, pinned by
-> `TestMatchZeroAllocs`.
+> allocation per tick.
 
 Fires pinned at 50k across all six (`SweepHold*`): population scales from 100k
 to 5M alerts while total fires stay constant.
