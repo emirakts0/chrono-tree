@@ -1384,64 +1384,39 @@ func TestSweepSkipsReplacedHandout(t *testing.T) {
 }
 
 // TestExpiryRegistryPointerTiebreak pins comparator uniqueness without gen:
-// a recycled slot's new registration must coexist with the previous
-// occupant's lingering stale entry even at an identical absolute deadline —
-// btype Insert is a no-op on equal keys, so a field-based tie-break would
-// silently drop the new registration.
+// two registrations at an identical absolute deadline must coexist — btype
+// Insert is a no-op on equal keys, so a field-based tie-break would silently
+// drop the second registration. (Since the flusher's removal pass eagerly
+// dergs fired/cancelled/replaced handouts, a stale entry can no longer
+// collide with a recycled slot's fresh registration, so the collision is
+// constructed with two live registrations instead.)
 func TestExpiryRegistryPointerTiebreak(t *testing.T) {
 	defer goleak.VerifyNone(t)
 	cfg := DefaultConfig()
-	cfg.ReaperInterval = 20 * time.Millisecond
+	cfg.ReaperInterval = time.Hour // no sweep interference
 	e := New(cfg)
 	defer e.Close()
-	exp := time.Now().Add(500 * time.Millisecond).UnixNano()
-	a := AlertSpec{ID: AlertID{1}, Symbol: "PTB", PriceType: PriceBid,
-		Direction: DirGTE, TargetPrice: 100, ValidFrom: 1, Expires: exp}
-	if err := e.Upsert(a); err != nil {
-		t.Fatal(err)
-	}
-	e.Sync()
-	e.mu.Lock()
-	aIdx := e.refs[AlertID{1}].e.idx
-	e.mu.Unlock()
-	if err := e.Cancel(AlertID{1}); err != nil {
-		t.Fatal(err)
-	}
-	e.Sync()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		e.slots.mu.Lock()
-		freed := slices.Contains(e.slots.free, aIdx)
-		e.slots.mu.Unlock()
-		if freed {
-			break
+	exp := time.Now().Add(time.Hour).UnixNano()
+	for _, id := range []AlertID{{1}, {2}} {
+		a := AlertSpec{ID: id, Symbol: "PTB", PriceType: PriceBid,
+			Direction: DirGTE, TargetPrice: 100, ValidFrom: 1, Expires: exp}
+		if err := e.Upsert(a); err != nil {
+			t.Fatal(err)
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("slot %d not recycled within 5s", aIdx)
-		}
-		time.Sleep(5 * time.Millisecond)
 	}
-	// B: same slot, same absolute deadline as A's stale registration.
-	b := AlertSpec{ID: AlertID{2}, Symbol: "PTB", PriceType: PriceBid,
-		Direction: DirGTE, TargetPrice: 100, ValidFrom: 1, Expires: exp}
-	if err := e.Upsert(b); err != nil {
-		t.Fatal(err)
-	}
-	e.Sync()
-	deadline = time.Now().Add(5 * time.Second)
-	for e.expQ.pending() > 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("registrations not drained from expQ within 5s")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	waitForExpLen(t, e, 2)
 	e.Close() // quiesce; both registrations must be present and distinct
 	n := 0
+	seen := map[*alertRef]bool{}
 	for x := range e.expiry.All() {
 		n++
 		if x.expires != exp {
 			t.Fatalf("registration expires=%d, want %d", x.expires, exp)
 		}
+		if seen[x.ref] {
+			t.Fatal("duplicate registration for the same ref")
+		}
+		seen[x.ref] = true
 	}
 	if n != 2 {
 		t.Fatalf("table holds %d registrations, want 2 (collision dropped one)", n)

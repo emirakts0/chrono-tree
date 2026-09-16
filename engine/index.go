@@ -133,6 +133,10 @@ func (e *Engine) applyBatch(batch []mutation) (stop bool) {
 		if ref, ok := e.refs[r.id]; ok && ref.e.idx == r.idx {
 			delete(e.refs, r.id)
 			e.live--
+			// The removed handout is terminal; drop its expiry
+			// registration too. deregExpiry only takes the expQ mutex (a
+			// leaf lock), so calling it under e.mu cannot deadlock.
+			e.deregExpiry(ref)
 		}
 	}
 	e.mu.Unlock()
@@ -248,6 +252,18 @@ func (e *Engine) submitExpiry(c expCmd) {
 	default:
 	}
 	e.pushExp(c)
+}
+
+// deregExpiry queues an exact-key expiry-table delete for a ref being
+// dropped: fired, cancelled, or replaced handouts leave no stale entry
+// until their deadline. No-op for never-expiring alerts (never
+// registered). Safe after Close — the enqueue cannot fail, and an
+// unconsumed command is teardown garbage.
+func (e *Engine) deregExpiry(ref *alertRef) {
+	if ref.e.expires == 0 {
+		return
+	}
+	e.pushExp(expCmd{dereg: true, x: expEntry{expires: ref.e.expires, ref: ref}})
 }
 
 // pushExp enqueues an expiry command and wakes the reaper. The token send

@@ -52,3 +52,56 @@ func TestExpiryQueueUnbounded(t *testing.T) {
 	}
 	waitForExpLen(t, e, n)
 }
+
+// TestExpiryDeregOnFire pins the flusher-pass dereg: firing an alert must
+// leave no expiry registration behind. fire itself never touches expQ —
+// the dereg rides the mutRemove into the flusher's refs pass.
+func TestExpiryDeregOnFire(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	cfg := DefaultConfig()
+	cfg.ReaperInterval = time.Hour // no sweep interference
+	e := New(cfg)
+	defer e.Close()
+
+	id := mkID(1)
+	if err := e.Upsert(AlertSpec{ID: id, Symbol: "FIRE", PriceType: PriceLast,
+		Direction: DirGTE, TargetPrice: 100, ValidFrom: 1,
+		Expires: time.Now().Add(time.Hour).UnixNano(), AutoDeactivate: true}); err != nil {
+		t.Fatal(err)
+	}
+	waitForExpLen(t, e, 1)
+	e.Sync() // insert is published; Match below cannot miss it
+	e.Match(&Tick{Symbol: "FIRE", Last: 200, Present: TickAllPresent(),
+		TS: time.Now().UnixNano()})
+	if _, ok := e.Triggers().Pop(); !ok {
+		t.Fatal("alert did not fire")
+	}
+	e.Sync() // flusher applies the removal and queues the dereg
+	waitForExpLen(t, e, 0)
+}
+
+// TestExpiryDeregBackstopSweep is a characterization test of the pre-existing
+// backstop: a stale entry whose deadline passes before its dereg is consumed
+// is still dropped by the sweep's ref-identity liveness check. It must stay
+// green through Tasks 3-4.
+func TestExpiryDeregBackstopSweep(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	cfg := DefaultConfig()
+	cfg.ReaperInterval = 5 * time.Millisecond
+	e := New(cfg)
+	defer e.Close()
+
+	id := mkID(7)
+	if err := e.Upsert(AlertSpec{ID: id, Symbol: "BACK", PriceType: PriceLast,
+		Direction: DirGTE, TargetPrice: 100, ValidFrom: 1,
+		Expires: time.Now().Add(30 * time.Millisecond).UnixNano()}); err != nil {
+		t.Fatal(err)
+	}
+	waitForExpLen(t, e, 1)
+	if err := e.Cancel(id); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+	time.Sleep(60 * time.Millisecond) // deadline passes after the terminal transition
+	waitForExpLen(t, e, 0)
+}
