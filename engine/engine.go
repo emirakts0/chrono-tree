@@ -163,6 +163,9 @@ func New(cfg Config) *Engine {
 			panic("chrono-tree: dim names must be non-empty")
 		}
 	}
+	if cfg.ReaperInterval <= 0 {
+		panic("chrono-tree: ReaperInterval must be positive")
+	}
 	e := &Engine{
 		cfg:       cfg,
 		dimWidth:  uint8(len(cfg.Dims)),

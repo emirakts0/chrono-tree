@@ -1760,3 +1760,22 @@ func TestExpiryRegistryPointerTiebreak(t *testing.T) {
 		t.Fatalf("table holds %d registrations, want 2 (collision dropped one)", n)
 	}
 }
+
+// TestNewRejectsNonPositiveReaperInterval pins the fail-loudly contract: a
+// bad ReaperInterval must panic in New, synchronously, before any goroutine
+// starts — not crash the process later from the reaper's ticker.
+func TestNewRejectsNonPositiveReaperInterval(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	for _, d := range []time.Duration{0, -time.Second} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Fatalf("New(ReaperInterval=%v) did not panic", d)
+				}
+			}()
+			cfg := DefaultConfig()
+			cfg.ReaperInterval = d
+			New(cfg)
+		}()
+	}
+}
