@@ -83,7 +83,7 @@ func (e *Engine) drainExp() {
 // is the ABA guard. The slot CAS decides exactly-once against racing fires
 // and cancels; removal flows to the flusher with the generation from the
 // word the CAS wins.
-func (e *Engine) sweep(now int64) int {
+func (e *Engine) sweep(now int64) {
 	const maxPerSweep = 10_000
 	var due []expEntry
 	for x := range e.expiry.All() { // table is expiry-ordered
@@ -108,5 +108,4 @@ func (e *Engine) sweep(now int64) int {
 		}
 	}
 	e.expLen.Store(int64(e.expiry.Len()))
-	return len(due)
 }
