@@ -192,10 +192,16 @@ func (e *Engine) Upsert(a AlertSpec) error {
 		for {
 			w := s.Load()
 			if st := slotStatus(w); st != StatusActive && st != StatusPaused {
-				break // terminal: another path owns the removal
+				// Terminal: another path owns the removal — but this
+				// goroutine holds the ref being dropped below, so it owns
+				// the expiry dereg; the flusher's pass will miss because
+				// refs[id] is replaced before the removal lands.
+				e.deregExpiry(ref)
+				break
 			}
 			if s.CompareAndSwap(w, w&^0xff|uint32(StatusCancelled)) {
 				replace = mutation{op: mutRemove, sid: ref.sid, e: ref.e, gen: w >> slotGenShift}
+				e.deregExpiry(ref)
 				hasReplace = true
 				break
 			}
@@ -294,6 +300,7 @@ func (e *Engine) removeIfLive(id AlertID, want Status) (mutation, error) {
 			return mutation{}, ErrInvalidTransition
 		}
 		if s.CompareAndSwap(w, w&^0xff|uint32(want)) {
+			e.deregExpiry(ref)
 			return mutation{op: mutRemove, sid: ref.sid, e: ref.e, gen: w >> slotGenShift}, nil
 		}
 	}

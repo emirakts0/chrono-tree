@@ -105,3 +105,99 @@ func TestExpiryDeregBackstopSweep(t *testing.T) {
 	time.Sleep(60 * time.Millisecond) // deadline passes after the terminal transition
 	waitForExpLen(t, e, 0)
 }
+
+// TestExpiryDeregOnCancel pins removeIfLive's dereg: Cancel must drop the
+// registration immediately, not at the deadline.
+func TestExpiryDeregOnCancel(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	cfg := DefaultConfig()
+	cfg.ReaperInterval = time.Hour
+	e := New(cfg)
+	defer e.Close()
+
+	id := mkID(2)
+	if err := e.Upsert(AlertSpec{ID: id, Symbol: "CAN", PriceType: PriceLast,
+		Direction: DirGTE, TargetPrice: 100, ValidFrom: 1,
+		Expires: time.Now().Add(time.Hour).UnixNano()}); err != nil {
+		t.Fatal(err)
+	}
+	waitForExpLen(t, e, 1)
+	if err := e.Cancel(id); err != nil {
+		t.Fatal(err)
+	}
+	waitForExpLen(t, e, 0)
+}
+
+// TestExpiryDeregOnReplace: replacing a live expiring alert must drop the
+// old registration and keep exactly the new handout's.
+func TestExpiryDeregOnReplace(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	cfg := DefaultConfig()
+	cfg.ReaperInterval = time.Hour
+	e := New(cfg)
+
+	id := mkID(3)
+	if err := e.Upsert(AlertSpec{ID: id, Symbol: "REP", PriceType: PriceLast,
+		Direction: DirGTE, TargetPrice: 100, ValidFrom: 1,
+		Expires: time.Now().Add(time.Hour).UnixNano()}); err != nil {
+		t.Fatal(err)
+	}
+	waitForExpLen(t, e, 1)
+	newExp := time.Now().Add(2 * time.Hour).UnixNano()
+	if err := e.Upsert(AlertSpec{ID: id, Symbol: "REP", PriceType: PriceLast,
+		Direction: DirLTE, TargetPrice: 50, ValidFrom: 1, Expires: newExp}); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+	waitForExpLen(t, e, 1) // old gone, new present
+	e.Close()              // reaper drained and gone; table reads are safe
+	var got []expEntry
+	for x := range e.expiry.All() {
+		got = append(got, x)
+	}
+	if len(got) != 1 || got[0].expires != newExp || got[0].ref.e.id != id {
+		t.Fatalf("surviving registration = %+v, want exactly the new handout (expires %d)", got, newExp)
+	}
+}
+
+// TestExpiryDeregOnUpsertAfterTerminal pins the terminal branch: an upsert
+// landing on an already-fired slot holds the fired ref and must dereg it —
+// the flusher pass cannot, because this upsert already replaced refs[id]
+// before the removal is applied.
+func TestExpiryDeregOnUpsertAfterTerminal(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	cfg := DefaultConfig()
+	cfg.ReaperInterval = time.Hour
+	e := New(cfg)
+
+	id := mkID(4)
+	if err := e.Upsert(AlertSpec{ID: id, Symbol: "TERM", PriceType: PriceLast,
+		Direction: DirGTE, TargetPrice: 100, ValidFrom: 1,
+		Expires: time.Now().Add(time.Hour).UnixNano(), AutoDeactivate: true}); err != nil {
+		t.Fatal(err)
+	}
+	waitForExpLen(t, e, 1)
+	e.Sync() // insert is published; Match below cannot miss it
+	e.Match(&Tick{Symbol: "TERM", Last: 200, Present: TickAllPresent(),
+		TS: time.Now().UnixNano()})
+	if _, ok := e.Triggers().Pop(); !ok {
+		t.Fatal("alert did not fire")
+	}
+	// Same-ID upsert before Sync: the slot is TRIGGERED, so Upsert takes
+	// the terminal branch — this goroutine owns the old handout's dereg.
+	newExp := time.Now().Add(2 * time.Hour).UnixNano()
+	if err := e.Upsert(AlertSpec{ID: id, Symbol: "TERM", PriceType: PriceLast,
+		Direction: DirGTE, TargetPrice: 300, ValidFrom: 1, Expires: newExp}); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+	waitForExpLen(t, e, 1)
+	e.Close()
+	var got []expEntry
+	for x := range e.expiry.All() {
+		got = append(got, x)
+	}
+	if len(got) != 1 || got[0].expires != newExp || got[0].ref.e.id != id {
+		t.Fatalf("surviving registration = %+v, want exactly the new handout (expires %d)", got, newExp)
+	}
+}
