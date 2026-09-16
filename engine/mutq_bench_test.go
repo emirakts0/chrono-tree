@@ -114,7 +114,7 @@ func benchMutQUMPSC(b *testing.B, producers int) {
 func BenchmarkMutQUMPSC(b *testing.B)          { benchMutQUMPSC(b, 1) }
 func BenchmarkMutQUMPSCContended(b *testing.B) { benchMutQUMPSC(b, 4) }
 
-// benchMutQMutex mirrors benchMutQUMPSC on the adopted mutQueue: same
+// benchMutQMutex mirrors benchMutQUMPSC on the adopted chunkQueue: same
 // producers, same batching shape. Tail-drain spin uses the locked pending
 // read (exact under the same mutex).
 func benchMutQMutex(b *testing.B, producers int) {

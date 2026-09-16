@@ -8,12 +8,12 @@ import (
 )
 
 // compareExp orders the reaper's expiry table by (expires, ref). The ref
-// pointer tie-break makes keys unique per handout: btype Insert is a no-op
-// on equal keys, and one alertRef allocation per upsert means no two
-// registrations — including a lingering stale one and a recycled slot's
-// fresh occupant with the same absolute deadline — ever collide. Pointers
-// are compared numerically; the pointee is never touched, so the
-// comparator stays dereference-free.
+// pointer tie-break keeps keys unique per handout: btype Insert is a no-op
+// on equal keys, and one alertRef allocation per upsert means an in-flight
+// stale entry (its exact-key dereg still queued behind eager
+// deregistration) and a recycled slot's fresh occupant with the same
+// deadline can never collide. Pointers are compared numerically; the
+// pointee is never touched, so the comparator stays dereference-free.
 func compareExp(a, b expEntry) int {
 	if a.expires < b.expires {
 		return -1
@@ -32,7 +32,7 @@ func compareExp(a, b expEntry) int {
 }
 
 // runReaper is the sole owner of the expiry table: it drains expQ
-// commands (registrations and exact-key dergs), sweeps entries past their
+// commands (registrations and exact-key deregs), sweeps entries past their
 // deadline, and recycles slots past their grace period.
 func (e *Engine) runReaper() {
 	defer e.reapWG.Done()

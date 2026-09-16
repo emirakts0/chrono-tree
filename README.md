@@ -35,7 +35,7 @@
 - **Exactly-Once Firing** — the ACTIVE → TRIGGERED transition is a single CAS on a per-alert slot, so concurrent ticks and stale snapshots cannot double-fire.
 - **Up to 8 Match Dimensions** — caller-owned values such as venue or book tier fold into the tree key; a fire requires exact equality across all of them.
 - **Bounded Trigger Queue** — delivery is non-blocking and drop-and-count: a slow consumer means counted drops, never backpressure into the matching path.
-- **Background Reaper** — sweeps expiries and recycles alert slots; the mutation queue is unbounded and lossless (mutex-guarded MPSC buffer, batch-drained under one lock), so removals are never shed. Shutdown is goleak-verified.
+- **Background Reaper** — sweeps expiries and recycles alert slots; the mutation and expiry-command queues are unbounded and lossless (mutex-guarded MPSC chunked buffers, batch-drained under one lock), so removals and expiry commands are never shed. Shutdown is goleak-verified.
 
 ## Architecture
 
@@ -72,7 +72,7 @@ flowchart LR
     FL -. "atomic publish" .-> SNAP
     RP -. "removals" .-> MQ
     CAS -. "deferred removal enqueue" .-> MQ
-    API -. "expiry registration (expQ)" .-> RP
+    API -. "expiry commands (expQ)" .-> RP
 
     classDef input fill:#FFDE17,stroke:#111,stroke-width:2px,color:#111
     classDef data fill:#69D2E7,stroke:#111,stroke-width:2px,color:#111
@@ -105,13 +105,14 @@ One package, no network, no I/O — everything follows one decision:
   mutation queue to a single flusher, which applies them to tree copies and
   publishes with one atomic store (RCU). Firing cannot mutate a snapshot: the
   CAS flips a status slot, the tree removal is deferred to the flusher.
-- **Housekeeping** — the mutation queue is an unbounded, mutex-guarded MPSC
-  buffer with condvar wakeup and whole-batch draining: enqueue never blocks
-  and never drops, so a full queue can no longer shed removals and no
-  integrity backstop is needed. The expiry table registers only alerts with
-  real deadlines; entries for fired, cancelled, or replaced alerts linger
-  until their deadline passes, when the sweep drops them after a
-  ref-identity liveness check. Sweep stays ordered before slot recycle
+- **Housekeeping** — both background queues are unbounded, mutex-guarded MPSC
+  chunked buffers with condvar wakeup and whole-batch draining: enqueue never
+  blocks and never drops, so bursts are absorbed and nothing is shed. The
+  expiry table registers only alerts with real deadlines; fired, cancelled,
+  or replaced alerts are deregistered eagerly — an exact-key delete flows to
+  the reaper wherever the ref is dropped, and fire's dereg rides its removal
+  through the flusher — with the sweep's ref-identity liveness check as the
+  backstop at the deadline itself. Sweep stays ordered before slot recycle
   inside the reaper goroutine — that ordering is what makes the gen-free,
   status-only expiry CAS safe.
 - **Delivery** — winners land on a bounded buffered channel (`Pop` / `PopBatch` / `C`). A
