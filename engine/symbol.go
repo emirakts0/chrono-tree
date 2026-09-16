@@ -45,3 +45,8 @@ func (in *Interner) Name(id SymbolID) string {
 	n, _ := in.names.Load(id)
 	return n
 }
+
+// Len reports the count of interned symbols; interning is never undone.
+func (in *Interner) Len() uint64 {
+	return uint64(in.next.Load())
+}

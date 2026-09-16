@@ -77,6 +77,7 @@ func main() {
 e.Cancel(id)                         // permanent removal (ErrNotFound if absent)
 e.SetStatus(id, engine.StatusPaused) // ACTIVE → PAUSED: instant, tree untouched
 e.SetStatus(id, engine.StatusActive) // PAUSED → ACTIVE: idempotent
+st, ok := e.Status(id)               // read-only lookup, no mutation
 e.Sync()                             // everything submitted so far is published
 ```
 
@@ -92,6 +93,14 @@ e.Sync()                             // everything submitted so far is published
 - Terminal alerts (`Triggered`, `Cancelled`, `Expired`) reject transitions with
   `ErrInvalidTransition`; pause/resume only flips the slot between `Active` and
   `Paused`.
+- `Status` reflects the ledger: an `Upsert` becomes visible once the flusher
+  publishes it (after `Sync`), and a fired/cancelled alert reports `false`
+  once its removal has been applied — terminal states are observable only in
+  the window before that cleanup.
+- `Stats()` gauges — `Live`, `Symbols` (interned since `New`; the interner
+  never evicts), `MutQDepth` (mutations awaiting the flusher), `ExpiryLen`
+  (reaper registrations), `DroppedTriggers` — are independent point-in-time
+  reads, not one consistent snapshot.
 
 ## Match contract
 

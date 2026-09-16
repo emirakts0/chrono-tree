@@ -269,6 +269,9 @@ func TestInterner(t *testing.T) {
 	if in.Name(a) != "USDTRY" || in.Name(b) != "EURTRY" {
 		t.Fatal("Name round trip broken")
 	}
+	if in.Len() != 2 {
+		t.Fatalf("Len = %d, want 2", in.Len())
+	}
 }
 
 // TestInternerConcurrentIntern pins idempotence under concurrency: the same
@@ -695,6 +698,207 @@ func TestUpsertInsertAndReplace(t *testing.T) {
 	}
 }
 
+// TestUpsertBadDimsDoesNotIntern pins validation ordering: a rejected upsert
+// must not intern its symbol (the Interner never evicts).
+func TestUpsertBadDimsDoesNotIntern(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	cfg := DefaultConfig()
+	cfg.Dims = []string{"venue"}
+	e := New(cfg)
+	defer e.Close()
+	a := testSpec(1, "GARBAGE", PriceBid, DirGTE, 425)
+	a.Dims = Dims() // all sentinels: invalid at width 1
+	if err := e.Upsert(a); err != ErrDims {
+		t.Fatalf("err=%v, want ErrDims", err)
+	}
+	if _, ok := e.syms.Get("GARBAGE"); ok {
+		t.Fatal("rejected upsert interned its symbol")
+	}
+	if s := e.Stats(); s.Symbols != 0 {
+		t.Fatalf("Symbols=%d after rejected upsert, want 0", s.Symbols)
+	}
+	b := testSpec(2, "USDTRY", PriceBid, DirGTE, 425)
+	b.Dims = Dims(7)
+	if err := e.Upsert(b); err != nil {
+		t.Fatal(err)
+	}
+	if s := e.Stats(); s.Symbols != 1 {
+		t.Fatalf("Symbols=%d after valid upsert, want 1", s.Symbols)
+	}
+}
+
+// TestStatusGetter pins the read-only status lookup: Active/Paused are
+// observable without mutating; a removed alert reports false.
+func TestStatusGetter(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	e := New(DefaultConfig())
+	defer e.Close()
+	if st, ok := e.Status(AlertID{9}); ok || st != StatusZero {
+		t.Fatalf("Status(unknown) = (%v, %v), want (StatusZero, false)", st, ok)
+	}
+	e.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, 425))
+	e.Sync()
+	if st, ok := e.Status(AlertID{1}); !ok || st != StatusActive {
+		t.Fatalf("Status = (%v, %v), want (StatusActive, true)", st, ok)
+	}
+	if err := e.SetStatus(AlertID{1}, StatusPaused); err != nil {
+		t.Fatal(err)
+	}
+	if st, ok := e.Status(AlertID{1}); !ok || st != StatusPaused {
+		t.Fatalf("Status = (%v, %v), want (StatusPaused, true)", st, ok)
+	}
+	// Un-pause, fire: after the removal lands the alert is gone from the ledger.
+	if err := e.SetStatus(AlertID{1}, StatusActive); err != nil {
+		t.Fatal(err)
+	}
+	e.Match(&Tick{Symbol: "USDTRY", Bid: 430, Present: TickAllPresent(), TS: 100})
+	drainTriggers(e)
+	e.Sync()
+	if _, ok := e.Status(AlertID{1}); ok {
+		t.Fatal("fired alert still present after removal applied")
+	}
+	// Cancel: same ledger semantics.
+	e.Upsert(testSpec(2, "USDTRY", PriceBid, DirGTE, 425))
+	e.Sync()
+	if err := e.Cancel(AlertID{2}); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+	if _, ok := e.Status(AlertID{2}); ok {
+		t.Fatal("cancelled alert still present after removal applied")
+	}
+}
+
+// TestStatusAndStatsConcurrent pins read-side safety: Status and Stats under
+// the full mutation mix — meaningful under -race.
+func TestStatusAndStatsConcurrent(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	e := New(DefaultConfig())
+	defer e.Close()
+	const syms, perSym, readers = 8, 50, 4
+	stop := make(chan struct{})
+	var rg sync.WaitGroup
+	for r := 0; r < readers; r++ {
+		rg.Add(1)
+		go func() {
+			defer rg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				e.Status(mkID(1))
+				_ = e.Stats()
+			}
+		}()
+	}
+	var wg sync.WaitGroup
+	for w := 0; w < 4; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for s := w; s < syms; s += 4 {
+				sym := fmt.Sprintf("CS%02d", s)
+				for i := 0; i < perSym; i++ {
+					id := mkID(uint32(s*perSym + i + 1))
+					if err := e.Upsert(AlertSpec{ID: id, Symbol: sym, PriceType: PriceLast,
+						Direction: DirGTE, TargetPrice: 100, ValidFrom: 1}); err != nil {
+						t.Error(err)
+						return
+					}
+					if i%3 == 0 {
+						if err := e.SetStatus(id, StatusPaused); err != nil {
+							t.Error(err)
+							return
+						}
+					}
+					if i%5 == 0 {
+						if err := e.Cancel(id); err != nil {
+							t.Error(err)
+							return
+						}
+					}
+				}
+				e.Sync()
+				e.Match(&Tick{Symbol: sym, Last: 200, Present: 1 << uint(PriceLast), TS: 1 << 40})
+				e.Sync()
+			}
+		}(w)
+	}
+	wg.Wait()
+	close(stop)
+	rg.Wait()
+	e.Sync()
+	drainTriggers(e)
+	// The pinned contract: reads stayed safe and the queue drained.
+	if s := e.Stats(); s.MutQDepth != 0 {
+		t.Fatalf("MutQDepth=%d after final Sync, want 0", s.MutQDepth)
+	}
+}
+
+// TestStatsFields pins the observability gauges: Symbols counts interned
+// symbols, MutQDepth drains to zero at Sync, and ExpiryLen tracks the
+// reaper's registration table.
+func TestStatsFields(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	cfg := DefaultConfig()
+	cfg.ReaperInterval = time.Hour // keep registrations in the table
+	e := New(cfg)
+	defer e.Close()
+	exp := time.Now().Add(time.Hour).UnixNano()
+	for i := 0; i < 3; i++ {
+		a := AlertSpec{ID: mkID(uint32(i + 1)), Symbol: fmt.Sprintf("S%d", i),
+			PriceType: PriceBid, Direction: DirGTE, TargetPrice: 100,
+			ValidFrom: 1, Expires: exp}
+		if err := e.Upsert(a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.Sync()
+	s := e.Stats()
+	if s.Symbols != 3 {
+		t.Fatalf("Symbols=%d, want 3", s.Symbols)
+	}
+	if s.MutQDepth != 0 {
+		t.Fatalf("MutQDepth=%d after Sync, want 0", s.MutQDepth)
+	}
+	waitForExpLen(t, e, 3)
+	if s := e.Stats(); s.ExpiryLen != 3 {
+		t.Fatalf("ExpiryLen=%d, want 3", s.ExpiryLen)
+	}
+}
+
+// TestUpsertAlertLimitDoesNotIntern pins the alert-limit gate for new ids: a
+// rejected upsert must not intern its symbol; a replace at full capacity
+// still passes.
+func TestUpsertAlertLimitDoesNotIntern(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	cfg := DefaultConfig()
+	cfg.MaxAlerts = 1
+	e := New(cfg)
+	defer e.Close()
+	if err := e.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, 425)); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Upsert(testSpec(2, "GARBAGE", PriceBid, DirGTE, 1)); err != ErrAlertLimit {
+		t.Fatalf("err=%v, want ErrAlertLimit", err)
+	}
+	if _, ok := e.syms.Get("GARBAGE"); ok {
+		t.Fatal("alert-limit-rejected upsert interned its symbol")
+	}
+	if s := e.Stats(); s.Symbols != 1 {
+		t.Fatalf("Symbols=%d after rejected upsert, want 1", s.Symbols)
+	}
+	// Replace of the live alert passes the gate even at full capacity.
+	if err := e.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, 430)); err != nil {
+		t.Fatalf("replace at full capacity rejected: %v", err)
+	}
+	if s := e.Stats(); s.Symbols != 1 || s.Live != 1 {
+		t.Fatalf("after replace Stats=%+v, want Symbols=1 Live=1", s)
+	}
+}
+
 func TestUpsertValidation(t *testing.T) {
 	defer goleak.VerifyNone(t)
 	e := New(DefaultConfig())
@@ -739,6 +943,12 @@ func TestUpsertLimits(t *testing.T) {
 	if err := e.Upsert(testSpec(3, "USDTRY", PriceBid, DirGTE, 425)); err != ErrAlertLimit {
 		t.Fatalf("err=%v, want ErrAlertLimit", err)
 	}
+	// Free one alert so the next insert passes the alert gate (ErrAlertLimit
+	// takes precedence at both limits) and reaches the symbol limit.
+	if err := e.Cancel(AlertID{10}); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
 	if err := e.Upsert(testSpec(20, "S3", PriceBid, DirGTE, 1)); err != ErrSymbolLimit {
 		t.Fatalf("err=%v, want ErrSymbolLimit", err)
 	}
@@ -892,6 +1102,14 @@ func TestReaperExpires(t *testing.T) {
 	for e.Stats().Live != 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("alert never expired")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// The registration must leave the reaper's table too.
+	e.Sync()
+	for e.Stats().ExpiryLen != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("ExpiryLen=%d after expiry, want 0", e.Stats().ExpiryLen)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

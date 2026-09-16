@@ -163,13 +163,23 @@ func (e *Engine) Upsert(a AlertSpec) error {
 	if e.closed.Load() {
 		return ErrClosed
 	}
-	sid, err := e.stateFor(a.Symbol)
-	if err != nil {
-		return err
-	}
+	// Validate and gate before interning: the Interner never evicts, so a
+	// rejected upsert must leave no intern trace. Replaces skip the limit
+	// (they never grow live); the authoritative re-check stays below.
 	dims, ok := normalizeDims(a.Dims, e.dimWidth)
 	if !ok {
 		return ErrDims
+	}
+	e.mu.Lock()
+	_, replacing := e.refs[a.ID]
+	if !replacing && e.live >= e.cfg.MaxAlerts {
+		e.mu.Unlock()
+		return ErrAlertLimit
+	}
+	e.mu.Unlock()
+	sid, err := e.stateFor(a.Symbol)
+	if err != nil {
+		return err
 	}
 	var replace mutation
 	hasReplace := false
@@ -296,6 +306,19 @@ func (e *Engine) Cancel(id AlertID) error {
 		return err
 	}
 	return e.submit(m)
+}
+
+// Status reports the alert's current lifecycle state. Ledger semantics: an
+// Upsert is visible after the flusher publishes it, and a fired/cancelled
+// alert reports false once its removal has been applied.
+func (e *Engine) Status(id AlertID) (Status, bool) {
+	e.mu.Lock()
+	ref, ok := e.refs[id]
+	e.mu.Unlock()
+	if !ok {
+		return StatusZero, false
+	}
+	return e.slots.status(ref.e.idx), true
 }
 
 // SetStatus transitions an alert between ACTIVE and PAUSED, or cancels it.

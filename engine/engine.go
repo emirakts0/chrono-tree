@@ -72,9 +72,13 @@ func (a *AlertSpec) validate() error {
 	return nil
 }
 
-// Stats is a point-in-time engine snapshot for observability.
+// Stats is a point-in-time observability snapshot; fields are read
+// independently, not as one consistent view.
 type Stats struct {
-	Live            uint64
+	Live            uint64 // live alerts (ledger count)
+	Symbols         uint64 // distinct symbols interned since New; never evicted
+	MutQDepth       int    // mutations waiting for the flusher
+	ExpiryLen       int64  // expiry-table registrations (reaper-written gauge)
 	DroppedTriggers uint64
 }
 
@@ -209,13 +213,16 @@ func (e *Engine) Close() {
 // Triggers exposes the trigger ring for downstream consumption.
 func (e *Engine) Triggers() *TriggerQueue { return e.triggers }
 
-// Stats reports live alerts and dropped triggers.
+// Stats reports live alerts and queue/table gauges for observability.
 func (e *Engine) Stats() Stats {
 	e.mu.Lock()
 	live := e.live
 	e.mu.Unlock()
 	return Stats{
 		Live:            live,
+		Symbols:         e.syms.Len(),
+		MutQDepth:       e.mutQ.pending(),
+		ExpiryLen:       e.expLen.Load(),
 		DroppedTriggers: e.triggers.Dropped(),
 	}
 }
