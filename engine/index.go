@@ -310,11 +310,7 @@ func (e *Engine) removeIfLive(id AlertID, want Status) (mutation, error) {
 
 // Cancel permanently retires an alert.
 func (e *Engine) Cancel(id AlertID) error {
-	m, err := e.removeIfLive(id, StatusCancelled)
-	if err != nil {
-		return err
-	}
-	return e.submit(m)
+	return e.SetStatus(id, StatusCancelled)
 }
 
 // Status reports the alert's current lifecycle state. Ledger semantics: an
