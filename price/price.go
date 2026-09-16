@@ -152,7 +152,7 @@ func Format(v int64, decimals uint8) string {
 	}
 	scale := uint64(pow10[decimals])
 	whole, frac := u/scale, u%scale
-	b := make([]byte, 0, 24)
+	b := make([]byte, 0, int(decimals)+21)
 	if neg {
 		b = append(b, '-')
 	}
@@ -161,10 +161,13 @@ func Format(v int64, decimals uint8) string {
 		return string(b)
 	}
 	b = append(b, '.')
-	fs := strconv.AppendUint(make([]byte, 0, MaxDecimals), frac, 10)
-	for i := len(fs); i < int(decimals); i++ {
+	nd := 1 // fraction digit count; 0 renders as a single "0"
+	for f := frac; f >= 10; f /= 10 {
+		nd++
+	}
+	for i := nd; i < int(decimals); i++ {
 		b = append(b, '0')
 	}
-	b = append(b, fs...)
+	b = strconv.AppendUint(b, frac, 10)
 	return string(b)
 }
