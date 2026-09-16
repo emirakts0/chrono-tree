@@ -9,11 +9,9 @@ import (
 
 // compareExp orders the reaper's expiry table by (expires, ref). The ref
 // pointer tie-break keeps keys unique per handout: btype Insert is a no-op
-// on equal keys, and one alertRef allocation per upsert means an in-flight
-// stale entry whose exact-key dereg is still queued can never collide with
-// a recycled slot's fresh occupant with the same absolute deadline.
-// Pointers are compared numerically; the
-// pointee is never touched, so the comparator stays dereference-free.
+// on equal keys, so a stale entry whose dereg is still queued can never
+// collide with a recycled slot's fresh occupant at the same deadline.
+// Pointers are compared numerically; the pointee is never touched.
 func compareExp(a, b expEntry) int {
 	if a.expires < b.expires {
 		return -1
@@ -54,9 +52,7 @@ func (e *Engine) runReaper() {
 }
 
 // drainExp applies every pending expiry command: registrations insert,
-// deregistrations delete by exact key. Draining at the top of every reaper
-// iteration replaces the incidental queue consumption the old channel
-// select sometimes performed on the tick path.
+// deregistrations delete by exact key.
 func (e *Engine) drainExp() {
 	buf := e.expBuf[:0]
 	for {
@@ -81,15 +77,12 @@ func (e *Engine) drainExp() {
 }
 
 // sweep expires entries whose deadline has passed. Liveness is validated by
-// alertRef pointer identity: e.refs must still map the entry's id to the
-// exact ref the registration borrowed, which rules out fired, cancelled,
-// and replaced handouts without carrying a generation in the entry. Slot
-// reuse cannot interleave with this check because recycle runs in this same
-// goroutine, after sweep returns — pinned ordering; moving recycle ahead of
-// the sweep silently reintroduces the ABA the gen field used to guard.
-// Slot CAS (status-only) still decides exactly-once against racing fires
-// and cancels; removal flows to the flusher like a trigger removal, with
-// the generation derived from the word this CAS wins.
+// alertRef pointer identity against e.refs, which rules out fired,
+// cancelled, and replaced handouts without carrying a generation in the
+// entry. Recycle runs after sweep in this same goroutine — that ordering
+// is the ABA guard. The slot CAS decides exactly-once against racing fires
+// and cancels; removal flows to the flusher with the generation from the
+// word the CAS wins.
 func (e *Engine) sweep(now int64) int {
 	const maxPerSweep = 10_000
 	var due []expEntry
@@ -107,9 +100,9 @@ func (e *Engine) sweep(now int64) int {
 		if !ok || ref != x.ref {
 			continue // stale: fired, cancelled, or replaced since registration
 		}
-		// Gen comes from the word the CAS wins — nothing can bump the
-		// generation until this slot is retired, recycled, and re-handed,
-		// and none of that can happen while this goroutine is in sweep.
+		// The generation cannot change until the slot is retired,
+		// recycled, and re-handed — none of which can happen while this
+		// goroutine is in sweep.
 		if gen, ok := e.slots.casStatusAny(x.ref.e.idx, StatusExpired, StatusActive, StatusPaused); ok {
 			_ = e.submit(mutation{op: mutRemove, sid: x.ref.sid, e: x.ref.e, gen: gen})
 		}

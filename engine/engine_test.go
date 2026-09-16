@@ -404,10 +404,9 @@ func TestFlusherAppliesMutations(t *testing.T) {
 	}
 }
 
-// TestMutationQueueNeverDrops replaces the old shedding test: with the
-// unbounded mutQueue, removals submitted while the flusher is stalled
-// accumulate instead of dropping, and all of them land after the stall —
-// no counter, no integrity backstop.
+// TestMutationQueueNeverDrops: with the unbounded mutQueue, removals
+// submitted while the flusher is stalled accumulate instead of dropping,
+// and all of them land after the stall.
 func TestMutationQueueNeverDrops(t *testing.T) {
 	defer goleak.VerifyNone(t)
 	e := New(DefaultConfig())

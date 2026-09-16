@@ -55,9 +55,8 @@ func BenchmarkMutQChan(b *testing.B)          { benchMutQChan(b, 1) }
 func BenchmarkMutQChanContended(b *testing.B) { benchMutQChan(b, 4) }
 
 // benchUMPSCQueue wraps xsync.UMPSCQueue with a bench-local pending counter
-// so the rejected Gate-1 mutQueue design stays reproducible: no production
-// type is involved, the counter is bookkeeping the underlying queue lacks
-// (it offers no TryDequeue, so drain needs a claim count to stop at empty).
+// (the underlying queue offers no TryDequeue, so drain needs a claim count
+// to stop at empty).
 type benchUMPSCQueue struct {
 	q       *xsync.UMPSCQueue[mutation]
 	pending atomic.Int64
@@ -81,7 +80,7 @@ func (b *benchUMPSCQueue) drain(dst []mutation) []mutation {
 	return dst
 }
 
-// benchMutQUMPSC mirrors benchMutQChan on the rejected UMPSC design: same
+// benchMutQUMPSC mirrors benchMutQChan on the UMPSC alternative: same
 // producers, same batching shape (first blocking dequeue, then
 // pending-bounded drain).
 func benchMutQUMPSC(b *testing.B, producers int) {

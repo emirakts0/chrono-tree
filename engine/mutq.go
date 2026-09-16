@@ -3,25 +3,17 @@ package engine
 import "sync"
 
 // chunkQueue is a lossless MPSC queue: many producers, one consumer — the
-// mutation queue's producers are Match goroutines and the control plane,
-// the expiry-command queue's are Upsert, the flusher, and the control plane.
-// A mutex-guarded, chunked ring of fixed-size buffers with condvar wakeup
-// and whole-batch draining.
+// mutation queue's producers are Match goroutines and the control plane;
+// the expiry-command queue's are Upsert, the flusher, and the control
+// plane. A mutex-guarded, chunked ring of fixed-size buffers with condvar
+// wakeup and whole-batch draining.
 //
-// The storage is a chain of fixed-size chunks recycled through a free list
-// instead of a single growable slice: under sustained fire load the growable
-// buffer's append reallocation recopied the whole queue (measured 285MB /
-// 10.7% of allocations in Sweep1MDims/g12, with B/op up to 4x baseline at
-// g12 parallelism). Chunks are allocated only when the queue first reaches a
-// new depth; emptied chunks are recycled, never recopied, so steady-state
-// enqueue allocates nothing.
-//
-// Memory is bounded by the high-water chunk count, which is bounded in turn
-// by outstanding items (live alerts plus in-flight upserts, ≤ MaxAlerts).
-// Enqueue never blocks and never fails; bursts are absorbed by chunk growth.
-// Chosen over xsync.UMPSCQueue on measurement (Gate 1, see the measurements
-// doc): draining a whole batch under a single lock acquisition beat both the
-// channel baseline and UMPSC by 2-3x.
+// Storage is a chain of fixed-size chunks recycled through a free list
+// rather than one growable slice, so a burst never recopies live entries:
+// chunks are allocated only when the queue first reaches a new depth, and
+// emptied chunks are recycled. Memory is bounded by outstanding items
+// (live alerts plus in-flight upserts, ≤ MaxAlerts). Enqueue never blocks
+// and never fails.
 type chunkQueue[T any] struct {
 	mu      sync.Mutex
 	cond    sync.Cond  // wakes a dequeue parked on empty
@@ -41,12 +33,10 @@ type qChunk[T any] struct {
 	next  *qChunk[T]
 }
 
-// mutQueueChunk is the mutation queue's items-per-chunk, sized at
-// DefaultConfig's historical queue-depth scale; it is not cfg-driven.
+// mutQueueChunk is the mutation queue's items-per-chunk; not cfg-driven.
 const mutQueueChunk = 4096
 
-// expChunk is the expiry-command queue's items-per-chunk; same scale as the
-// mutation queue (≈96KB per chunk at 24B/cmd).
+// expChunk is the expiry-command queue's items-per-chunk.
 const expChunk = 4096
 
 func newChunkQueue[T any](chunk int) *chunkQueue[T] {
@@ -65,10 +55,9 @@ func (m *chunkQueue[T]) getChunk() *qChunk[T] {
 	return &qChunk[T]{items: make([]T, m.chunk)}
 }
 
-// advanceLocked is called when the head chunk is fully consumed. If it is
-// also the tail (queue now empty), its positions reset in place for reuse;
-// otherwise it is recycled to the free list and head moves to the next chunk,
-// which roll-time linking guarantees is already there. Lock held.
+// advanceLocked recycles a fully consumed head chunk. If it is also the
+// tail (queue now empty), its positions reset in place; otherwise head
+// moves to the next chunk. Lock held.
 func (m *chunkQueue[T]) advanceLocked() {
 	if m.head == m.tail {
 		m.headIdx = 0
@@ -82,9 +71,8 @@ func (m *chunkQueue[T]) advanceLocked() {
 	m.free = c
 }
 
-// enqueue appends and wakes a parked consumer. Signal runs outside the
-// lock: it does not require L held, and the mutex is the batching
-// bottleneck.
+// enqueue appends and wakes a parked consumer; the signal runs outside the
+// lock.
 func (m *chunkQueue[T]) enqueue(v T) {
 	m.mu.Lock()
 	if m.tail == nil { // fresh queue: first chunk on demand
@@ -124,10 +112,8 @@ func (m *chunkQueue[T]) dequeue() T {
 	return v
 }
 
-// drain takes up to cap(dst) items under one lock and never parks: it
+// drain takes up to cap(dst) items under one lock and never parks; it
 // observes emptiness exactly because enqueue and drain share the mutex.
-// Copying into dst is the consumer's pre-existing batch copy, not chunk
-// recopying — live entries never move between chunks.
 func (m *chunkQueue[T]) drain(dst []T) []T {
 	m.mu.Lock()
 	n := m.count

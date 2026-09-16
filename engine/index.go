@@ -21,10 +21,8 @@ func (e *Engine) stateFor(sym string) (SymbolID, error) {
 	return sid, nil
 }
 
-// submit queues m for the flusher. It never blocks and never drops: bursts
-// are absorbed by the unbounded queue, bounded in turn by MaxAlerts. The
-// only error is ErrClosed, on a best-effort basis — a residual race with
-// Close is accepted by design.
+// submit queues m for the flusher. It never blocks and never drops; the
+// only error is a best-effort ErrClosed.
 func (e *Engine) submit(m mutation) error {
 	select {
 	case <-e.done:
@@ -46,11 +44,9 @@ func (e *Engine) Sync() {
 
 // runFlusher is the single writer: it drains the mutation queue in batches,
 // applies each batch to COW copies, and republishes per-symbol snapshots.
-// The queue's pending count closes a batch; mutClose is the shutdown
-// sentinel — everything enqueued before it is applied, then the loop exits.
-// The sentinel is detected by applyBatch too: drain can pull it into the
-// middle of a batch, where a dequeue-side check alone would never see it
-// and the flusher would park forever with Close waiting on flushWG.
+// mutClose is the shutdown sentinel — everything enqueued before it is
+// applied, then the loop exits. The sentinel can land mid-batch via drain,
+// so applyBatch detects it too, not just the dequeue-side check.
 func (e *Engine) runFlusher() {
 	defer e.flushWG.Done()
 	batch := make([]mutation, 0, e.cfg.FlushBatch)
@@ -96,13 +92,9 @@ func (e *Engine) applyBatch(batch []mutation) (stop bool) {
 			syncs = append(syncs, m.done)
 			continue
 		case mutClose:
-			// Shutdown sentinel — and the only place a mid-batch sentinel
-			// is seen: drain can pull it in with the batch, where the
-			// dequeue-side check in runFlusher never looks. Swallowing it
-			// here would park the flusher forever with Close blocked on
-			// flushWG. Everything FIFO-before it has been applied, and any
-			// later items already in this batch are harmless removals on an
-			// engine being torn down.
+			// Shutdown sentinel; everything FIFO-before it has been applied.
+			// Detected here as well because drain can pull it mid-batch,
+			// where the dequeue-side check never looks.
 			stop = true
 			continue
 		}
@@ -124,18 +116,17 @@ func (e *Engine) applyBatch(batch []mutation) (stop bool) {
 			removals = append(removals, refClean{id: m.e.id, idx: m.e.idx})
 		}
 	}
-	// One refs pass per batch, not per removal. Same semantics as the
-	// per-removal lock it replaces: the match-this-exact-entry check still
-	// runs under the lock — a same-ID upsert may have replaced the entry,
-	// and only a ref whose idx still equals the removed entry's is deleted.
+	// One refs pass per batch, not per removal: only a ref whose idx still
+	// equals the removed entry's is deleted — a same-ID upsert may have
+	// replaced it.
 	e.mu.Lock()
 	for _, r := range removals {
 		if ref, ok := e.refs[r.id]; ok && ref.e.idx == r.idx {
 			delete(e.refs, r.id)
 			e.live--
 			// The removed handout is terminal; drop its expiry
-			// registration too. deregExpiry only takes the expQ mutex (a
-			// leaf lock), so calling it under e.mu cannot deadlock.
+			// registration. deregExpiry takes only the expQ mutex, so it
+			// is safe under e.mu.
 			e.deregExpiry(ref)
 		}
 	}
@@ -185,17 +176,15 @@ func (e *Engine) Upsert(a AlertSpec) error {
 	e.mu.Lock()
 	if ref, ok := e.refs[a.ID]; ok {
 		// Gated replace: queue the old entry's removal only if we win the
-		// CAS to CANCELLED. If the slot is already terminal, fire/Cancel/
-		// the reaper already owns a removal — a second one would retire the
-		// slot twice and hand the same index to two future alerts.
+		// CAS to CANCELLED. A terminal slot means another path already owns
+		// the removal — a second one would retire the slot twice.
 		s := e.slots.get(ref.e.idx)
 		for {
 			w := s.Load()
 			if st := slotStatus(w); st != StatusActive && st != StatusPaused {
-				// Terminal: another path owns the removal — but this
-				// goroutine holds the ref being dropped below, so it owns
-				// the expiry dereg; the flusher's pass will miss because
-				// refs[id] is replaced before the removal lands.
+				// Terminal: another path owns the removal, but this
+				// goroutine holds the ref, so it owns the expiry dereg —
+				// the flusher's pass will miss the replaced ref.
 				e.deregExpiry(ref)
 				break
 			}
@@ -249,8 +238,7 @@ func (e *Engine) Upsert(a AlertSpec) error {
 }
 
 // submitExpiry registers an alert with the reaper's expiry table. Lossless
-// like submit: never blocks, never drops; the closed check is best-effort,
-// matching submit's accepted residual race with Close.
+// like submit: never blocks, never drops; the closed check is best-effort.
 func (e *Engine) submitExpiry(c expCmd) {
 	select {
 	case <-e.done:
@@ -261,10 +249,7 @@ func (e *Engine) submitExpiry(c expCmd) {
 }
 
 // deregExpiry queues an exact-key expiry-table delete for a ref being
-// dropped: fired, cancelled, or replaced handouts leave no stale entry
-// until their deadline. No-op for never-expiring alerts (never
-// registered). Safe after Close — the enqueue cannot fail, and an
-// unconsumed command is teardown garbage.
+// dropped. No-op for never-expiring alerts, which are never registered.
 func (e *Engine) deregExpiry(ref *alertRef) {
 	if ref.e.expires == 0 {
 		return
@@ -272,10 +257,8 @@ func (e *Engine) deregExpiry(ref *alertRef) {
 	e.pushExp(expCmd{dereg: true, x: expEntry{expires: ref.e.expires, ref: ref}})
 }
 
-// pushExp enqueues an expiry command and wakes the reaper. The token send
-// is non-blocking: a buffered token causes a (possibly empty) re-drain, and
-// an enqueue racing a drain leaves its token for the next select — either
-// way no wakeup is lost.
+// pushExp enqueues an expiry command and wakes the reaper with a
+// non-blocking token; no wakeup can be lost.
 func (e *Engine) pushExp(c expCmd) {
 	e.expQ.enqueue(c)
 	select {
