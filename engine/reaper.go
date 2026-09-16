@@ -10,9 +10,9 @@ import (
 // compareExp orders the reaper's expiry table by (expires, ref). The ref
 // pointer tie-break keeps keys unique per handout: btype Insert is a no-op
 // on equal keys, and one alertRef allocation per upsert means an in-flight
-// stale entry (its exact-key dereg still queued behind eager
-// deregistration) and a recycled slot's fresh occupant with the same
-// deadline can never collide. Pointers are compared numerically; the
+// stale entry whose exact-key dereg is still queued can never collide with
+// a recycled slot's fresh occupant with the same absolute deadline.
+// Pointers are compared numerically; the
 // pointee is never touched, so the comparator stays dereference-free.
 func compareExp(a, b expEntry) int {
 	if a.expires < b.expires {

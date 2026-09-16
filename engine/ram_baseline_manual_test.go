@@ -7,6 +7,7 @@ package engine
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"runtime/pprof"
 	"testing"
@@ -102,11 +103,13 @@ func TestRAMBaseline(t *testing.T) {
 	e.mu.Lock()
 	refsLen := len(e.refs)
 	e.mu.Unlock()
+	// e.expiry / e.slots reads below race the reaper; safe only because this
+	// env-gated manual harness (RAM_BASELINE=1) is never run under -race.
 	t.Logf("census: symbols=%d treeEntries=%d refs=%d expiry=%d slotsAllocated=%d parked=%d live=%d",
 		occupied, treeEntries, refsLen, e.expiry.Len(), e.slots.next, len(e.parked), e.Stats().Live)
 
 	// Heap profile for inuse_space attribution.
-	profPath := "/home/emir/.claude/jobs/692e440c/tmp/ram_idle.pb.gz"
+	profPath := filepath.Join(t.TempDir(), "ram_idle.pb.gz")
 	f, err := os.Create(profPath)
 	if err != nil {
 		t.Fatal(err)
@@ -208,7 +211,7 @@ func TestRAMChurn(t *testing.T) {
 		e.expiry.Len(), liveExpiring,
 		float64(e.expiry.Len())/float64(liveExpiring), e.slots.next, len(e.parked))
 
-	profPath := "/home/emir/.claude/jobs/692e440c/tmp/ram_churn.pb.gz"
+	profPath := filepath.Join(t.TempDir(), "ram_churn.pb.gz")
 	f, err := os.Create(profPath)
 	if err != nil {
 		t.Fatal(err)

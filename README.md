@@ -73,6 +73,7 @@ flowchart LR
     RP -. "removals" .-> MQ
     CAS -. "deferred removal enqueue" .-> MQ
     API -. "expiry commands (expQ)" .-> RP
+    FL -. "expiry deregs (expQ)" .-> RP
 
     classDef input fill:#FFDE17,stroke:#111,stroke-width:2px,color:#111
     classDef data fill:#69D2E7,stroke:#111,stroke-width:2px,color:#111
