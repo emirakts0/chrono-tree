@@ -11,8 +11,8 @@ const DimSentinel uint16 = 0xFFFF
 const dimMax = 8
 
 // Dims builds a sentinel-padded dim array from up to dimMax real values.
-// More than dimMax values panics: the count is bounded by Config.Dims, so
-// this is a programmer error and must fail loudly.
+// More than dimMax values panics: the count is bounded by Config.DimCount,
+// so this is a programmer error and must fail loudly.
 func Dims(values ...uint16) [dimMax]uint16 {
 	if len(values) > dimMax {
 		panic(fmt.Sprintf("chrono-tree: at most %d dims, got %d", dimMax, len(values)))

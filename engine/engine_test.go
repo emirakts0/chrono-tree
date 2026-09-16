@@ -704,7 +704,7 @@ func TestUpsertInsertAndReplace(t *testing.T) {
 func TestUpsertBadDimsDoesNotIntern(t *testing.T) {
 	defer goleak.VerifyNone(t)
 	cfg := DefaultConfig()
-	cfg.Dims = []string{"venue"}
+	cfg.DimCount = 1
 	e := New(cfg)
 	defer e.Close()
 	a := testSpec(1, "GARBAGE", PriceBid, DirGTE, 425)

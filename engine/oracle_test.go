@@ -228,7 +228,7 @@ func TestOracleDims(t *testing.T) {
 	defer goleak.VerifyNone(t)
 	rng := rand.New(rand.NewSource(11))
 	cfg := DefaultConfig()
-	cfg.Dims = []string{"segment", "tier", "region"}
+	cfg.DimCount = 3
 	e := New(cfg)
 	defer e.Close()
 
@@ -330,7 +330,7 @@ func TestOracleDims(t *testing.T) {
 func TestStressRaceDims(t *testing.T) {
 	defer goleak.VerifyNone(t)
 	cfg := DefaultConfig()
-	cfg.Dims = []string{"segment", "tier"}
+	cfg.DimCount = 2
 	e := New(cfg)
 	defer e.Close()
 	const nAlerts = 2000

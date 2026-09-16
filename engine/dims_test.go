@@ -2,7 +2,6 @@ package engine
 
 import (
 	"errors"
-	"fmt"
 	"testing"
 )
 
@@ -54,7 +53,7 @@ func TestNormalizeDims(t *testing.T) {
 
 func TestDimsValidation(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.Dims = []string{"segment", "tier"}
+	cfg.DimCount = 2
 	e := New(cfg)
 	defer e.Close()
 	base := AlertSpec{ID: mkID(1), Symbol: "S", PriceType: PriceAsk,
@@ -113,19 +112,16 @@ func TestNewDimsConfig(t *testing.T) {
 		New(cfg)
 	}
 	nine := DefaultConfig()
-	nine.Dims = make([]string, 9)
-	for i := range nine.Dims {
-		nine.Dims[i] = fmt.Sprintf("d%d", i)
-	}
+	nine.DimCount = dimMax + 1
 	mustPanic("nine dims", nine)
-	empty := DefaultConfig()
-	empty.Dims = []string{"ok", ""}
-	mustPanic("empty name", empty)
+	neg := DefaultConfig()
+	neg.DimCount = -1
+	mustPanic("negative count", neg)
 }
 
 func TestDimsMatching(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.Dims = []string{"segment", "tier"}
+	cfg.DimCount = 2
 	e := New(cfg)
 	defer e.Close()
 	up := func(v uint32, seg, tier uint16, target Price) {
@@ -173,7 +169,7 @@ func TestDimsMatching(t *testing.T) {
 
 func TestMatchDimsZeroAllocs(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.Dims = []string{"segment", "tier"}
+	cfg.DimCount = 2
 	e := New(cfg)
 	defer e.Close()
 	for i := 0; i < 50; i++ {
@@ -194,7 +190,7 @@ func TestMatchDimsZeroAllocs(t *testing.T) {
 
 func TestDimsMatchingLTE(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.Dims = []string{"segment", "tier"}
+	cfg.DimCount = 2
 	e := New(cfg)
 	defer e.Close()
 	up := func(v uint32, tier uint16, target Price) {
@@ -224,7 +220,7 @@ func TestDimsMatchingLTE(t *testing.T) {
 
 func TestMatchMalformedDimsDropped(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.Dims = []string{"segment"}
+	cfg.DimCount = 1
 	e := New(cfg)
 	defer e.Close()
 	if err := e.Upsert(AlertSpec{ID: mkID(1), Symbol: "S", PriceType: PriceAsk,

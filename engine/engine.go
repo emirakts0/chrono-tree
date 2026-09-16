@@ -28,7 +28,7 @@ type Config struct {
 	FlushBatch       int           // max ops applied per flush cycle
 	TriggerQueueSize int           // trigger queue capacity
 	ReaperInterval   time.Duration // expiry sweep + slot recycle period
-	Dims             []string      // positional dimension names; slot i = Dims[i]; max 8
+	DimCount         int           // number of positional match dims; max 8
 }
 
 func DefaultConfig() Config {
@@ -129,7 +129,7 @@ type expCmd struct {
 // Engine is the alert evaluation engine. Zero network, zero I/O.
 type Engine struct {
 	cfg      Config
-	dimWidth uint8 // len(cfg.Dims); fixed for the engine's lifetime
+	dimWidth uint8 // match dim count; fixed for the engine's lifetime
 	syms     *Interner
 	states   []symbolState // fixed len MaxSymbols, indexed by SymbolID
 	slots    *slotArena
@@ -156,20 +156,15 @@ type Engine struct {
 }
 
 func New(cfg Config) *Engine {
-	if len(cfg.Dims) > dimMax {
-		panic(fmt.Sprintf("chrono-tree: at most %d dims, got %d", dimMax, len(cfg.Dims)))
-	}
-	for _, n := range cfg.Dims {
-		if n == "" {
-			panic("chrono-tree: dim names must be non-empty")
-		}
+	if cfg.DimCount < 0 || cfg.DimCount > dimMax {
+		panic(fmt.Sprintf("chrono-tree: at most %d dims, got %d", dimMax, cfg.DimCount))
 	}
 	if cfg.ReaperInterval <= 0 {
 		panic("chrono-tree: ReaperInterval must be positive")
 	}
 	e := &Engine{
 		cfg:       cfg,
-		dimWidth:  uint8(len(cfg.Dims)),
+		dimWidth:  uint8(cfg.DimCount),
 		syms:      NewInterner(),
 		states:    make([]symbolState, cfg.MaxSymbols),
 		slots:     newSlotArena(cfg.MaxAlerts),

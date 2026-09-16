@@ -133,7 +133,7 @@ produce — keep heavy work (persist, notify) in a downstream pool.
 ## Dimensions (optional)
 
 ```go
-cfg.Dims = []string{"venue", "tier"} // fixed for the engine's lifetime, max 8
+cfg.DimCount = 2 // fixed for the engine's lifetime, max 8
 
 // On alerts and ticks alike — a fire requires exact equality on all dims:
 Dims: engine.Dims(venueID, tierID)

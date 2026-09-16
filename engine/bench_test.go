@@ -265,7 +265,7 @@ func checkEngineMatchesOracle(t *testing.T, s *sweepSchedule, dimmed bool) {
 	t.Helper()
 	cfg := DefaultConfig()
 	if dimmed {
-		cfg.Dims = []string{"segment", "tier"}
+		cfg.DimCount = 2
 	}
 	e := New(cfg)
 	defer e.Close()
@@ -356,7 +356,7 @@ func benchSweep(b *testing.B, alerts, fixedFires int, dimmed bool) {
 	}
 	cfg.TriggerQueueSize = qcap
 	if dimmed {
-		cfg.Dims = []string{"segment", "tier"}
+		cfg.DimCount = 2
 	}
 	e := New(cfg)
 	defer e.Close()
