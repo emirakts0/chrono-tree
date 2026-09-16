@@ -33,7 +33,9 @@ var pow10 = [MaxDecimals + 1]int64{
 }
 
 // Parse converts the decimal string s to base units at the given scale.
-// Grammar: [+-]? digits [ '.' digits ]; exponent notation is rejected.
+// Grammar: optional sign, optional integer digits, optional '.' and optional
+// fraction digits, with at least one digit overall (".5" and "1." are
+// accepted); exponent notation is rejected.
 // Fraction digits beyond the scale must be zeros, or Parse fails with
 // ErrPrecisionLoss. Pure integer math, overflow-checked.
 func Parse(s string, decimals uint8) (int64, error) {
@@ -91,7 +93,10 @@ func Parse(s string, decimals uint8) (int64, error) {
 	return v, nil
 }
 
-// ScaleOf returns the smallest scale at which Parse(s, scale) is exact.
+// ScaleOf returns the scale given by the number of fraction digits in s.
+// Parse(s, that scale) is exact, but smaller scales may also be exact when
+// the fraction has trailing zeros: ScaleOf("65000.00") is 2, yet scale 0 is
+// also exact for that value.
 func ScaleOf(s string) (uint8, error) {
 	i := 0
 	if i < len(s) && (s[i] == '+' || s[i] == '-') {
