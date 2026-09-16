@@ -61,10 +61,9 @@ type entry struct {
 }
 
 const (
-	flagActive         uint8 = 1 << 0
 	flagPriceTypeMask  uint8 = 1<<1 | 1<<2
 	flagPriceTypeShift       = 1
-	flagDirection      uint8 = 1 << 3
+	flagDirection      uint8 = 1 << 3 // bit 0 is reserved/free
 )
 
 func (e *entry) priceType() PriceType {
@@ -79,7 +78,7 @@ func (e *entry) direction() Direction {
 }
 
 func makeFlags(pt PriceType, dir Direction) uint8 {
-	f := flagActive | uint8(pt)<<flagPriceTypeShift
+	f := uint8(pt) << flagPriceTypeShift
 	if dir == DirLTE {
 		f |= flagDirection
 	}
@@ -237,16 +236,6 @@ func (a *slotArena) cas(idx uint32, from, to Status) bool {
 		return false
 	}
 	return s.CompareAndSwap(w, w&^0xff|uint32(to))
-}
-
-// casAny attempts the transition to from each of froms once.
-func (a *slotArena) casAny(idx uint32, to Status, froms ...Status) bool {
-	for _, from := range froms {
-		if a.cas(idx, from, to) {
-			return true
-		}
-	}
-	return false
 }
 
 // gen reads the slot's current generation; it moves only at handout (alloc).
