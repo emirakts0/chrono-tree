@@ -65,7 +65,6 @@ const (
 	flagPriceTypeMask  uint8 = 1<<1 | 1<<2
 	flagPriceTypeShift       = 1
 	flagDirection      uint8 = 1 << 3
-	flagAutoDeactivate uint8 = 1 << 4
 )
 
 func (e *entry) priceType() PriceType {
@@ -79,17 +78,10 @@ func (e *entry) direction() Direction {
 	return DirGTE
 }
 
-func (e *entry) autoDeactivate() bool {
-	return e.flags&flagAutoDeactivate != 0
-}
-
-func makeFlags(pt PriceType, dir Direction, autoDeactivate bool) uint8 {
+func makeFlags(pt PriceType, dir Direction) uint8 {
 	f := flagActive | uint8(pt)<<flagPriceTypeShift
 	if dir == DirLTE {
 		f |= flagDirection
-	}
-	if autoDeactivate {
-		f |= flagAutoDeactivate
 	}
 	return f
 }

@@ -66,7 +66,7 @@ func TestExpiryDeregOnFire(t *testing.T) {
 	id := mkID(1)
 	if err := e.Upsert(AlertSpec{ID: id, Symbol: "FIRE", PriceType: PriceLast,
 		Direction: DirGTE, TargetPrice: 100, ValidFrom: 1,
-		Expires: time.Now().Add(time.Hour).UnixNano(), AutoDeactivate: true}); err != nil {
+		Expires: time.Now().Add(time.Hour).UnixNano()}); err != nil {
 		t.Fatal(err)
 	}
 	waitForExpLen(t, e, 1)
@@ -173,7 +173,7 @@ func TestExpiryDeregOnUpsertAfterTerminal(t *testing.T) {
 	id := mkID(4)
 	if err := e.Upsert(AlertSpec{ID: id, Symbol: "TERM", PriceType: PriceLast,
 		Direction: DirGTE, TargetPrice: 100, ValidFrom: 1,
-		Expires: time.Now().Add(time.Hour).UnixNano(), AutoDeactivate: true}); err != nil {
+		Expires: time.Now().Add(time.Hour).UnixNano()}); err != nil {
 		t.Fatal(err)
 	}
 	waitForExpLen(t, e, 1)

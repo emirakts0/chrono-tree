@@ -43,15 +43,14 @@ func DefaultConfig() Config {
 
 // AlertSpec is the validated control-plane input for Upsert.
 type AlertSpec struct {
-	ID             AlertID
-	Symbol         string
-	PriceType      PriceType
-	Direction      Direction
-	TargetPrice    Price // base units
-	ValidFrom      int64 // unix nanos
-	Expires        int64 // unix nanos; 0 = never
-	AutoDeactivate bool
-	Dims           [dimMax]uint16 // width real values; trailing slots normalized
+	ID          AlertID
+	Symbol      string
+	PriceType   PriceType
+	Direction   Direction
+	TargetPrice Price          // base units
+	ValidFrom   int64          // unix nanos
+	Expires     int64          // unix nanos; 0 = never
+	Dims        [dimMax]uint16 // width real values; trailing slots normalized
 }
 
 func (a *AlertSpec) validate() error {

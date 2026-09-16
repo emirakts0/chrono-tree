@@ -36,7 +36,7 @@ func TestChurnInvariants(t *testing.T) {
 	mk := func(id uint32, sym string, price Price, dir Direction, exp int64) AlertSpec {
 		return AlertSpec{ID: mkID(id), Symbol: sym, PriceType: PriceLast,
 			Direction: dir, TargetPrice: price, ValidFrom: 1, Expires: exp,
-			AutoDeactivate: true}
+		}
 	}
 	for s := 0; s < syms; s++ {
 		sym := fmt.Sprintf("CH%02d", s)

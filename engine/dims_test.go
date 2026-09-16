@@ -58,7 +58,7 @@ func TestDimsValidation(t *testing.T) {
 	e := New(cfg)
 	defer e.Close()
 	base := AlertSpec{ID: mkID(1), Symbol: "S", PriceType: PriceAsk,
-		Direction: DirGTE, TargetPrice: 100, ValidFrom: 1, AutoDeactivate: true}
+		Direction: DirGTE, TargetPrice: 100, ValidFrom: 1}
 
 	bad := base // slot 1 (tier) left at sentinel
 	bad.Dims = Dims(1)
@@ -131,7 +131,7 @@ func TestDimsMatching(t *testing.T) {
 	up := func(v uint32, seg, tier uint16, target Price) {
 		t.Helper()
 		if err := e.Upsert(AlertSpec{ID: mkID(v), Symbol: "S", PriceType: PriceAsk,
-			Direction: DirGTE, TargetPrice: target, ValidFrom: 1, AutoDeactivate: true,
+			Direction: DirGTE, TargetPrice: target, ValidFrom: 1,
 			Dims: Dims(seg, tier)}); err != nil {
 			t.Fatalf("upsert %d: %v", v, err)
 		}
@@ -179,7 +179,7 @@ func TestMatchDimsZeroAllocs(t *testing.T) {
 	for i := 0; i < 50; i++ {
 		if err := e.Upsert(AlertSpec{ID: mkID(uint32(i + 1)), Symbol: "S",
 			PriceType: PriceAsk, Direction: DirGTE,
-			TargetPrice: Price(1000 + i*10), ValidFrom: 1, AutoDeactivate: true,
+			TargetPrice: Price(1000 + i*10), ValidFrom: 1,
 			Dims: Dims(uint16(i%3), uint16(i%5))}); err != nil {
 			t.Fatalf("upsert %d: %v", i, err)
 		}
@@ -200,7 +200,7 @@ func TestDimsMatchingLTE(t *testing.T) {
 	up := func(v uint32, tier uint16, target Price) {
 		t.Helper()
 		if err := e.Upsert(AlertSpec{ID: mkID(v), Symbol: "S", PriceType: PriceAsk,
-			Direction: DirLTE, TargetPrice: target, ValidFrom: 1, AutoDeactivate: true,
+			Direction: DirLTE, TargetPrice: target, ValidFrom: 1,
 			Dims: Dims(10, tier)}); err != nil {
 			t.Fatalf("upsert %d: %v", v, err)
 		}
@@ -228,7 +228,7 @@ func TestMatchMalformedDimsDropped(t *testing.T) {
 	e := New(cfg)
 	defer e.Close()
 	if err := e.Upsert(AlertSpec{ID: mkID(1), Symbol: "S", PriceType: PriceAsk,
-		Direction: DirGTE, TargetPrice: 100, ValidFrom: 1, AutoDeactivate: true,
+		Direction: DirGTE, TargetPrice: 100, ValidFrom: 1,
 		Dims: Dims(5)}); err != nil {
 		t.Fatal(err)
 	}

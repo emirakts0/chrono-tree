@@ -17,7 +17,7 @@ func BenchmarkUpsert(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		a := AlertSpec{ID: mkID(uint32(i)), Symbol: fmt.Sprintf("S%03d", i%500),
 			PriceType: PriceLast, Direction: DirGTE, TargetPrice: Price(100 + i%97),
-			ValidFrom: 1, AutoDeactivate: true}
+			ValidFrom: 1}
 		if err := e.Upsert(a); err != nil {
 			b.Fatal(err)
 		}
@@ -43,7 +43,7 @@ func BenchmarkCancel(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		a := AlertSpec{ID: mkID(uint32(i)), Symbol: fmt.Sprintf("C%03d", i%500),
 			PriceType: PriceLast, Direction: DirGTE, TargetPrice: 100,
-			ValidFrom: 1, AutoDeactivate: true}
+			ValidFrom: 1}
 		if err := e.Upsert(a); err != nil {
 			b.Fatal(err)
 		}
@@ -73,7 +73,7 @@ func BenchmarkFireRemoval(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		a := AlertSpec{ID: mkID(uint32(i)), Symbol: "FIRE",
 			PriceType: PriceLast, Direction: DirGTE, TargetPrice: 100,
-			ValidFrom: 1, AutoDeactivate: true}
+			ValidFrom: 1}
 		if err := e.Upsert(a); err != nil {
 			b.Fatal(err)
 		}

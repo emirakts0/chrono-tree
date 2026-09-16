@@ -33,18 +33,13 @@ func TestExpEntrySize(t *testing.T) {
 func TestFlagRoundTrip(t *testing.T) {
 	for _, pt := range []PriceType{PriceBid, PriceAsk, PriceMid, PriceLast} {
 		for _, dir := range []Direction{DirGTE, DirLTE} {
-			for _, auto := range []bool{false, true} {
-				f := makeFlags(pt, dir, auto)
-				e := entry{flags: f}
-				if e.priceType() != pt {
-					t.Fatalf("priceType round trip: got %d want %d", e.priceType(), pt)
-				}
-				if e.direction() != dir {
-					t.Fatalf("direction round trip: got %d want %d", e.direction(), dir)
-				}
-				if e.autoDeactivate() != auto {
-					t.Fatalf("autoDeactivate round trip: got %v want %v", e.autoDeactivate(), auto)
-				}
+			f := makeFlags(pt, dir)
+			e := entry{flags: f}
+			if e.priceType() != pt {
+				t.Fatalf("priceType round trip: got %d want %d", e.priceType(), pt)
+			}
+			if e.direction() != dir {
+				t.Fatalf("direction round trip: got %d want %d", e.direction(), dir)
 			}
 		}
 	}
@@ -347,9 +342,9 @@ func TestTreeIndexDistinct(t *testing.T) {
 func TestSnapshotCopyIsolation(t *testing.T) {
 	s := newSnapshot(0)
 	ti := treeIndex(PriceBid, DirGTE)
-	s.trees[ti].Insert(entry{price: 425, id: AlertID{1}, idx: 1, flags: makeFlags(PriceBid, DirGTE, true)})
+	s.trees[ti].Insert(entry{price: 425, id: AlertID{1}, idx: 1, flags: makeFlags(PriceBid, DirGTE)})
 	cp := s.copy()
-	cp.trees[ti].Insert(entry{price: 100, id: AlertID{2}, idx: 2, flags: makeFlags(PriceBid, DirGTE, true)})
+	cp.trees[ti].Insert(entry{price: 100, id: AlertID{2}, idx: 2, flags: makeFlags(PriceBid, DirGTE)})
 	if s.trees[ti].Len() != 1 || cp.trees[ti].Len() != 2 {
 		t.Fatalf("COW isolation broken: orig=%d copy=%d, want 1 and 2", s.trees[ti].Len(), cp.trees[ti].Len())
 	}
@@ -382,7 +377,7 @@ func TestFlusherAppliesMutations(t *testing.T) {
 		t.Fatal("stateFor did not publish an initial snapshot")
 	}
 	ent := entry{price: 425, id: AlertID{1}, idx: e.slots.alloc(),
-		validFrom: 1, flags: makeFlags(PriceBid, DirGTE, true)}
+		validFrom: 1, flags: makeFlags(PriceBid, DirGTE)}
 	e.slots.setStatus(ent.idx, StatusActive)
 	entGen := e.slots.gen(ent.idx)
 
@@ -426,7 +421,7 @@ func TestMutationQueueNeverDrops(t *testing.T) {
 	e.slots.setStatus(idx0, StatusActive)
 	if err := e.submit(mutation{op: mutRemove, sid: sid,
 		e: entry{price: 99, id: mkID(0), idx: idx0, validFrom: 1,
-			flags: makeFlags(PriceLast, DirGTE, true)}, gen: e.slots.gen(idx0)}); err != nil {
+			flags: makeFlags(PriceLast, DirGTE)}, gen: e.slots.gen(idx0)}); err != nil {
 		e.mu.Unlock()
 		t.Fatal(err)
 	}
@@ -437,7 +432,7 @@ func TestMutationQueueNeverDrops(t *testing.T) {
 		e.slots.setStatus(idx, StatusActive)
 		idxs = append(idxs, idx)
 		ent := entry{price: Price(100 + i), id: mkID(uint32(i + 1)),
-			idx: idx, validFrom: 1, flags: makeFlags(PriceLast, DirGTE, true)}
+			idx: idx, validFrom: 1, flags: makeFlags(PriceLast, DirGTE)}
 		if err := e.submit(mutation{op: mutRemove, sid: sid, e: ent, gen: e.slots.gen(idx)}); err != nil {
 			e.mu.Unlock()
 			t.Fatal(err)
@@ -480,7 +475,7 @@ func TestCloseDuringDrain(t *testing.T) {
 		idx := e.slots.alloc()
 		e.slots.setStatus(idx, StatusActive)
 		ent := entry{price: Price(100 + i%97), id: mkID(uint32(i + 1)),
-			idx: idx, validFrom: 1, flags: makeFlags(PriceLast, DirGTE, true)}
+			idx: idx, validFrom: 1, flags: makeFlags(PriceLast, DirGTE)}
 		if err := e.submit(mutation{op: mutRemove, sid: sid, e: ent, gen: e.slots.gen(idx)}); err != nil {
 			e.mu.Unlock()
 			t.Fatal(err)
@@ -548,7 +543,7 @@ func TestStressConcurrentMixedOps(t *testing.T) {
 				for i := 0; i < perSym; i++ {
 					a := AlertSpec{ID: mkID(uint32(s*perSym + i)), Symbol: sym,
 						PriceType: PriceLast, Direction: DirGTE, TargetPrice: 100,
-						ValidFrom: 1, AutoDeactivate: true}
+						ValidFrom: 1}
 					if err := e.Upsert(a); err != nil {
 						t.Error(err)
 						return
@@ -606,12 +601,12 @@ func TestSyncBarrier(t *testing.T) {
 		e.mu.Lock()
 		e.refs[AlertID{byte(i + 1)}] = &alertRef{sid: sid, e: entry{
 			price: Price(i), id: AlertID{byte(i + 1)}, idx: idx,
-			flags: makeFlags(PriceLast, DirLTE, false)}}
+			flags: makeFlags(PriceLast, DirLTE)}}
 		e.live++
 		e.mu.Unlock()
 		e.submit(mutation{op: mutInsert, sid: sid,
 			e: entry{price: Price(i), id: AlertID{byte(i + 1)}, idx: idx,
-				validFrom: 1, flags: makeFlags(PriceLast, DirLTE, false)}})
+				validFrom: 1, flags: makeFlags(PriceLast, DirLTE)}})
 	}
 	e.Sync()
 	if got := e.states[sid].snap.Load().trees[treeIndex(PriceLast, DirLTE)].Len(); got != 100 {
@@ -660,7 +655,7 @@ func TestStateForOverLimitIsStable(t *testing.T) {
 func testSpec(id byte, sym string, pt PriceType, dir Direction, price Price) AlertSpec {
 	return AlertSpec{
 		ID: AlertID{id}, Symbol: sym, PriceType: pt, Direction: dir,
-		TargetPrice: price, ValidFrom: 1, AutoDeactivate: true,
+		TargetPrice: price, ValidFrom: 1,
 	}
 }
 
@@ -804,10 +799,10 @@ func TestMatchSkips(t *testing.T) {
 	e.SetStatus(AlertID{1}, StatusPaused)
 	// Not yet valid.
 	e.Upsert(AlertSpec{ID: AlertID{2}, Symbol: "USDTRY", PriceType: PriceBid,
-		Direction: DirGTE, TargetPrice: 425, ValidFrom: 200, AutoDeactivate: true})
+		Direction: DirGTE, TargetPrice: 425, ValidFrom: 200})
 	// Expired (lazy inline check; reaper runs on 1s cadence, don't wait).
 	e.Upsert(AlertSpec{ID: AlertID{3}, Symbol: "USDTRY", PriceType: PriceBid,
-		Direction: DirGTE, TargetPrice: 425, ValidFrom: 1, Expires: 50, AutoDeactivate: true})
+		Direction: DirGTE, TargetPrice: 425, ValidFrom: 1, Expires: 50})
 	// Wrong price type: alert on BID, tick carries only ASK.
 	e.Upsert(testSpec(4, "USDTRY", PriceBid, DirGTE, 425))
 	e.Sync()
@@ -887,7 +882,7 @@ func TestReaperExpires(t *testing.T) {
 	expiry := time.Now().Add(40 * time.Millisecond).UnixNano()
 	e.Upsert(AlertSpec{ID: AlertID{9}, Symbol: "USDTRY", PriceType: PriceBid,
 		Direction: DirGTE, TargetPrice: 425, ValidFrom: 1, Expires: expiry,
-		AutoDeactivate: true})
+	})
 	e.Sync()
 	if s := e.Stats(); s.Live != 1 {
 		t.Fatalf("Live=%d, want 1", s.Live)
@@ -917,7 +912,7 @@ func TestStaleExpiryDoesNotKillReusedSlot(t *testing.T) {
 	// A: expiring alert, cancelled immediately; slot retired then recycled.
 	e.Upsert(AlertSpec{ID: AlertID{1}, Symbol: "USDTRY", PriceType: PriceBid,
 		Direction: DirGTE, TargetPrice: 425, ValidFrom: 1, Expires: expiry,
-		AutoDeactivate: true})
+	})
 	e.mu.Lock()
 	aIdx := e.refs[AlertID{1}].e.idx
 	e.mu.Unlock()
@@ -929,7 +924,7 @@ func TestStaleExpiryDoesNotKillReusedSlot(t *testing.T) {
 	time.Sleep(80 * time.Millisecond)
 	// B: never-expiring alert; must recycle A's slot.
 	if err := e.Upsert(AlertSpec{ID: AlertID{2}, Symbol: "EURTRY", PriceType: PriceAsk,
-		Direction: DirLTE, TargetPrice: 500, ValidFrom: 1, AutoDeactivate: true}); err != nil {
+		Direction: DirLTE, TargetPrice: 500, ValidFrom: 1}); err != nil {
 		t.Fatal(err)
 	}
 	e.Sync()
@@ -975,7 +970,7 @@ func TestDuplicateRemovalDoesNotAliasSlots(t *testing.T) {
 	e.slots.setStatus(idx, StatusActive)
 	gen := e.slots.gen(idx)
 	ent := entry{price: 425, id: AlertID{1}, idx: idx, validFrom: 1,
-		flags: makeFlags(PriceBid, DirGTE, true)}
+		flags: makeFlags(PriceBid, DirGTE)}
 	e.submit(mutation{op: mutInsert, sid: sid, e: ent})
 	e.Sync()
 	// Two direct mutRemove submissions for the same entry (gen-identical):

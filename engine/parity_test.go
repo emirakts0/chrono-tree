@@ -70,7 +70,7 @@ func TestOracleStringPriceParity(t *testing.T) {
 			}
 			if err := e.Upsert(AlertSpec{
 				ID: s.id, Symbol: s.sym, PriceType: s.pt, Direction: s.dir,
-				TargetPrice: tp, ValidFrom: 1, AutoDeactivate: true,
+				TargetPrice: tp, ValidFrom: 1,
 			}); err != nil {
 				t.Fatalf("upsert: %v", err)
 			}

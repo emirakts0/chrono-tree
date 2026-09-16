@@ -34,14 +34,13 @@ func TestOracle(t *testing.T) {
 			expires = base + int64(rng.Intn(nTicks/10))*step
 		}
 		s := AlertSpec{
-			ID:             mkID(uint32(i + 1)),
-			Symbol:         fmt.Sprintf("S%d", rng.Intn(20)),
-			PriceType:      PriceType(rng.Intn(int(priceTypeCount))),
-			Direction:      Direction(rng.Intn(2)),
-			TargetPrice:    Price(rng.Intn(1600)),
-			ValidFrom:      validFrom,
-			Expires:        expires,
-			AutoDeactivate: true,
+			ID:          mkID(uint32(i + 1)),
+			Symbol:      fmt.Sprintf("S%d", rng.Intn(20)),
+			PriceType:   PriceType(rng.Intn(int(priceTypeCount))),
+			Direction:   Direction(rng.Intn(2)),
+			TargetPrice: Price(rng.Intn(1600)),
+			ValidFrom:   validFrom,
+			Expires:     expires,
 		}
 		// The generator can emit expires == validFrom (and does at seed 1,
 		// i=1), which validate() rejects as a zero-lifetime alert. Sanitize
@@ -139,7 +138,7 @@ func TestStressRace(t *testing.T) {
 		if err := e.Upsert(AlertSpec{
 			ID: id, Symbol: "HOT", PriceType: PriceType(i % 4),
 			Direction: Direction(i % 2), TargetPrice: Price(100 + i%400),
-			ValidFrom: 1, AutoDeactivate: true,
+			ValidFrom: 1,
 		}); err != nil {
 			t.Fatalf("upsert %d: %v", i, err)
 		}
@@ -188,7 +187,7 @@ func TestStressRace(t *testing.T) {
 					err := e.Upsert(AlertSpec{ID: id, Symbol: "HOT",
 						PriceType: PriceBid, Direction: DirGTE,
 						TargetPrice: Price(100 + rng.Intn(400)),
-						ValidFrom:   1, AutoDeactivate: true})
+						ValidFrom:   1})
 					if err == nil {
 						armsMu.Lock()
 						arms[id]++
@@ -251,15 +250,14 @@ func TestOracleDims(t *testing.T) {
 			expires = base + int64(rng.Intn(nTicks/10))*step
 		}
 		s := AlertSpec{
-			ID:             mkID(uint32(i + 1)),
-			Symbol:         fmt.Sprintf("S%d", rng.Intn(20)),
-			PriceType:      PriceType(rng.Intn(int(priceTypeCount))),
-			Direction:      Direction(rng.Intn(2)),
-			TargetPrice:    Price(rng.Intn(1600)),
-			ValidFrom:      validFrom,
-			Expires:        expires,
-			AutoDeactivate: true,
-			Dims:           randDims(),
+			ID:          mkID(uint32(i + 1)),
+			Symbol:      fmt.Sprintf("S%d", rng.Intn(20)),
+			PriceType:   PriceType(rng.Intn(int(priceTypeCount))),
+			Direction:   Direction(rng.Intn(2)),
+			TargetPrice: Price(rng.Intn(1600)),
+			ValidFrom:   validFrom,
+			Expires:     expires,
+			Dims:        randDims(),
 		}
 		if s.Expires != 0 && s.Expires <= s.ValidFrom {
 			s.Expires = s.ValidFrom + step
@@ -346,8 +344,8 @@ func TestStressRaceDims(t *testing.T) {
 		if err := e.Upsert(AlertSpec{
 			ID: id, Symbol: "HOT", PriceType: PriceType(i % 4),
 			Direction: Direction(i % 2), TargetPrice: Price(100 + i%400),
-			ValidFrom: 1, AutoDeactivate: true,
-			Dims: Dims(uint16(i%3), uint16(i%5)),
+			ValidFrom: 1,
+			Dims:      Dims(uint16(i%3), uint16(i%5)),
 		}); err != nil {
 			t.Fatalf("upsert %d: %v", i, err)
 		}
@@ -397,8 +395,8 @@ func TestStressRaceDims(t *testing.T) {
 					err := e.Upsert(AlertSpec{ID: id, Symbol: "HOT",
 						PriceType: PriceBid, Direction: DirGTE,
 						TargetPrice: Price(100 + rng.Intn(400)),
-						ValidFrom:   1, AutoDeactivate: true,
-						Dims: Dims(uint16(rng.Intn(3)), uint16(rng.Intn(5)))})
+						ValidFrom:   1,
+						Dims:        Dims(uint16(rng.Intn(3)), uint16(rng.Intn(5)))})
 					if err == nil {
 						armsMu.Lock()
 						arms[id]++

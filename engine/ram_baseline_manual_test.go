@@ -61,13 +61,12 @@ func TestRAMBaseline(t *testing.T) {
 		name := fmt.Sprintf("SYM%03d", sym)
 		for i := 0; i < per; i++ {
 			a := AlertSpec{
-				ID:             mkID(uint32(sym*per + i)),
-				Symbol:         name,
-				PriceType:      PriceLast,
-				Direction:      Direction(i & 1),
-				TargetPrice:    Price(100 + i%100),
-				ValidFrom:      1,
-				AutoDeactivate: true,
+				ID:          mkID(uint32(sym*per + i)),
+				Symbol:      name,
+				PriceType:   PriceLast,
+				Direction:   Direction(i & 1),
+				TargetPrice: Price(100 + i%100),
+				ValidFrom:   1,
 			}
 			if err := e.Upsert(a); err != nil {
 				t.Fatal(err)
@@ -164,7 +163,7 @@ func TestRAMChurn(t *testing.T) {
 			a := AlertSpec{ID: mkID(uint32(sym*perSym + i)), Symbol: name,
 				PriceType: PriceLast, Direction: Direction(i & 1),
 				TargetPrice: Price(100 + i%100), ValidFrom: 1,
-				Expires: exp, AutoDeactivate: true}
+				Expires: exp}
 			if err := e.Upsert(a); err != nil {
 				t.Fatal(err)
 			}

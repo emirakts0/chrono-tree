@@ -116,7 +116,7 @@ func genSweep(seed int64, alerts, fixedFires int, dimmed bool) *sweepSchedule {
 			s.alerts[sym] = append(s.alerts[sym], AlertSpec{
 				ID: mkID(idBase + uint32(i)), Symbol: symName,
 				PriceType: PriceLast, Direction: DirGTE, TargetPrice: t,
-				ValidFrom: 1, AutoDeactivate: true, Dims: comboDims(i % combos),
+				ValidFrom: 1, Dims: comboDims(i % combos),
 			})
 		}
 		for i := 0; i < nLTE; i++ {
@@ -124,7 +124,7 @@ func genSweep(seed int64, alerts, fixedFires int, dimmed bool) *sweepSchedule {
 			s.alerts[sym] = append(s.alerts[sym], AlertSpec{
 				ID: mkID(idBase + uint32(nGTE+i)), Symbol: symName,
 				PriceType: PriceLast, Direction: DirLTE, TargetPrice: t,
-				ValidFrom: 1, AutoDeactivate: true, Dims: comboDims(i % combos),
+				ValidFrom: 1, Dims: comboDims(i % combos),
 			})
 		}
 

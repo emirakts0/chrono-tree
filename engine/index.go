@@ -212,7 +212,7 @@ func (e *Engine) Upsert(a AlertSpec) error {
 		validFrom: a.ValidFrom,
 		expires:   a.Expires,
 		idx:       idx,
-		flags:     makeFlags(a.PriceType, a.Direction, a.AutoDeactivate),
+		flags:     makeFlags(a.PriceType, a.Direction),
 	}
 	ref := &alertRef{sid: sid, e: ent}
 	e.mu.Lock()
