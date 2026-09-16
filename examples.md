@@ -93,10 +93,11 @@ e.Sync()                             // everything submitted so far is published
 - Terminal alerts (`Triggered`, `Cancelled`, `Expired`) reject transitions with
   `ErrInvalidTransition`; pause/resume only flips the slot between `Active` and
   `Paused`.
-- `Status` reflects the ledger: an `Upsert` becomes visible once the flusher
-  publishes it (after `Sync`), and a fired/cancelled alert reports `false`
-  once its removal has been applied — terminal states are observable only in
-  the window before that cleanup.
+- `Status` reflects the ledger: an `Upsert` is visible immediately (the ledger
+  entry is updated synchronously, no `Sync` needed), a fired/cancelled alert
+  reports its terminal status right away, and the entry reports `false` once
+  the flusher has applied its removal — terminal states are observable in the
+  window before that cleanup.
 - `Stats()` gauges — `Live`, `Symbols` (interned since `New`; the interner
   never evicts), `MutQDepth` (mutations awaiting the flusher), `ExpiryLen`
   (reaper registrations), `DroppedTriggers` — are independent point-in-time

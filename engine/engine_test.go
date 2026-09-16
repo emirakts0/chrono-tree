@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unsafe"
@@ -737,6 +738,10 @@ func TestStatusGetter(t *testing.T) {
 		t.Fatalf("Status(unknown) = (%v, %v), want (StatusZero, false)", st, ok)
 	}
 	e.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, 425))
+	// The ledger is updated synchronously: visible before the flusher runs.
+	if st, ok := e.Status(AlertID{1}); !ok || st != StatusActive {
+		t.Fatalf("pre-Sync Status = (%v, %v), want (StatusActive, true)", st, ok)
+	}
 	e.Sync()
 	if st, ok := e.Status(AlertID{1}); !ok || st != StatusActive {
 		t.Fatalf("Status = (%v, %v), want (StatusActive, true)", st, ok)
@@ -753,6 +758,10 @@ func TestStatusGetter(t *testing.T) {
 	}
 	e.Match(&Tick{Symbol: "USDTRY", Bid: 430, Present: TickAllPresent(), TS: 100})
 	drainTriggers(e)
+	// Terminal status is observable before the flusher applies the removal.
+	if st, ok := e.Status(AlertID{1}); !ok || st != StatusTriggered {
+		t.Fatalf("pre-Sync Status = (%v, %v), want (StatusTriggered, true)", st, ok)
+	}
 	e.Sync()
 	if _, ok := e.Status(AlertID{1}); ok {
 		t.Fatal("fired alert still present after removal applied")
@@ -951,6 +960,123 @@ func TestUpsertLimits(t *testing.T) {
 	e.Sync()
 	if err := e.Upsert(testSpec(20, "S3", PriceBid, DirGTE, 1)); err != ErrSymbolLimit {
 		t.Fatalf("err=%v, want ErrSymbolLimit", err)
+	}
+}
+
+// TestUpsertSameIDConcurrent pins the single-handout contract: concurrent
+// upserts of one new ID serialize — the later one sees the earlier one's
+// published ref and replaces it — so an ID never gains two live,
+// independently firable tree entries.
+func TestUpsertSameIDConcurrent(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	e := New(DefaultConfig())
+	defer e.Close()
+	const n = 8
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			if err := e.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, Price(400+i))); err != nil {
+				t.Error(err)
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	e.Sync()
+	if s := e.Stats(); s.Live != 1 {
+		t.Fatalf("Live=%d, want 1", s.Live)
+	}
+	sid, _ := e.syms.Get("USDTRY")
+	if got := e.states[sid].snap.Load().trees[treeIndex(PriceBid, DirGTE)].Len(); got != 1 {
+		t.Fatalf("tree Len=%d, want 1 (one live handout per ID)", got)
+	}
+}
+
+// TestUpsertLimitExact pins the limit's atomicity: when concurrent upserts of
+// distinct IDs race for the last slots, exactly MaxAlerts succeed — the
+// check and the publish cannot interleave to overshoot the cap.
+func TestUpsertLimitExact(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	cfg := DefaultConfig()
+	cfg.MaxAlerts = 8
+	e := New(cfg)
+	defer e.Close()
+	const n = 32
+	var okCount atomic.Int64
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 1; i <= n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			if err := e.Upsert(testSpec(byte(i), "USDTRY", PriceBid, DirGTE, 425)); err == nil {
+				okCount.Add(1)
+			} else if err != ErrAlertLimit {
+				t.Errorf("upsert %d: err=%v, want nil or ErrAlertLimit", i, err)
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	e.Sync()
+	if got := okCount.Load(); got != int64(cfg.MaxAlerts) {
+		t.Fatalf("accepted upserts=%d, want exactly %d", got, cfg.MaxAlerts)
+	}
+	if s := e.Stats(); s.Live != cfg.MaxAlerts {
+		t.Fatalf("Live=%d, want %d", s.Live, cfg.MaxAlerts)
+	}
+}
+
+// TestUpsertCancelRaceNoZombie pins the enqueue-before-publish order: a
+// Cancel that observes a ref a same-ID upsert just published enqueues its
+// removal after that upsert's insert, so the tree can never hold an entry
+// whose slot is already retired — a zombie, invisible to the ledger and
+// fatal to a recycled slot's next occupant. Oracle per round: tree count
+// equals ledger count, and the survivors fire exactly once.
+func TestUpsertCancelRaceNoZombie(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	e := New(DefaultConfig())
+	defer e.Close()
+	const rounds = 100
+	for r := 1; r <= rounds; r++ {
+		if err := e.Upsert(testSpec(byte(r), "USDTRY", PriceBid, DirGTE, 425)); err != nil {
+			t.Fatal(err)
+		}
+		e.Sync()
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func(r int) {
+			defer wg.Done()
+			<-start
+			if err := e.Upsert(testSpec(byte(r), "USDTRY", PriceBid, DirGTE, 430)); err != nil {
+				t.Error(err)
+			}
+		}(r)
+		go func(id AlertID) {
+			defer wg.Done()
+			<-start
+			_ = e.Cancel(id) // either order is legal; ErrNotFound/InvalidTransition ok
+		}(AlertID{byte(r)})
+		close(start)
+		wg.Wait()
+		e.Sync()
+		sid, _ := e.syms.Get("USDTRY")
+		n := e.states[sid].snap.Load().trees[treeIndex(PriceBid, DirGTE)].Len()
+		if live := e.Stats().Live; uint64(n) != live {
+			t.Fatalf("round %d: tree Len=%d, Live=%d — zombie entry or lost alert", r, n, live)
+		}
+	}
+	live := e.Stats().Live
+	e.Match(&Tick{Symbol: "USDTRY", Bid: 431, Present: 1 << uint(PriceBid), TS: 1 << 40})
+	e.Sync()
+	if got := len(drainTriggers(e)); uint64(got) != live {
+		t.Fatalf("triggers=%d, want %d (one per live alert, none for zombies)", got, live)
 	}
 }
 

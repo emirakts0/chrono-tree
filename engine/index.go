@@ -163,27 +163,38 @@ func (e *Engine) Upsert(a AlertSpec) error {
 	if e.closed.Load() {
 		return ErrClosed
 	}
-	// Validate and gate before interning: the Interner never evicts, so a
-	// rejected upsert must leave no intern trace. Replaces skip the limit
-	// (they never grow live); the authoritative re-check stays below.
+	// Gate, intern, and publish under one critical section so that:
+	//   - a rejected upsert leaves no intern trace (the Interner never
+	//     evicts): the limit is checked before interning, and no concurrent
+	//     upsert can fill the limit in between;
+	//   - two concurrent upserts of one new ID cannot both take the
+	//     new-alert path — the second sees the first's published ref, so an
+	//     ID never has two live, independently firable handouts;
+	//   - the new ref is published only after its insert (and, on replace,
+	//     the old entry's removal) are queued, so every remover observing
+	//     the ref enqueues its removal after the insert: FIFO order keeps
+	//     remove-after-insert, and a tree entry can never outlive its slot
+	//     and alias a recycled occupant.
+	// Replaces skip the limit (they never grow live). The lock order below
+	// is e.mu → slots/expQ/mutQ; nothing takes e.mu while holding any of
+	// those (the flusher releases mutQ before applyBatch, and the reaper
+	// releases e.mu before submit).
 	dims, ok := normalizeDims(a.Dims, e.dimWidth)
 	if !ok {
 		return ErrDims
 	}
 	e.mu.Lock()
-	_, replacing := e.refs[a.ID]
-	if !replacing && e.live >= e.cfg.MaxAlerts {
+	if _, replacing := e.refs[a.ID]; !replacing && e.live >= e.cfg.MaxAlerts {
 		e.mu.Unlock()
 		return ErrAlertLimit
 	}
-	e.mu.Unlock()
 	sid, err := e.stateFor(a.Symbol)
 	if err != nil {
+		e.mu.Unlock()
 		return err
 	}
 	var replace mutation
 	hasReplace := false
-	e.mu.Lock()
 	if ref, ok := e.refs[a.ID]; ok {
 		// Gated replace: queue the old entry's removal only if we win the
 		// CAS to CANCELLED. A terminal slot means another path already owns
@@ -207,12 +218,7 @@ func (e *Engine) Upsert(a AlertSpec) error {
 		}
 		delete(e.refs, a.ID)
 		e.live--
-	} else if e.live >= e.cfg.MaxAlerts {
-		e.mu.Unlock()
-		return ErrAlertLimit
 	}
-	e.mu.Unlock()
-
 	idx := e.slots.alloc()
 	e.slots.setStatus(idx, StatusActive)
 	ent := entry{
@@ -225,18 +231,18 @@ func (e *Engine) Upsert(a AlertSpec) error {
 		flags:     makeFlags(a.PriceType, a.Direction),
 	}
 	ref := &alertRef{sid: sid, e: ent}
-	e.mu.Lock()
-	e.refs[a.ID] = ref
-	e.live++
-	e.mu.Unlock()
-
-	// Queue order: removal of the old entry lands before the new insert.
+	// Queue order: removal of the old entry lands before the new insert, and
+	// both land before the ref is published. On a best-effort ErrClosed the
+	// old entry is already terminal and its removal is lost — the Close race
+	// accepted by design (see Close).
 	if hasReplace {
 		if err := e.submit(replace); err != nil {
+			e.mu.Unlock()
 			return err
 		}
 	}
 	if err := e.submit(mutation{op: mutInsert, sid: sid, e: ent}); err != nil {
+		e.mu.Unlock()
 		return err
 	}
 	// Only real deadlines are registered; never-expiring alerts have no
@@ -244,6 +250,9 @@ func (e *Engine) Upsert(a AlertSpec) error {
 	if a.Expires != 0 {
 		e.submitExpiry(expCmd{x: expEntry{expires: a.Expires, ref: ref}})
 	}
+	e.refs[a.ID] = ref
+	e.live++
+	e.mu.Unlock()
 	return nil
 }
 
@@ -309,8 +318,9 @@ func (e *Engine) Cancel(id AlertID) error {
 }
 
 // Status reports the alert's current lifecycle state. Ledger semantics: an
-// Upsert is visible after the flusher publishes it, and a fired/cancelled
-// alert reports false once its removal has been applied.
+// Upsert is visible immediately (the ledger is updated synchronously), a
+// terminal transition is observable right away via the slot, and the entry
+// reports false once the flusher has applied its removal.
 func (e *Engine) Status(id AlertID) (Status, bool) {
 	e.mu.Lock()
 	ref, ok := e.refs[id]

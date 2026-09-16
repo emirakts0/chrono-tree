@@ -28,12 +28,12 @@
 
 ## Features
 
-- **Zero-Allocation Matching** — a tick touches only its own symbol's trees, so per-tick cost stays nearly flat even as live alerts grow into the millions; the hot path allocates nothing, a guarantee pinned by tests.
-- **Exact Integer Prices** — no floats anywhere: prices are `int64` base units (`"12.34"` is simply `1234`), and conversion accepts only exactly representable values — the guarantee sub-cent tokens demand.
-- **Partitioned B-Tree Index** — trees are partitioned per symbol, price type and direction, so every entry a scan visits qualifies by construction — no per-entry filters.
-- **Copy-on-Write Snapshots** — mutations apply to tree copies and publish with a single atomic store. Ticks never block writers; writers never block ticks.
-- **Exactly-Once Firing** — the ACTIVE → TRIGGERED transition is a single CAS on a per-alert slot, so concurrent ticks and stale snapshots cannot double-fire.
-- **Up to 8 Match Dimensions** — caller-owned values such as venue or book tier fold into the tree key; a fire requires exact equality across all of them.
+- **Zero-Allocation Matching** — a tick touches only its own symbol's trees, so per-tick cost stays nearly flat into the millions of alerts; the hot path allocates nothing, pinned by tests.
+- **Exact Integer Prices** — no floats: prices are `int64` base units (`"12.34"` = `1234`); conversion accepts only exactly representable values.
+- **Partitioned B-Tree Index** — trees are partitioned per symbol, price type, and direction: every entry a scan visits qualifies by construction.
+- **Copy-on-Write Snapshots** — mutations apply to tree copies and publish with a single atomic store; ticks never block writers, writers never block ticks.
+- **Exactly-Once Firing** — the ACTIVE → TRIGGERED transition is one CAS on a per-alert slot; concurrent ticks and stale snapshots cannot double-fire.
+- **Up to 8 Match Dimensions** — caller-owned values (venue, book tier) fold into the tree key; a fire requires exact equality across all of them.
 
 ## Architecture
 
@@ -98,17 +98,18 @@ One package, no network, no I/O — everything follows one decision:
 
 - **Index** — each alert is a ~64-byte, pointer-free record stored *by value*
   in a [`tidwall/btype`](https://github.com/tidwall/btype) table keyed by
-  `(dims, price, id)`, with the slot handout (`idx`) as an identity
-  tie-break: a delayed removal of a fired handout can never delete the
-  record of a same-key replacement upsert; 8 tables per symbol
-  (4 price types × 2 directions), so every entry a scan visits qualifies by
-  construction.
+  `(dims, price, id)`, with the slot handout (`idx`) as identity tie-break:
+  a delayed removal of a fired handout can never delete a same-key
+  replacement's record. 8 tables per symbol (4 price types × 2 directions),
+  so every visited entry qualifies by construction.
 - **Publication** — upserts and cancels batch through the unbounded, lossless
   mutation queue to a single flusher, which applies them to tree copies and
   publishes with one atomic store (RCU). Firing cannot mutate a snapshot: the
   CAS flips a status slot, the tree removal is deferred to the flusher.
-- **Delivery** — winners land on a bounded buffered channel (`Pop` / `PopBatch` / `C`). A
-  slow consumer means counted drops, never backpressure into `Match`.
+  Upserts gate, intern, enqueue, and publish under one lock — a removal never
+  overtakes the insert it targets.
+- **Delivery** — winners land on a bounded channel (`Pop` / `PopBatch` / `C`);
+  a slow consumer means counted drops, never backpressure into `Match`.
 
 ## Usage
 
@@ -116,28 +117,24 @@ One package, no network, no I/O — everything follows one decision:
 go get github.com/emir/chrono-tree/engine
 ```
 
-Working examples — a full cycle (register, feed, consume, shut down), the
-control plane (cancel, pause/resume, sync), the match contract, trigger
-delivery, and optional match dimensions — live in **[examples.md](examples.md)**.
+Working examples — full cycle, control plane, match contract, trigger
+delivery, match dims — live in **[examples.md](examples.md)**.
 
 ## Benchmarks
 
 ```
 go test ./engine -run '^$' -bench='SweepHold(100k|1M|5M)(Dims)?$' -benchtime=1x -benchmem -count=3
 go test ./engine -run '^$' -bench='Sweep(100k|1M|5M)(Dims)?$' -benchtime=1x -benchmem -count=3
+go test ./engine -run '^$' -bench='Upsert' -benchmem -count=3
 ```
 
 AMD Ryzen 5 5600H (6 cores / 12 threads; g12 is SMT), Linux/amd64, go1.27.0.
 
-> **0 allocs/op, nonzero B/op:** `Match` itself never allocates — pinned by
-> `testing.AllocsPerRun` in `TestMatchZeroAllocs`/`TestMatchDimsZeroAllocs`.
-> The `B/op` is background control-plane churn (flusher COW node clones,
-> reaper bookkeeping) that scales with the fire rate, not the tick rate;
-> `allocs/op` reads 0 only because that churn amortizes to well under one
-> allocation per tick.
+> `Match` never allocates — pinned by `TestMatchZeroAllocs`/`TestMatchDimsZeroAllocs`.
+> Nonzero `B/op` is flusher/reaper churn that scales with fire rate, amortized
+> to under one allocation per tick.
 
-Fires pinned at 50k across all six (`SweepHold*`): population scales from 100k
-to 5M alerts while total fires stay constant.
+Fires pinned at 50k across all `SweepHold*` runs; population scales 100k → 5M.
 
 | benchmark | threads | ns/op | B/op | allocs/op | |
 |---|---:|---:|---:|---:|---|
@@ -160,9 +157,8 @@ to 5M alerts while total fires stay constant.
 | SweepHold5MDims | 4 | 184.4 | 107 | 0 | |
 | SweepHold5MDims | 12 | 117.6 | 64 | 0 | |
 
-Sustained-load sweep (`Sweep*`): the same timeframe with fires proportional
-to population — 50–70% of every scenario fires — so scan length and fire
-rate grow with alert density.
+Sustained-load sweep (`Sweep*`): the same timeframe with fires proportional to
+population (50–70%).
 
 | benchmark | threads | ns/op | B/op | allocs/op | |
 |---|---:|---:|---:|---:|---|
@@ -185,9 +181,8 @@ rate grow with alert density.
 | Sweep5MDims | 4 | 1218 | 558 | 0 | |
 | Sweep5MDims | 12 | 805.5 | 312 | 0 | |
 
-Sustained-load sweep, both families: 500 symbols, 12 virtual seconds at 200
-ticks per symbol-second (1.2M ticks per scenario), price-band frontiers
-advancing. A consumer drains triggers out of band.
+Sustained-load sweep, both families: 500 symbols, 1.2M ticks per scenario,
+price-band frontiers advancing.
 
 ---
 
