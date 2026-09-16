@@ -32,43 +32,52 @@ func compareExp(a, b expEntry) int {
 }
 
 // runReaper is the sole owner of the expiry table: it drains expQ
-// registrations, sweeps entries past their deadline, and recycles slots past
-// their grace period.
+// commands (registrations and exact-key dergs), sweeps entries past their
+// deadline, and recycles slots past their grace period.
 func (e *Engine) runReaper() {
 	defer e.reapWG.Done()
 	e.expiry = *btype.NewTableOptions(btype.TableOptions[expEntry]{Compare: compareExp})
 	ticker := time.NewTicker(e.cfg.ReaperInterval)
 	defer ticker.Stop()
 	for {
+		e.drainExp()
 		select {
-		case x := <-e.expQ:
-			e.expiry.Insert(x)
-			// Drain what's already queued in one go: each outer selectgo
-			// re-reads the ticker channel, which costs a runtime timer lock.
-		drain:
-			for {
-				select {
-				case x := <-e.expQ:
-					e.expiry.Insert(x)
-				default:
-					break drain
-				}
-			}
+		case <-e.expNotify:
 		case now := <-ticker.C:
 			e.sweep(now.UnixNano())
 			e.slots.recycle(time.Now().Add(-2 * e.cfg.ReaperInterval))
 		case <-e.done:
-			for {
-				select {
-				case x := <-e.expQ:
-					e.expiry.Insert(x)
-					continue
-				default:
-				}
-				return
-			}
+			e.drainExp()
+			return
 		}
 	}
+}
+
+// drainExp applies every pending expiry command: registrations insert,
+// deregistrations delete by exact key. Draining at the top of every reaper
+// iteration replaces the incidental queue consumption the old channel
+// select sometimes performed on the tick path.
+func (e *Engine) drainExp() {
+	buf := e.expBuf[:0]
+	for {
+		buf = e.expQ.drain(buf)
+		if len(buf) == 0 {
+			break
+		}
+		for _, c := range buf {
+			if c.dereg {
+				e.expiry.Delete(c.x)
+			} else {
+				e.expiry.Insert(c.x)
+			}
+		}
+		if len(buf) < cap(buf) {
+			break // queue observed empty under the lock
+		}
+		buf = buf[:0]
+	}
+	e.expBuf = buf
+	e.expLen.Store(int64(e.expiry.Len()))
 }
 
 // sweep expires entries whose deadline has passed. Liveness is validated by
@@ -105,5 +114,6 @@ func (e *Engine) sweep(now int64) int {
 			_ = e.submit(mutation{op: mutRemove, sid: x.ref.sid, e: x.ref.e, gen: gen})
 		}
 	}
+	e.expLen.Store(int64(e.expiry.Len()))
 	return len(due)
 }

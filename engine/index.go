@@ -233,18 +233,32 @@ func (e *Engine) Upsert(a AlertSpec) error {
 	// Only real deadlines are registered; never-expiring alerts have no
 	// expiry-table presence at all.
 	if a.Expires != 0 {
-		return e.submitExpiry(expEntry{expires: a.Expires, ref: ref})
+		e.submitExpiry(expCmd{x: expEntry{expires: a.Expires, ref: ref}})
 	}
 	return nil
 }
 
-// submitExpiry registers an alert with the reaper's expiry table.
-func (e *Engine) submitExpiry(x expEntry) error {
+// submitExpiry registers an alert with the reaper's expiry table. Lossless
+// like submit: never blocks, never drops; the closed check is best-effort,
+// matching submit's accepted residual race with Close.
+func (e *Engine) submitExpiry(c expCmd) {
 	select {
-	case e.expQ <- x:
-		return nil
 	case <-e.done:
-		return ErrClosed
+		return
+	default:
+	}
+	e.pushExp(c)
+}
+
+// pushExp enqueues an expiry command and wakes the reaper. The token send
+// is non-blocking: a buffered token causes a (possibly empty) re-drain, and
+// an enqueue racing a drain leaves its token for the next select — either
+// way no wakeup is lost.
+func (e *Engine) pushExp(c expCmd) {
+	e.expQ.enqueue(c)
+	select {
+	case e.expNotify <- struct{}{}:
+	default:
 	}
 }
 

@@ -23,23 +23,21 @@ var (
 
 // Config bounds all preallocated structures.
 type Config struct {
-	MaxSymbols         uint32        // fixed symbolState array size
-	MaxAlerts          uint64        // live alert cap
-	MutationQueueDepth int           // depth of the expiry-registration queue (expQ)
-	FlushBatch         int           // max ops applied per flush cycle
-	TriggerQueueSize   int           // trigger queue capacity
-	ReaperInterval     time.Duration // expiry sweep + slot recycle period
-	Dims               []string      // positional dimension names; slot i = Dims[i]; max 8
+	MaxSymbols       uint32        // fixed symbolState array size
+	MaxAlerts        uint64        // live alert cap
+	FlushBatch       int           // max ops applied per flush cycle
+	TriggerQueueSize int           // trigger queue capacity
+	ReaperInterval   time.Duration // expiry sweep + slot recycle period
+	Dims             []string      // positional dimension names; slot i = Dims[i]; max 8
 }
 
 func DefaultConfig() Config {
 	return Config{
-		MaxSymbols:         1 << 16,
-		MaxAlerts:          10_000_000,
-		MutationQueueDepth: 4096,
-		FlushBatch:         256,
-		TriggerQueueSize:   1 << 16,
-		ReaperInterval:     time.Second,
+		MaxSymbols:       1 << 16,
+		MaxAlerts:        10_000_000,
+		FlushBatch:       256,
+		TriggerQueueSize: 1 << 16,
+		ReaperInterval:   time.Second,
 	}
 }
 
@@ -117,6 +115,14 @@ type expEntry struct {
 	ref     *alertRef
 }
 
+// expCmd is one expiry-table command for the reaper: a registration insert
+// or an exact-key delete. Keys are unique per handout, so ordering between
+// commands for different refs never matters.
+type expCmd struct {
+	dereg bool
+	x     expEntry
+}
+
 // Engine is the alert evaluation engine. Zero network, zero I/O.
 type Engine struct {
 	cfg      Config
@@ -125,12 +131,15 @@ type Engine struct {
 	states   []symbolState // fixed len MaxSymbols, indexed by SymbolID
 	slots    *slotArena
 
-	mutQ     *chunkQueue[mutation]
-	expQ     chan expEntry
-	triggers *TriggerQueue
-	expiry   btype.Table[expEntry] // owned by the reaper only
-	parked   []*snapshot           // flusher-owned: retired snapshots awaiting reader drain
-	refBuf   []refClean            // flusher-owned: per-batch refs-cleanup scratch
+	mutQ      *chunkQueue[mutation]
+	expQ      *chunkQueue[expCmd] // lossless register/dereg command queue
+	expNotify chan struct{}       // cap 1: non-blocking reaper wakeup token
+	expBuf    []expCmd            // reaper-owned drain scratch
+	expLen    atomic.Int64        // reaper-written gauge of expiry.Len(); race-free test/diag view
+	triggers  *TriggerQueue
+	expiry    btype.Table[expEntry] // owned by the reaper only
+	parked    []*snapshot           // flusher-owned: retired snapshots awaiting reader drain
+	refBuf    []refClean            // flusher-owned: per-batch refs-cleanup scratch
 
 	mu   sync.Mutex // guards refs, live
 	refs map[AlertID]*alertRef
@@ -152,16 +161,18 @@ func New(cfg Config) *Engine {
 		}
 	}
 	e := &Engine{
-		cfg:      cfg,
-		dimWidth: uint8(len(cfg.Dims)),
-		syms:     NewInterner(),
-		states:   make([]symbolState, cfg.MaxSymbols),
-		slots:    newSlotArena(cfg.MaxAlerts),
-		mutQ:     newChunkQueue[mutation](mutQueueChunk),
-		expQ:     make(chan expEntry, cfg.MutationQueueDepth),
-		triggers: NewTriggerQueue(cfg.TriggerQueueSize),
-		refs:     make(map[AlertID]*alertRef),
-		done:     make(chan struct{}),
+		cfg:       cfg,
+		dimWidth:  uint8(len(cfg.Dims)),
+		syms:      NewInterner(),
+		states:    make([]symbolState, cfg.MaxSymbols),
+		slots:     newSlotArena(cfg.MaxAlerts),
+		mutQ:      newChunkQueue[mutation](mutQueueChunk),
+		expQ:      newChunkQueue[expCmd](expChunk),
+		expNotify: make(chan struct{}, 1),
+		expBuf:    make([]expCmd, 0, expChunk),
+		triggers:  NewTriggerQueue(cfg.TriggerQueueSize),
+		refs:      make(map[AlertID]*alertRef),
+		done:      make(chan struct{}),
 	}
 	e.flushWG.Add(1)
 	go e.runFlusher()

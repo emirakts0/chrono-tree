@@ -1196,7 +1196,7 @@ func TestNeverExpiringNotRegistered(t *testing.T) {
 	}
 	e.Sync()
 	deadline := time.Now().Add(5 * time.Second)
-	for len(e.expQ) > 0 {
+	for e.expQ.pending() > 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("registrations not drained from expQ within 5s")
 		}
@@ -1429,7 +1429,7 @@ func TestExpiryRegistryPointerTiebreak(t *testing.T) {
 	}
 	e.Sync()
 	deadline = time.Now().Add(5 * time.Second)
-	for len(e.expQ) > 0 {
+	for e.expQ.pending() > 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("registrations not drained from expQ within 5s")
 		}
