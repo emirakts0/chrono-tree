@@ -75,7 +75,7 @@ const (
 // makeEntryMeta packs the entry tail: idx major, then the 23-bit slot
 // generation, then flags. Set once at upsert; never mutated afterwards.
 func makeEntryMeta(idx, gen uint32, flags uint8) uint64 {
-	return uint64(idx)<<metaIdxShift | uint64(gen)<<metaGenShift | uint64(flags)
+	return uint64(idx)<<metaIdxShift | (uint64(gen)&(1<<23-1))<<metaGenShift | uint64(flags)
 }
 
 func entryIdx(e entry) uint32  { return uint32(e.meta >> metaIdxShift) }

@@ -41,6 +41,10 @@ func TestEntryMetaPackUnpack(t *testing.T) {
 	if !(en.meta < probe) {
 		t.Fatalf("real-entry meta %#x not before probe sentinel %#x", en.meta, probe)
 	}
+	// gen is masked to its 23 bits: an oversized gen must not change the word.
+	if makeEntryMeta(idx, gen|1<<23, flags) != en.meta {
+		t.Fatal("oversized gen leaked past its 23 bits")
+	}
 }
 
 func TestExpEntrySize(t *testing.T) {
@@ -407,6 +411,11 @@ func TestFlusherAppliesMutations(t *testing.T) {
 		validFrom: 1, meta: makeEntryMeta(idx, gen, makeFlags(PriceBid, DirGTE))}
 	e.slots.setStatus(idx, StatusActive)
 	entGen := e.slots.gen(idx)
+	// Publish the ref so the cleanup pass below has something real to clean.
+	e.mu.Lock()
+	e.refs[ent.id] = &alertRef{sid: sid, e: ent}
+	e.live++
+	e.mu.Unlock()
 
 	e.submit(mutation{op: mutInsert, sid: sid, e: ent})
 	e.Sync()
@@ -421,8 +430,18 @@ func TestFlusherAppliesMutations(t *testing.T) {
 		t.Fatalf("after remove Len=%d, want 0", got)
 	}
 	// mutRemove cleanup: refs deleted, live decremented, slot retired.
-	if _, ok := e.refs[ent.id]; ok {
+	e.mu.Lock()
+	_, refSurvived := e.refs[ent.id]
+	live := e.live
+	e.mu.Unlock()
+	if refSurvived {
 		t.Fatal("refs entry survived removal")
+	}
+	if live != 0 {
+		t.Fatalf("live = %d after removal, want 0", live)
+	}
+	if w := e.slots.get(idx).Load(); w&slotRetiredBit == 0 {
+		t.Fatal("slot did not acquire the retired bit on removal")
 	}
 }
 
@@ -780,11 +799,15 @@ func TestStatusGetter(t *testing.T) {
 	if err := e.SetStatus(AlertID{1}, StatusActive); err != nil {
 		t.Fatal(err)
 	}
+	// The slot word stays TRIGGERED from the fire CAS until re-handout, so
+	// the flusher's timing cannot race the assertion (a ledger read could).
+	e.mu.Lock()
+	firedIdx := entryIdx(e.refs[AlertID{1}].e)
+	e.mu.Unlock()
 	e.Match(&Tick{Symbol: "USDTRY", Bid: 430, Present: TickAllPresent(), TS: 100})
 	drainTriggers(e)
-	// Terminal status is observable before the flusher applies the removal.
-	if st, ok := e.Status(AlertID{1}); !ok || st != StatusTriggered {
-		t.Fatalf("pre-Sync Status = (%v, %v), want (StatusTriggered, true)", st, ok)
+	if s := e.slots.status(firedIdx); s != StatusTriggered {
+		t.Fatalf("fired slot status = %v, want StatusTriggered", s)
 	}
 	e.Sync()
 	if _, ok := e.Status(AlertID{1}); ok {
