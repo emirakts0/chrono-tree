@@ -112,8 +112,8 @@ func (e *Engine) applyBatch(batch []mutation) (stop bool) {
 			p.next.trees[treeIndex(m.e.priceType(), m.e.direction())].Delete(m.e)
 			// Retire the slot (gen-gated, duplicate removals park at most
 			// once); refs/live cleanup is deferred to one locked pass below.
-			e.slots.retireGen(m.e.idx, m.gen, now)
-			removals = append(removals, refClean{id: m.e.id, idx: m.e.idx})
+			e.slots.retireGen(entryIdx(m.e), m.gen, now)
+			removals = append(removals, refClean{id: m.e.id, idx: entryIdx(m.e)})
 		}
 	}
 	// One refs pass per batch, not per removal: only a ref whose idx still
@@ -121,7 +121,7 @@ func (e *Engine) applyBatch(batch []mutation) (stop bool) {
 	// replaced it.
 	e.mu.Lock()
 	for _, r := range removals {
-		if ref, ok := e.refs[r.id]; ok && ref.e.idx == r.idx {
+		if ref, ok := e.refs[r.id]; ok && entryIdx(ref.e) == r.idx {
 			delete(e.refs, r.id)
 			e.live--
 			// The removed handout is terminal; drop its expiry
@@ -199,7 +199,7 @@ func (e *Engine) Upsert(a AlertSpec) error {
 		// Gated replace: queue the old entry's removal only if we win the
 		// CAS to CANCELLED. A terminal slot means another path already owns
 		// the removal — a second one would retire the slot twice.
-		if gen, ok := e.slots.casStatusAny(ref.e.idx, StatusCancelled, StatusActive, StatusPaused); ok {
+		if gen, ok := e.slots.casStatusAny(entryIdx(ref.e), StatusCancelled, StatusActive, StatusPaused); ok {
 			replace = mutation{op: mutRemove, sid: ref.sid, e: ref.e, gen: gen}
 			hasReplace = true
 		}
@@ -209,7 +209,7 @@ func (e *Engine) Upsert(a AlertSpec) error {
 		delete(e.refs, a.ID)
 		e.live--
 	}
-	idx := e.slots.alloc()
+	idx, gen := e.slots.alloc()
 	e.slots.setStatus(idx, StatusActive)
 	ent := entry{
 		price:     a.TargetPrice,
@@ -217,8 +217,7 @@ func (e *Engine) Upsert(a AlertSpec) error {
 		dims:      dims,
 		validFrom: a.ValidFrom,
 		expires:   a.Expires,
-		idx:       idx,
-		flags:     makeFlags(a.PriceType, a.Direction),
+		meta:      makeEntryMeta(idx, gen, makeFlags(a.PriceType, a.Direction)),
 	}
 	ref := &alertRef{sid: sid, e: ent}
 	// Queue order: removal of the old entry lands before the new insert, and
@@ -285,7 +284,7 @@ func (e *Engine) removeIfLive(id AlertID, want Status) (mutation, error) {
 	if !ok {
 		return mutation{}, ErrNotFound
 	}
-	gen, ok := e.slots.casStatusAny(ref.e.idx, want, StatusActive, StatusPaused)
+	gen, ok := e.slots.casStatusAny(entryIdx(ref.e), want, StatusActive, StatusPaused)
 	if !ok {
 		return mutation{}, ErrInvalidTransition
 	}
@@ -309,7 +308,7 @@ func (e *Engine) Status(id AlertID) (Status, bool) {
 	if !ok {
 		return StatusZero, false
 	}
-	return e.slots.status(ref.e.idx), true
+	return e.slots.status(entryIdx(ref.e)), true
 }
 
 // SetStatus transitions an alert between ACTIVE and PAUSED, or cancels it.
@@ -337,7 +336,7 @@ func (e *Engine) SetStatus(id AlertID, target Status) error {
 	if target == StatusActive {
 		from, to = StatusPaused, StatusActive
 	}
-	s := e.slots.get(ref.e.idx)
+	s := e.slots.get(entryIdx(ref.e))
 	for {
 		w := s.Load()
 		switch slotStatus(w) {

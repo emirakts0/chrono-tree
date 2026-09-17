@@ -110,7 +110,7 @@ func TestChurnInvariants(t *testing.T) {
 		for ti := range snap.trees {
 			for en := range snap.trees[ti].All() {
 				indexed++
-				st := e.slots.status(en.idx)
+				st := e.slots.status(entryIdx(en))
 				if st != StatusActive && st != StatusPaused {
 					t.Fatalf("tree entry %x indexed with status %v", en.id, st)
 				}
@@ -118,8 +118,8 @@ func TestChurnInvariants(t *testing.T) {
 				if !ok {
 					t.Fatalf("tree entry %x missing from refs", en.id)
 				}
-				if r.e.idx != en.idx {
-					t.Fatalf("refs/tree idx disagree for %x: %d vs %d", en.id, r.e.idx, en.idx)
+				if entryIdx(r.e) != entryIdx(en) {
+					t.Fatalf("refs/tree idx disagree for %x: %d vs %d", en.id, entryIdx(r.e), entryIdx(en))
 				}
 			}
 		}

@@ -104,7 +104,7 @@ func (e *Engine) sweep(now int64) {
 		// The generation cannot change until the slot is retired,
 		// recycled, and re-handed — none of which can happen while this
 		// goroutine is in sweep.
-		if gen, ok := e.slots.casStatusAny(x.ref.e.idx, StatusExpired, StatusActive, StatusPaused); ok {
+		if gen, ok := e.slots.casStatusAny(entryIdx(x.ref.e), StatusExpired, StatusActive, StatusPaused); ok {
 			_ = e.submit(mutation{op: mutRemove, sid: x.ref.sid, e: x.ref.e, gen: gen})
 		}
 	}

@@ -56,8 +56,7 @@ type entry struct {
 	dims      [dimMax]uint16 // leading sort keys
 	validFrom int64          // unix nanos
 	expires   int64          // unix nanos; 0 = never
-	idx       uint32         // slot arena index
-	flags     uint8
+	meta      uint64         // idx (bits 32-63) | gen (bits 8-30) | flags (bits 0-7)
 }
 
 const (
@@ -66,12 +65,29 @@ const (
 	flagDirection      uint8 = 1 << 3 // bit 0 is reserved/free
 )
 
+const (
+	metaFlagsMask = uint64(0xff)
+	metaGenShift  = 8
+	metaGenMask   = uint64(0x7f_ff_ff) << metaGenShift // 23 bits, matches the slot word
+	metaIdxShift  = 32
+)
+
+// makeEntryMeta packs the entry tail: idx major, then the 23-bit slot
+// generation, then flags. Set once at upsert; never mutated afterwards.
+func makeEntryMeta(idx, gen uint32, flags uint8) uint64 {
+	return uint64(idx)<<metaIdxShift | uint64(gen)<<metaGenShift | uint64(flags)
+}
+
+func entryIdx(e entry) uint32  { return uint32(e.meta >> metaIdxShift) }
+func entryGen(e entry) uint32  { return uint32(e.meta&metaGenMask) >> metaGenShift }
+func entryFlags(e entry) uint8 { return uint8(e.meta & metaFlagsMask) }
+
 func (e *entry) priceType() PriceType {
-	return PriceType(e.flags & flagPriceTypeMask >> flagPriceTypeShift)
+	return PriceType(entryFlags(*e) & flagPriceTypeMask >> flagPriceTypeShift)
 }
 
 func (e *entry) direction() Direction {
-	if e.flags&flagDirection != 0 {
+	if entryFlags(*e)&flagDirection != 0 {
 		return DirLTE
 	}
 	return DirGTE
@@ -88,7 +104,8 @@ func makeFlags(pt PriceType, dir Direction) uint8 {
 // makeEntryCompare returns the comparator specialized to the engine's dim
 // width. btype pivots use the full comparator, so boundary probes must be
 // dims- and id-aware: AlertID{} sorts before every real UUID (for Ascend),
-// the all-ones id sorts after every real UUID (for Descend).
+// the all-ones-id probe with the max-idx sentinel sorts after every real
+// entry (for Descend).
 func makeEntryCompare(width uint8) func(a, b entry) int {
 	return func(a, b entry) int {
 		for i := 0; i < int(width); i++ {
@@ -110,10 +127,13 @@ func makeEntryCompare(width uint8) func(a, b entry) int {
 		}
 		// Identity tie-break: same alert, different handout. A delayed removal
 		// of an old handout must never alias the replacement's live record.
+		// meta is idx-major, so ordering matches the old bare-idx compare; the
+		// gen bits additionally distinguish two handouts of one alert that
+		// land on the same recycled slot.
 		switch {
-		case a.idx < b.idx:
+		case a.meta < b.meta:
 			return -1
-		case a.idx > b.idx:
+		case a.meta > b.meta:
 			return 1
 		}
 		return 0
@@ -133,10 +153,17 @@ var maxAlertID = AlertID{
 	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
 }
 
-// entryKeyMax builds a probe whose id sorts after every real UUID, for
-// Descend: yields every entry with the probe's dims and price <= probe.
+// entryMetaMaxIdx is the Descend-probe sentinel: idx ^uint32(0) in meta's
+// major bits, so the probe sorts after every real entry — lesser ids by the
+// id compare, the all-ones id by idx (a real idx of 2^32-1 implies a 16 GiB
+// arena). GTE thus mirrors LTE's zero-id probe, which sorts before every
+// accepted id.
+const entryMetaMaxIdx = uint64(^uint32(0)) << metaIdxShift
+
+// entryKeyMax builds a probe that sorts after every real entry, for Descend:
+// yields every entry with the probe's dims and price <= probe.
 func entryKeyMax(dims [dimMax]uint16, price Price) entry {
-	return entry{dims: dims, price: price, id: maxAlertID}
+	return entry{dims: dims, price: price, id: maxAlertID, meta: entryMetaMaxIdx}
 }
 
 // slotArena hands out dense uint32 indices into fixed-size chunks of atomic
@@ -145,10 +172,10 @@ func entryKeyMax(dims [dimMax]uint16, price Price) entry {
 //
 // Slot word layout: bits 0-7 status, bit 8 retired, bits 9-31 generation.
 // Two invariants:
-//   - gen gates staleness: alloc bumps the generation at every handout, so
-//     a reference built against an older generation (above all the reaper's
-//     expiry-table entries, which linger past the recycle grace) can never
-//     win a full-word CAS against the slot's new occupant.
+//   - gen gates staleness because alloc bumps the generation at every
+//     handout, so a reference built against an older generation is rejected
+//     by the generation check in fire (and retireGen's gen comparison)
+//     rather than by the CAS alone.
 //   - retired dedupes removals: a mutRemove may land twice for one entry;
 //     retireGen sets the bit exactly once per handout, so only the first
 //     removal parks the slot.
@@ -183,10 +210,9 @@ func newSlotArena(maxAlerts uint64) *slotArena {
 	return &slotArena{chunks: make([]*slotChunk, n)}
 }
 
-func (a *slotArena) alloc() uint32 {
+func (a *slotArena) alloc() (idx, gen uint32) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	var idx uint32
 	if n := len(a.free); n > 0 {
 		idx = a.free[n-1]
 		a.free = a.free[:n-1]
@@ -208,8 +234,9 @@ func (a *slotArena) alloc() uint32 {
 	// Safe without CAS: alloc runs under a.mu, and a slot on the free list
 	// always carries the retired bit, so no transition CAS can be in flight.
 	w := s.Load() // 0 for a never-touched slot: generation 0
-	s.Store(((w>>slotGenShift)+1)<<slotGenShift | uint32(StatusZero))
-	return idx
+	gen = (w>>slotGenShift + 1) & (1<<23 - 1)
+	s.Store(gen<<slotGenShift | uint32(StatusZero))
+	return idx, gen
 }
 
 // get returns the atomic status word for idx. Lock-free; hot-path safe.

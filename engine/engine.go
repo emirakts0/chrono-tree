@@ -96,7 +96,7 @@ type mutation struct {
 	op   mutOp
 	sid  SymbolID
 	e    entry
-	gen  uint32        // for mutRemove: handout generation of e.idx
+	gen  uint32        // for mutRemove: handout generation of the entry's slot (entryIdx(e))
 	done chan struct{} // for mutSync: closed once applied
 }
 
@@ -161,6 +161,9 @@ func New(cfg Config) *Engine {
 	}
 	if cfg.ReaperInterval <= 0 {
 		panic("chrono-tree: ReaperInterval must be positive")
+	}
+	if cfg.FlushBatch < 1 {
+		panic("chrono-tree: FlushBatch must be positive")
 	}
 	e := &Engine{
 		cfg:       cfg,

@@ -68,6 +68,35 @@ func TestFormatExact(t *testing.T) {
 	}
 }
 
+// TestFormatPadsFractionWithNonzeroWhole covers the zero-padding loop with a
+// nonzero whole part: the fraction's digit count nd is strictly less than
+// decimals, so leading zeros must be emitted between the '.' and the fraction.
+// A regression computing nd from the wrong variable passes every case in
+// TestFormatExact (whole==0 or nd==decimals there) but fails here.
+func TestFormatPadsFractionWithNonzeroWhole(t *testing.T) {
+	cases := []struct {
+		v        int64
+		decimals uint8
+		want     string
+	}{
+		{100000005, 8, "1.00000005"},
+		{1000000000000000005, 18, "1.000000000000000005"},
+		{150, 2, "1.50"},
+		{-5, 8, "-0.00000005"}, // negative, whole==0, padding with sign
+	}
+	for _, c := range cases {
+		if got := Format(c.v, c.decimals); got != c.want {
+			t.Errorf("Format(%d,%d)=%q, want %q", c.v, c.decimals, got, c.want)
+		}
+		// Format is the exact inverse of Parse: the rendered string must
+		// round-trip back to the same base units.
+		if back, err := Parse(c.want, c.decimals); err != nil || back != c.v {
+			t.Errorf("Parse(Format(%d,%d)=%q,%d)=(%d,%v), want (%d,nil)",
+				c.v, c.decimals, c.want, c.decimals, back, err, c.v)
+		}
+	}
+}
+
 // TestRoundTripPins pins both round-trip invariants: Format∘Parse normalizes, and
 // Parse∘Format is the identity for every in-range value.
 func TestRoundTripPins(t *testing.T) {

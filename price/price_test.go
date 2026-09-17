@@ -3,6 +3,7 @@ package price
 import (
 	"errors"
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -80,6 +81,22 @@ func TestParseRejectsNeverRounds(t *testing.T) {
 			t.Fatalf("Parse(%q,8) silently produced %d; want ErrPrecisionLoss", s, v)
 		}
 	}
+}
+
+// TestFormatPanicsOnOverscale pins the one guarded statement in Format:
+// decimals > MaxDecimals must panic loudly, never clamp — a clamped "fix"
+// would silently render wrong-scale strings.
+func TestFormatPanicsOnOverscale(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("Format(1234, 19) did not panic; want panic on decimals > MaxDecimals")
+		}
+		if msg, ok := r.(string); !ok || !strings.Contains(msg, "decimals") {
+			t.Errorf("panic value = %v, want string mentioning \"decimals\"", r)
+		}
+	}()
+	Format(1234, MaxDecimals+1)
 }
 
 func TestScaleOf(t *testing.T) {

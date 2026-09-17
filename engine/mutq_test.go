@@ -139,3 +139,103 @@ func TestMutQueueDequeueBlocks(t *testing.T) {
 		t.Fatalf("pending = %d after dequeue, want 0", n)
 	}
 }
+
+// TestMutQueueFIFOOrderAcrossChunks pins the global FIFO contract the
+// Upsert remove-after-insert anti-aliasing argument and the mutClose sentinel
+// semantics rest on: a single producer's sequence must emerge in exact order
+// across chunk boundaries, with no reordering, duplication, or gap. Consumed
+// with the exact runFlusher pattern (one dequeue plus a 256-cap drain per
+// round); existing tests use concurrent producers and assert per-producer
+// counts only.
+func TestMutQueueFIFOOrderAcrossChunks(t *testing.T) {
+	q := newChunkQueue[mutation](mutQueueChunk)
+	const n = 2*mutQueueChunk + 9 // crosses several chunk boundaries
+	for i := 0; i < n; i++ {
+		q.enqueue(mutation{op: mutInsert, sid: SymbolID(i)})
+	}
+	batch := make([]mutation, 0, 256)
+	got := make([]SymbolID, 0, n)
+	for q.pending() > 0 {
+		m := q.dequeue()
+		batch = q.drain(batch)
+		got = append(got, m.sid)
+		for _, x := range batch {
+			got = append(got, x.sid)
+		}
+		batch = batch[:0]
+	}
+	if len(got) != n {
+		t.Fatalf("delivered %d items, want %d", len(got), n)
+	}
+	for i, sid := range got {
+		if sid != SymbolID(i) {
+			t.Fatalf("item %d = %d — reordering, duplication, or gap across chunks", i, sid)
+		}
+	}
+	if p := q.pending(); p != 0 {
+		t.Fatalf("pending = %d after full consumption, want 0", p)
+	}
+}
+
+// TestMutQueueDequeueAdvancesAcrossChunkBoundary pins deterministic
+// chunk-boundary crossing through the dequeue path (previously exercised only
+// via drain): the chunk-th dequeue pops the last slot of a full head chunk
+// and drives advanceLocked's head != tail branch, and a second burst served
+// from the recycled head chunk must never yield a stale item.
+func TestMutQueueDequeueAdvancesAcrossChunkBoundary(t *testing.T) {
+	q := newChunkQueue[mutation](mutQueueChunk)
+	chunk := mutQueueChunk
+	for i := 0; i < chunk; i++ {
+		q.enqueue(mutation{op: mutInsert, sid: SymbolID(i)})
+	}
+	for i := 0; i < 5; i++ { // tail rolls to a second chunk; head full and non-tail
+		q.enqueue(mutation{op: mutInsert, sid: SymbolID(chunk + i)})
+	}
+	for i := 0; i < chunk+1; i++ {
+		if m := q.dequeue(); m.sid != SymbolID(i) {
+			t.Fatalf("dequeue %d returned tag %d", i, m.sid)
+		}
+	}
+	// chunk+5 enqueued minus chunk+1 dequeued leaves 4 in the second chunk.
+	if p := q.pending(); p != 4 {
+		t.Fatalf("pending = %d after chunk+1 dequeues, want 4", p)
+	}
+
+	// Expected consumption order: the 4 leftover tags still queued, then the
+	// burst's fresh tags — any stale item from the recycled chunk's previous
+	// occupancy (a tag ≤ chunk) breaks the sequence.
+	const burst = mutQueueChunk + 3 // served partly from the recycled head chunk
+	wantSeq := make([]SymbolID, 0, 4+burst)
+	for i := chunk + 1; i <= chunk+4; i++ {
+		wantSeq = append(wantSeq, SymbolID(i))
+	}
+	for i := 0; i < burst; i++ {
+		wantSeq = append(wantSeq, SymbolID(chunk+5+i))
+	}
+	for i := 0; i < burst; i++ {
+		q.enqueue(mutation{op: mutInsert, sid: SymbolID(chunk + 5 + i)})
+	}
+	batch := make([]mutation, 0, 256)
+	k := 0
+	for q.pending() > 0 {
+		m := q.dequeue()
+		if m.sid != wantSeq[k] {
+			t.Fatalf("dequeue returned %d, want %d (stale item from recycled chunk?)", m.sid, wantSeq[k])
+		}
+		k++
+		batch = q.drain(batch)
+		for _, x := range batch {
+			if x.sid != wantSeq[k] {
+				t.Fatalf("drain returned %d, want %d (stale item from recycled chunk?)", x.sid, wantSeq[k])
+			}
+			k++
+		}
+		batch = batch[:0]
+	}
+	if k != len(wantSeq) {
+		t.Fatalf("delivered %d items, want %d", k, len(wantSeq))
+	}
+	if p := q.pending(); p != 0 {
+		t.Fatalf("pending = %d after full drain, want 0", p)
+	}
+}

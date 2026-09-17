@@ -3,6 +3,9 @@ package engine
 import (
 	"errors"
 	"testing"
+	"time"
+
+	"go.uber.org/goleak"
 )
 
 func TestDimsHelper(t *testing.T) {
@@ -216,6 +219,122 @@ func TestDimsMatchingLTE(t *testing.T) {
 	if fired[mkID(2)] {
 		t.Fatal("LTE Ascend crossed the dim block")
 	}
+}
+
+// TestUpsertErrDimsReplaceKeepsLiveHandout pins that an ErrDims-rejected
+// replacement leaves the existing alert untouched: ref, slot status, expiry
+// registration, and fire behavior of the live handout all survive. ErrDims
+// upserts were previously only ever tested against fresh IDs.
+func TestUpsertErrDimsReplaceKeepsLiveHandout(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	cfg := DefaultConfig()
+	cfg.DimCount = 2
+	cfg.ReaperInterval = time.Hour // no sweep interference
+	e := New(cfg)
+	defer e.Close()
+
+	x := mkID(21)
+	live := AlertSpec{ID: x, Symbol: "ERR", PriceType: PriceAsk, Direction: DirGTE,
+		TargetPrice: 100, ValidFrom: 1, Dims: Dims(1, 2),
+		Expires: time.Now().Add(time.Hour).UnixNano()}
+	if err := e.Upsert(live); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+	waitForExpLen(t, e, 1)
+
+	// Sentinel inside width, first as a lone hole then as the all-sentinel
+	// zero form: both must be rejected and neither may disturb the handout.
+	bad := live
+	bad.Dims = Dims(1) // slot 1 left at sentinel
+	if err := e.Upsert(bad); !errors.Is(err, ErrDims) {
+		t.Fatalf("hole variant: err=%v, want ErrDims", err)
+	}
+	bad.Dims = Dims()
+	if err := e.Upsert(bad); !errors.Is(err, ErrDims) {
+		t.Fatalf("all-sentinel variant: err=%v, want ErrDims", err)
+	}
+
+	if s := e.Stats(); s.Live != 1 {
+		t.Fatalf("Live = %d after rejected replaces, want 1", s.Live)
+	}
+	e.mu.Lock()
+	ref, ok := e.refs[x]
+	e.mu.Unlock()
+	if !ok {
+		t.Fatal("rejected replace dropped the live ref")
+	}
+	if ref.e.dims != Dims(1, 2) {
+		t.Fatalf("ref dims = %v, want the live handout's Dims(1, 2)", ref.e.dims)
+	}
+	if st := e.slots.status(entryIdx(ref.e)); st != StatusActive {
+		t.Fatalf("slot status = %v, want StatusActive", st)
+	}
+	waitForExpLen(t, e, 1) // the live handout's registration is still there
+
+	e.Match(&Tick{Symbol: "ERR", Ask: 150, Present: 1 << uint(PriceAsk),
+		TS: 1 << 40, Dims: Dims(1, 2)})
+	trs := drainTriggers(e)
+	if len(trs) != 1 || trs[0].ID != x {
+		t.Fatalf("triggers = %+v, want exactly one fire of the live handout", trs)
+	}
+}
+
+// TestMatchTrailingJunkTickDimsFires pins Match-side trailing-junk
+// normalization behaviorally (previously proven only for the Upsert side):
+// ticks whose Dims carry real junk past the width must still reach the alert.
+// If Match scanned with the raw t.Dims, these ticks would silently never fire.
+func TestMatchTrailingJunkTickDimsFires(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	cfg := DefaultConfig()
+	cfg.DimCount = 2
+	e := New(cfg)
+	defer e.Close()
+
+	if err := e.Upsert(AlertSpec{ID: mkID(1), Symbol: "JUNK", PriceType: PriceAsk,
+		Direction: DirGTE, TargetPrice: 100, ValidFrom: 1, Dims: Dims(1, 2)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Upsert(AlertSpec{ID: mkID(2), Symbol: "JUNK", PriceType: PriceAsk,
+		Direction: DirLTE, TargetPrice: 200, ValidFrom: 1, Dims: Dims(1, 3)}); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+
+	tick := func(d [dimMax]uint16) {
+		e.Match(&Tick{Symbol: "JUNK", Ask: 150, Present: 1 << uint(PriceAsk),
+			TS: 1 << 40, Dims: d})
+	}
+	tick([dimMax]uint16{1, 2, 7, 7, 7, 7, 7, 7})
+	if trs := drainTriggers(e); len(trs) != 1 || trs[0].ID != mkID(1) {
+		t.Fatalf("junk-past-width tick 1: triggers = %+v, want exactly one fire of alert 1", trs)
+	}
+	tick([dimMax]uint16{1, 3, 0xfffe, 0, 0, 0, 0, 0})
+	if trs := drainTriggers(e); len(trs) != 1 || trs[0].ID != mkID(2) {
+		t.Fatalf("junk-past-width tick 2: triggers = %+v, want exactly one fire of alert 2", trs)
+	}
+	// A repeat of the first junk tick fires nothing: alert 1 is terminal.
+	tick([dimMax]uint16{1, 2, 7, 7, 7, 7, 7, 7})
+	if trs := drainTriggers(e); len(trs) != 0 {
+		t.Fatalf("repeat junk tick re-fired: %+v", trs)
+	}
+
+	// Width-0 subtest: a tick with real values in all 8 slots must fire a
+	// zero-Dims alert — normalization protects the width-0 contract.
+	t.Run("Width0", func(t *testing.T) {
+		e0 := New(DefaultConfig()) // DimCount 0
+		defer e0.Close()
+		if err := e0.Upsert(AlertSpec{ID: mkID(1), Symbol: "W0", PriceType: PriceAsk,
+			Direction: DirGTE, TargetPrice: 100, ValidFrom: 1, Dims: Dims()}); err != nil {
+			t.Fatal(err)
+		}
+		e0.Sync()
+		e0.Match(&Tick{Symbol: "W0", Ask: 150, Present: 1 << uint(PriceAsk),
+			TS: 1 << 40, Dims: Dims(1, 2, 3, 4, 5, 6, 7, 8)})
+		if trs := drainTriggers(e0); len(trs) != 1 || trs[0].ID != mkID(1) {
+			t.Fatalf("width-0 junk tick: triggers = %+v, want exactly one fire", trs)
+		}
+	})
 }
 
 func TestMatchMalformedDimsDropped(t *testing.T) {

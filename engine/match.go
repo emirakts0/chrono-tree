@@ -103,16 +103,24 @@ func (e *Engine) fire(sid SymbolID, en *entry, price Price, ts int64) {
 	if en.expires != 0 && ts >= en.expires {
 		return
 	}
-	s := e.slots.get(en.idx)
+	s := e.slots.get(entryIdx(*en))
 	var gen uint32
 	for {
 		cur := s.Load()
 		if slotStatus(cur) != StatusActive {
 			return // paused, or already fired/retired by another path
 		}
-		// Full-word CAS preserves the generation: a stale entry from an older
-		// generation can never win. Inlined rather than casStatusAny: the
-		// helper's variadic froms loop costs ~8% on fire-heavy serial scans.
+		if cur>>slotGenShift != entryGen(*en) {
+			// The slot was retired, recycled, and re-handed since this
+			// entry was published: it now serves a newer handout, and
+			// firing here would adopt that occupant. Abandon the stale
+			// candidate — the occupant's own lifecycle owns the slot.
+			return
+		}
+		// Full-word CAS preserves the generation, and the loop above already
+		// verified it against the entry's handout gen. Inlined rather than
+		// casStatusAny: the helper's variadic froms loop costs ~8% on
+		// fire-heavy serial scans.
 		if s.CompareAndSwap(cur, cur&^0xff|uint32(StatusTriggered)) {
 			gen = cur >> slotGenShift
 			break

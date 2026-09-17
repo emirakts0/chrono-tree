@@ -2,6 +2,7 @@ package engine
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"runtime"
 	"slices"
@@ -21,6 +22,27 @@ func TestEntrySize(t *testing.T) {
 	}
 }
 
+func TestEntryMetaPackUnpack(t *testing.T) {
+	idx, gen, flags := uint32(0xdeadbeef), uint32(0x7f_ff_ff), uint8(0xa5)
+	en := entry{meta: makeEntryMeta(idx, gen, flags)}
+	if got := entryIdx(en); got != idx {
+		t.Fatalf("entryIdx = %#x, want %#x", got, idx)
+	}
+	// gen occupies 23 bits, exactly what cur>>slotGenShift yields.
+	if got := entryGen(en); got != gen {
+		t.Fatalf("entryGen = %#x, want %#x", got, gen)
+	}
+	if got := entryFlags(en); got != flags {
+		t.Fatalf("entryFlags = %#x, want %#x", got, flags)
+	}
+	// The Descend-probe sentinel (next task but one) must sort after any
+	// meta whose idx is a real arena index: idx is the major 32 bits.
+	probe := uint64(^uint32(0)) << 32
+	if !(en.meta < probe) {
+		t.Fatalf("real-entry meta %#x not before probe sentinel %#x", en.meta, probe)
+	}
+}
+
 func TestExpEntrySize(t *testing.T) {
 	// One registration per alert: ref borrows the shared alertRef so the
 	// table carries no entry copy, idx, or generation — liveness is checked
@@ -35,7 +57,7 @@ func TestFlagRoundTrip(t *testing.T) {
 	for _, pt := range []PriceType{PriceBid, PriceAsk, PriceMid, PriceLast} {
 		for _, dir := range []Direction{DirGTE, DirLTE} {
 			f := makeFlags(pt, dir)
-			e := entry{flags: f}
+			e := entry{meta: makeEntryMeta(0, 0, f)}
 			if e.priceType() != pt {
 				t.Fatalf("priceType round trip: got %d want %d", e.priceType(), pt)
 			}
@@ -83,7 +105,7 @@ func TestSlotArena(t *testing.T) {
 	a := newSlotArena(1000)
 	seen := map[uint32]bool{}
 	for i := 0; i < 100; i++ {
-		idx := a.alloc()
+		idx, _ := a.alloc()
 		if seen[idx] {
 			t.Fatalf("idx %d handed out twice", idx)
 		}
@@ -97,7 +119,7 @@ func TestSlotArena(t *testing.T) {
 	a.retire(7, time.Now())
 	a.retire(8, time.Now())
 	for i := 0; i < 10; i++ {
-		if idx := a.alloc(); idx == 7 || idx == 8 {
+		if idx, _ := a.alloc(); idx == 7 || idx == 8 {
 			t.Fatal("retired slot reused before recycle")
 		}
 	}
@@ -105,7 +127,7 @@ func TestSlotArena(t *testing.T) {
 	a.recycle(time.Now().Add(time.Hour))
 	reused := 0
 	for i := 0; i < 2; i++ {
-		idx := a.alloc()
+		idx, _ := a.alloc()
 		if idx == 7 || idx == 8 {
 			reused++
 			// The word differs from its previous era (generation bumped at
@@ -346,9 +368,9 @@ func TestTreeIndexDistinct(t *testing.T) {
 func TestSnapshotCopyIsolation(t *testing.T) {
 	s := newSnapshot(0)
 	ti := treeIndex(PriceBid, DirGTE)
-	s.trees[ti].Insert(entry{price: 425, id: AlertID{1}, idx: 1, flags: makeFlags(PriceBid, DirGTE)})
+	s.trees[ti].Insert(entry{price: 425, id: AlertID{1}, meta: makeEntryMeta(1, 0, makeFlags(PriceBid, DirGTE))})
 	cp := s.copy()
-	cp.trees[ti].Insert(entry{price: 100, id: AlertID{2}, idx: 2, flags: makeFlags(PriceBid, DirGTE)})
+	cp.trees[ti].Insert(entry{price: 100, id: AlertID{2}, meta: makeEntryMeta(2, 0, makeFlags(PriceBid, DirGTE))})
 	if s.trees[ti].Len() != 1 || cp.trees[ti].Len() != 2 {
 		t.Fatalf("COW isolation broken: orig=%d copy=%d, want 1 and 2", s.trees[ti].Len(), cp.trees[ti].Len())
 	}
@@ -380,10 +402,11 @@ func TestFlusherAppliesMutations(t *testing.T) {
 	if e.states[sid].snap.Load() == nil {
 		t.Fatal("stateFor did not publish an initial snapshot")
 	}
-	ent := entry{price: 425, id: AlertID{1}, idx: e.slots.alloc(),
-		validFrom: 1, flags: makeFlags(PriceBid, DirGTE)}
-	e.slots.setStatus(ent.idx, StatusActive)
-	entGen := e.slots.gen(ent.idx)
+	idx, gen := e.slots.alloc()
+	ent := entry{price: 425, id: AlertID{1},
+		validFrom: 1, meta: makeEntryMeta(idx, gen, makeFlags(PriceBid, DirGTE))}
+	e.slots.setStatus(idx, StatusActive)
+	entGen := e.slots.gen(idx)
 
 	e.submit(mutation{op: mutInsert, sid: sid, e: ent})
 	e.Sync()
@@ -421,22 +444,23 @@ func TestMutationQueueNeverDrops(t *testing.T) {
 	// done channel), then submits must still return immediately (enqueue
 	// never blocks) and survive the stall.
 	e.mu.Lock()
-	idx0 := e.slots.alloc()
+	idx0, gen0 := e.slots.alloc()
 	e.slots.setStatus(idx0, StatusActive)
 	if err := e.submit(mutation{op: mutRemove, sid: sid,
-		e: entry{price: 99, id: mkID(0), idx: idx0, validFrom: 1,
-			flags: makeFlags(PriceLast, DirGTE)}, gen: e.slots.gen(idx0)}); err != nil {
+		e: entry{price: 99, id: mkID(0),
+			validFrom: 1, meta: makeEntryMeta(idx0, gen0, makeFlags(PriceLast, DirGTE))},
+		gen: e.slots.gen(idx0)}); err != nil {
 		e.mu.Unlock()
 		t.Fatal(err)
 	}
 	idxs = append(idxs, idx0)
 	time.Sleep(10 * time.Millisecond) // let the flusher reach the held lock
 	for i := 0; i < n; i++ {
-		idx := e.slots.alloc()
+		idx, gen := e.slots.alloc()
 		e.slots.setStatus(idx, StatusActive)
 		idxs = append(idxs, idx)
 		ent := entry{price: Price(100 + i), id: mkID(uint32(i + 1)),
-			idx: idx, validFrom: 1, flags: makeFlags(PriceLast, DirGTE)}
+			validFrom: 1, meta: makeEntryMeta(idx, gen, makeFlags(PriceLast, DirGTE))}
 		if err := e.submit(mutation{op: mutRemove, sid: sid, e: ent, gen: e.slots.gen(idx)}); err != nil {
 			e.mu.Unlock()
 			t.Fatal(err)
@@ -476,10 +500,10 @@ func TestCloseDuringDrain(t *testing.T) {
 	// backlog builds — Close then races a drain that is many batches behind.
 	e.mu.Lock()
 	for i := 0; i < n; i++ {
-		idx := e.slots.alloc()
+		idx, gen := e.slots.alloc()
 		e.slots.setStatus(idx, StatusActive)
 		ent := entry{price: Price(100 + i%97), id: mkID(uint32(i + 1)),
-			idx: idx, validFrom: 1, flags: makeFlags(PriceLast, DirGTE)}
+			validFrom: 1, meta: makeEntryMeta(idx, gen, makeFlags(PriceLast, DirGTE))}
 		if err := e.submit(mutation{op: mutRemove, sid: sid, e: ent, gen: e.slots.gen(idx)}); err != nil {
 			e.mu.Unlock()
 			t.Fatal(err)
@@ -600,17 +624,17 @@ func TestSyncBarrier(t *testing.T) {
 	defer e.Close()
 	sid, _ := e.stateFor("EURTRY")
 	for i := 0; i < 100; i++ {
-		idx := e.slots.alloc()
+		idx, gen := e.slots.alloc()
 		e.slots.setStatus(idx, StatusActive)
 		e.mu.Lock()
 		e.refs[AlertID{byte(i + 1)}] = &alertRef{sid: sid, e: entry{
-			price: Price(i), id: AlertID{byte(i + 1)}, idx: idx,
-			flags: makeFlags(PriceLast, DirLTE)}}
+			price: Price(i), id: AlertID{byte(i + 1)},
+			meta: makeEntryMeta(idx, gen, makeFlags(PriceLast, DirLTE))}}
 		e.live++
 		e.mu.Unlock()
 		e.submit(mutation{op: mutInsert, sid: sid,
-			e: entry{price: Price(i), id: AlertID{byte(i + 1)}, idx: idx,
-				validFrom: 1, flags: makeFlags(PriceLast, DirLTE)}})
+			e: entry{price: Price(i), id: AlertID{byte(i + 1)},
+				validFrom: 1, meta: makeEntryMeta(idx, gen, makeFlags(PriceLast, DirLTE))}})
 	}
 	e.Sync()
 	if got := e.states[sid].snap.Load().trees[treeIndex(PriceLast, DirLTE)].Len(); got != 100 {
@@ -1258,7 +1282,7 @@ func TestStaleExpiryDoesNotKillReusedSlot(t *testing.T) {
 		Direction: DirGTE, TargetPrice: 425, ValidFrom: 1, Expires: expiry,
 	})
 	e.mu.Lock()
-	aIdx := e.refs[AlertID{1}].e.idx
+	aIdx := entryIdx(e.refs[AlertID{1}].e)
 	e.mu.Unlock()
 	if err := e.Cancel(AlertID{1}); err != nil {
 		t.Fatal(err)
@@ -1273,7 +1297,7 @@ func TestStaleExpiryDoesNotKillReusedSlot(t *testing.T) {
 	}
 	e.Sync()
 	e.mu.Lock()
-	bIdx := e.refs[AlertID{2}].e.idx
+	bIdx := entryIdx(e.refs[AlertID{2}].e)
 	e.mu.Unlock()
 	if aIdx != bIdx {
 		t.Fatalf("test setup failed: B got slot %d, wanted recycled %d", bIdx, aIdx)
@@ -1310,11 +1334,10 @@ func TestDuplicateRemovalDoesNotAliasSlots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	idx := e.slots.alloc()
+	idx, gen := e.slots.alloc()
 	e.slots.setStatus(idx, StatusActive)
-	gen := e.slots.gen(idx)
-	ent := entry{price: 425, id: AlertID{1}, idx: idx, validFrom: 1,
-		flags: makeFlags(PriceBid, DirGTE)}
+	ent := entry{price: 425, id: AlertID{1},
+		validFrom: 1, meta: makeEntryMeta(idx, gen, makeFlags(PriceBid, DirGTE))}
 	e.submit(mutation{op: mutInsert, sid: sid, e: ent})
 	e.Sync()
 	// Two direct mutRemove submissions for the same entry (gen-identical):
@@ -1326,7 +1349,7 @@ func TestDuplicateRemovalDoesNotAliasSlots(t *testing.T) {
 	hits := 0
 	var prev uint32
 	for i := 0; i < 2; i++ {
-		a := e.slots.alloc()
+		a, _ := e.slots.alloc()
 		if i > 0 && a == prev {
 			t.Fatalf("alloc handed the same index %d twice", a)
 		}
@@ -1349,7 +1372,7 @@ func TestDuplicateRemovalDoesNotAliasSlots(t *testing.T) {
 	}
 	e2.Sync()
 	e2.mu.Lock()
-	oldIdx := e2.refs[AlertID{1}].e.idx
+	oldIdx := entryIdx(e2.refs[AlertID{1}].e)
 	e2.mu.Unlock()
 	e2.Match(&Tick{Symbol: "USDTRY", Bid: 430, Present: TickAllPresent(), TS: 100})
 	if got := drainTriggers(e2); len(got) != 1 || got[0].ID != (AlertID{1}) {
@@ -1370,8 +1393,8 @@ func TestDuplicateRemovalDoesNotAliasSlots(t *testing.T) {
 	// oldIdx must have been retired at most once; allocs stay distinct.
 	// The reviewer looped up to 300 attempts; with the fix it passes first.
 	e2.slots.recycle(time.Now().Add(time.Hour))
-	a1 := e2.slots.alloc()
-	a2 := e2.slots.alloc()
+	a1, _ := e2.slots.alloc()
+	a2, _ := e2.slots.alloc()
 	if a1 == a2 {
 		t.Fatalf("alloc handed the same index %d twice after replace", a1)
 	}
@@ -1412,13 +1435,13 @@ func TestSameKeyUpsertRacingFireRemoval(t *testing.T) {
 	e.mu.Unlock()
 	sid := ref.sid
 	oldEnt := ref.e
-	oldGen := e.slots.gen(oldEnt.idx)
+	oldGen := e.slots.gen(entryIdx(oldEnt))
 
 	// Fire's first half: CAS ACTIVE→TRIGGERED (exactly what fire does), then
 	// "pause" before enqueuing the deferred removal. This reproduces the
 	// queue order the real preemption window yields: replacement insert first,
 	// delayed old-handout removal second.
-	if !e.slots.cas(oldEnt.idx, StatusActive, StatusTriggered) {
+	if !e.slots.cas(entryIdx(oldEnt), StatusActive, StatusTriggered) {
 		t.Fatal("setup: CAS ACTIVE→TRIGGERED failed")
 	}
 
@@ -1624,7 +1647,7 @@ func TestSweepSkipsStaleEntryOnRecycledSlot(t *testing.T) {
 	}
 	e.Sync()
 	e.mu.Lock()
-	aIdx := e.refs[AlertID{1}].e.idx
+	aIdx := entryIdx(e.refs[AlertID{1}].e)
 	e.mu.Unlock()
 	if err := e.Cancel(AlertID{1}); err != nil {
 		t.Fatal(err)
@@ -1651,7 +1674,7 @@ func TestSweepSkipsStaleEntryOnRecycledSlot(t *testing.T) {
 	}
 	e.Sync()
 	e.mu.Lock()
-	bIdx := e.refs[AlertID{2}].e.idx
+	bIdx := entryIdx(e.refs[AlertID{2}].e)
 	e.mu.Unlock()
 	if bIdx != aIdx {
 		t.Fatalf("setup failed: B got slot %d, wanted recycled %d", bIdx, aIdx)
@@ -1700,7 +1723,7 @@ func TestSweepSkipsReplacedHandout(t *testing.T) {
 	if !ok {
 		t.Fatal("replacement removed from refs")
 	}
-	if st := e.slots.status(ref.e.idx); st != StatusActive {
+	if st := e.slots.status(entryIdx(ref.e)); st != StatusActive {
 		t.Fatalf("replacement status = %v, want Active — old handout's registration expired it", st)
 	}
 	if ref.e.price != 150 {
@@ -1777,6 +1800,746 @@ func TestNewRejectsNonPositiveReaperInterval(t *testing.T) {
 			cfg.ReaperInterval = d
 			New(cfg)
 		}()
+	}
+}
+
+// TestFireDoesNotAdoptRecycledSlotOccupant pins the fire-side ABA guard: a
+// deferred fire holding an entry from a pre-cancel snapshot must never adopt
+// the slot's next occupant. Before the generation gate in fire's CAS loop,
+// fire checked only the status byte, so a scan preempted past the
+// 2×-interval recycle grace could CAS the new occupant ACTIVE→TRIGGERED: a
+// ghost trigger for the dead alert and a bricked replacement. The sweep
+// path's equivalent ABA is pinned by TestStaleExpiryDoesNotKillReusedSlot.
+func TestFireDoesNotAdoptRecycledSlotOccupant(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	cfg := DefaultConfig()
+	cfg.ReaperInterval = 5 * time.Millisecond
+	e := New(cfg)
+	defer e.Close()
+	if err := e.Upsert(testSpec(1, "S", PriceBid, DirGTE, 100)); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+	e.mu.Lock()
+	oldRef := e.refs[AlertID{1}]
+	e.mu.Unlock()
+	oldEnt := oldRef.e
+	sid := oldRef.sid
+	aIdx := entryIdx(oldEnt)
+	gen1 := e.slots.gen(aIdx)
+	if err := e.Cancel(AlertID{1}); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+	// Poll the free list until the reaper's recycle puts aIdx back in use.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		e.slots.mu.Lock()
+		freed := slices.Contains(e.slots.free, aIdx)
+		e.slots.mu.Unlock()
+		if freed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("slot %d not recycled within 5s", aIdx)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err := e.Upsert(testSpec(2, "S", PriceBid, DirGTE, 9999)); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+	e.mu.Lock()
+	bIdx := entryIdx(e.refs[AlertID{2}].e)
+	e.mu.Unlock()
+	if bIdx != aIdx {
+		t.Fatalf("setup failed: B got slot %d, wanted recycled %d", bIdx, aIdx)
+	}
+	if gen2 := e.slots.gen(bIdx); gen2 <= gen1 {
+		t.Fatalf("setup failed: re-handout gen %d not bumped past %d", gen2, gen1)
+	}
+	if st := e.slots.status(bIdx); st != StatusActive {
+		t.Fatalf("B's slot status = %v, want StatusActive", st)
+	}
+	// The deferred-fire interleaving: exactly what a Match scan pinned on the
+	// pre-cancel snapshot does if preempted past the recycle grace.
+	e.fire(sid, &oldEnt, 100, 1<<40)
+	// B's slot must be untouched by the stale fire.
+	if st := e.slots.status(bIdx); st != StatusActive {
+		t.Fatalf("stale fire adopted the recycled slot: B's status = %v, want StatusActive", st)
+	}
+	for _, tr := range drainTriggers(e) {
+		if tr.ID == (AlertID{1}) {
+			t.Fatalf("ghost trigger for cancelled alert 1: %+v", tr)
+		}
+	}
+	// B must still fire on a later crossing tick.
+	e.Match(&Tick{Symbol: "S", Bid: 10000, Present: 1 << uint(PriceBid), TS: 1 << 41})
+	fired := false
+	for _, tr := range drainTriggers(e) {
+		if tr.ID == (AlertID{2}) {
+			fired = true
+		}
+	}
+	if !fired {
+		t.Fatal("B failed to fire after the stale fire interleaving — slot bricked")
+	}
+	if s := e.Stats(); s.Live != 1 {
+		t.Fatalf("Live = %d, want 1", s.Live)
+	}
+}
+
+// TestMatchGTEBoundaryAllOnesID pins the GTE boundary for the all-ones id,
+// the one id that ties the Descend probe's id. Before the probe carried the
+// entryMetaMaxIdx idx sentinel, the identity tie-break ordered an all-ones-id
+// entry at idx>0 after the probe, so the exact-boundary tick silently missed.
+// LTE is unaffected: the Ascend probe's zero id sorts before every accepted
+// id.
+func TestMatchGTEBoundaryAllOnesID(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	e := New(DefaultConfig())
+	defer e.Close()
+	// Consume slot idx 0 first: the probe's idx is 0, and the comparator's
+	// identity tie-break only orders the entry after the probe when the
+	// entry's idx > 0 — with idx 0 the compare hits full equality and the
+	// boundary works by accident.
+	if err := e.Upsert(testSpec(9, "WARM", PriceBid, DirGTE, 1)); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+	if err := e.Upsert(AlertSpec{ID: maxAlertID, Symbol: "S", PriceType: PriceBid,
+		Direction: DirGTE, TargetPrice: 425, ValidFrom: 1}); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+	e.mu.Lock()
+	onesIdx := entryIdx(e.refs[maxAlertID].e)
+	e.mu.Unlock()
+	if onesIdx == 0 {
+		t.Fatal("setup failed: all-ones alert landed on slot 0; warm-up alert did not consume it")
+	}
+	e.Match(&Tick{Symbol: "S", Bid: 425, Present: TickAllPresent(), TS: 100})
+	got := drainTriggers(e)
+	if len(got) != 1 || got[0].ID != maxAlertID {
+		t.Fatalf("all-ones-ID alert at the boundary: triggers=%+v, want exactly one fire", got)
+	}
+	// Control: an ordinary id fires at exactly the target under the same setup.
+	if err := e.Upsert(testSpec(1, "CTRL", PriceBid, DirGTE, 425)); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+	e.Match(&Tick{Symbol: "CTRL", Bid: 425, Present: TickAllPresent(), TS: 100})
+	got = drainTriggers(e)
+	if len(got) != 1 || got[0].ID != (AlertID{1}) {
+		t.Fatalf("control alert at the boundary: triggers=%+v, want exactly one fire", got)
+	}
+}
+
+// TestMatchRacingClose runs Match's actual load→pin→scan→unpin guard sequence
+// (including firing and mutRemove enqueues) against a concurrent Close.
+// TestCloseWaitsForReaders pins the pin/unpin drain with manual calls; this
+// pins the real hot path: no panic (use-after-release of tree memory, nil
+// deref in the snap retry loop) and Close returning promptly.
+func TestMatchRacingClose(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	e := New(DefaultConfig())
+	const n = 1000
+	for i := 0; i < n; i++ {
+		a := testSpec(1, "S", PriceType(i%4), Direction(i%2), Price(100+i%50))
+		a.ID = mkID(uint32(i + 1))
+		if err := e.Upsert(a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.Sync()
+	stop := make(chan struct{})
+	panicMsg := make(chan string, 4)
+	var wg sync.WaitGroup
+	tick := Tick{Symbol: "S", Bid: 1e9, Ask: 1e9, Mid: 1e9, Last: 1e9,
+		Present: TickAllPresent(), TS: 1 << 40}
+	for g := 0; g < 4; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					select {
+					case panicMsg <- fmt.Sprint(r):
+					default:
+					}
+				}
+			}()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				e.Match(&tick)
+			}
+		}()
+	}
+	closed := make(chan struct{})
+	go func() {
+		e.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		close(stop)
+		wg.Wait()
+		t.Fatal("Close did not return within 5s while Match goroutines spun")
+	}
+	close(stop)
+	wg.Wait()
+	select {
+	case msg := <-panicMsg:
+		t.Fatalf("Match panicked racing Close: %s", msg)
+	default:
+	}
+}
+
+// TestUpsertReplaceAcrossSymbols pins the replace path when the new spec
+// lands on a different symbol: the mutRemove is keyed to the OLD sid while
+// the insert uses the NEW one. All existing replace tests keep the symbol.
+func TestUpsertReplaceAcrossSymbols(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	e := New(DefaultConfig())
+	defer e.Close()
+	if err := e.Upsert(testSpec(1, "AAA", PriceBid, DirGTE, 100)); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+	if err := e.Upsert(testSpec(1, "BBB", PriceBid, DirGTE, 430)); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+	aaaSid, _ := e.syms.Get("AAA")
+	bbbSid, _ := e.syms.Get("BBB")
+	ti := treeIndex(PriceBid, DirGTE)
+	if got := e.states[aaaSid].snap.Load().trees[ti].Len(); got != 0 {
+		t.Fatalf("AAA tree Len=%d after cross-symbol replace, want 0", got)
+	}
+	bbb := e.states[bbbSid].snap.Load().trees[ti]
+	if got := bbb.Len(); got != 1 {
+		t.Fatalf("BBB tree Len=%d, want 1", got)
+	}
+	for en := range bbb.All() {
+		if en.price != 430 {
+			t.Fatalf("BBB entry price=%d, want 430", en.price)
+		}
+	}
+	if s := e.Stats(); s.Live != 1 {
+		t.Fatalf("Live=%d, want 1", s.Live)
+	}
+	e.Match(&Tick{Symbol: "AAA", Bid: 1e9, Present: 1 << uint(PriceBid), TS: 100})
+	if got := drainTriggers(e); len(got) != 0 {
+		t.Fatalf("AAA tick fired %+v, want nothing", got)
+	}
+	e.Match(&Tick{Symbol: "BBB", Bid: 1e9, Present: 1 << uint(PriceBid), TS: 100})
+	got := drainTriggers(e)
+	if len(got) != 1 || got[0].ID != (AlertID{1}) {
+		t.Fatalf("BBB tick triggers=%+v, want exactly one fire of alert 1", got)
+	}
+}
+
+// TestFlusherParksRetiredSnapshotUntilReaderDrains pins the retireRelease
+// false branch: a snapshot retired while a reader still holds a pin must be
+// parked (not released), stay scannable, and leave e.parked on the next
+// applyBatch cycle after the reader unpins. TestCloseWaitsForReaders covers
+// only shutdownRelease; this path is asserted by zero other tests.
+func TestFlusherParksRetiredSnapshotUntilReaderDrains(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	e := New(DefaultConfig())
+	defer e.Close()
+	if err := e.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, 425)); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+	sid, _ := e.syms.Get("USDTRY")
+	old := e.states[sid].snap.Load()
+	if !old.pin() {
+		t.Fatal("pin failed on a live snapshot")
+	}
+	if err := e.Cancel(AlertID{1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Upsert(testSpec(2, "USDTRY", PriceBid, DirGTE, 430)); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+	if !slices.Contains(e.parked, old) {
+		t.Fatal("retired snapshot with a pinned reader was not parked")
+	}
+	// Parked must stay scannable: the pre-cancel tree is intact.
+	if got := old.trees[treeIndex(PriceBid, DirGTE)].Len(); got != 1 {
+		t.Fatalf("parked snapshot tree Len=%d, want 1 (pre-cancel count)", got)
+	}
+	old.unpin()
+	// Any later batch re-runs the parked-release loop.
+	if err := e.Upsert(testSpec(3, "USDTRY", PriceBid, DirGTE, 435)); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+	if slices.Contains(e.parked, old) {
+		t.Fatal("parked snapshot lingered after its reader drained")
+	}
+}
+
+// TestCloseWaitsForParkedReaders pins Close's parked-snapshot drain
+// loop: a snapshot that retired into e.parked while pinned must also block
+// Close (its trees can only be freed once the reader drains). The states[]
+// loop alone never exercises the `for _, s := range e.parked` branch.
+func TestCloseWaitsForParkedReaders(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	e := New(DefaultConfig())
+	if err := e.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, 425)); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+	sid, _ := e.syms.Get("USDTRY")
+	s0 := e.states[sid].snap.Load()
+	if !s0.pin() {
+		t.Fatal("pin failed on S0")
+	}
+	if err := e.Cancel(AlertID{1}); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync() // publishes S1; S0 retires into e.parked (readers==1)
+	s1 := e.states[sid].snap.Load()
+	if !s1.pin() {
+		t.Fatal("pin failed on S1")
+	}
+	closed := make(chan struct{})
+	go func() {
+		e.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+		s0.unpin()
+		s1.unpin()
+		t.Fatal("Close returned while S0/S1 were pinned")
+	case <-time.After(50 * time.Millisecond):
+	}
+	s0.unpin()
+	s1.unpin()
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not complete after both readers drained")
+	}
+}
+
+// TestSyncBarrierHonoredDuringClose pins the syncs-close pass inside the
+// final applyBatch: a mutSync enqueued before the mutClose sentinel must be
+// acknowledged even when the sentinel shares its batch. TestCloseDuringDrain's
+// backlog has no mutSync; TestSyncAfterCloseReturns covers only the post-Close
+// fast path. If the final batch ever skipped the syncs pass on stop, Sync
+// callers would deadlock with no failing test.
+func TestSyncBarrierHonoredDuringClose(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	e := New(DefaultConfig())
+	sid, err := e.stateFor("USDTRY")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Stall the flusher inside applyBatch's refs pass (TestMutationQueueNeverDrops
+	// technique): one real mutRemove wakes it into the stall.
+	e.mu.Lock()
+	idx, gen := e.slots.alloc()
+	e.slots.setStatus(idx, StatusActive)
+	if err := e.submit(mutation{op: mutRemove, sid: sid,
+		e: entry{price: 99, id: mkID(0),
+			validFrom: 1, meta: makeEntryMeta(idx, gen, makeFlags(PriceLast, DirGTE))},
+		gen: e.slots.gen(idx)}); err != nil {
+		e.mu.Unlock()
+		t.Fatal(err)
+	}
+	time.Sleep(10 * time.Millisecond) // flusher reaches the held lock
+	syncDone := make(chan struct{})
+	go func() {
+		e.Sync() // mutSync lands after the mutRemove, before the sentinel
+		close(syncDone)
+	}()
+	time.Sleep(10 * time.Millisecond) // enqueue order settles
+	closeDone := make(chan struct{})
+	go func() {
+		e.Close() // mutClose lands after the mutSync
+		close(closeDone)
+	}()
+	time.Sleep(10 * time.Millisecond)
+	e.mu.Unlock()
+	select {
+	case <-syncDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Sync deadlocked: flusher exited before applying the in-flight mutSync")
+	}
+	select {
+	case <-closeDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not return")
+	}
+}
+
+// TestOpsAfterCloseReturnErrClosed pins the post-Close contract for the
+// control plane: Upsert and Cancel return ErrClosed without panicking or
+// blocking, nothing is enqueued, and the trigger queue stays empty. Accepted
+// caveat: Cancel CASes the slot word before submit fails — assert the error
+// and the queue, not the slot word. Only Sync's post-Close path is pinned
+// today.
+func TestOpsAfterCloseReturnErrClosed(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	e := New(DefaultConfig())
+	if err := e.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, 425)); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+	e.Close()
+	if err := e.Upsert(testSpec(2, "USDTRY", PriceBid, DirGTE, 1)); !errors.Is(err, ErrClosed) {
+		t.Fatalf("post-Close Upsert err=%v, want ErrClosed", err)
+	}
+	if err := e.Cancel(AlertID{1}); !errors.Is(err, ErrClosed) {
+		t.Fatalf("post-Close Cancel err=%v, want ErrClosed", err)
+	}
+	if err := e.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, 990)); !errors.Is(err, ErrClosed) {
+		t.Fatalf("post-Close replace Upsert err=%v, want ErrClosed", err)
+	}
+	if n := e.mutQ.pending(); n != 0 {
+		t.Fatalf("mutQ pending=%d after rejected ops, want 0", n)
+	}
+	if got := len(drainTriggers(e)); got != 0 {
+		t.Fatalf("trigger queue yielded %d triggers after Close, want 0", got)
+	}
+}
+
+// TestNewRejectsNegativeFlushBatch pins the fail-loudly-in-New contract for
+// FlushBatch: New(FlushBatch < 1) must panic synchronously, mirroring
+// TestNewRejectsNonPositiveReaperInterval's recover() pattern. Before the
+// check, the flusher goroutine panicked asynchronously on
+// make([]mutation, 0, negative), killing the process long after New returned.
+func TestNewRejectsNegativeFlushBatch(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	cfg := DefaultConfig()
+	cfg.FlushBatch = -1
+	defer func() {
+		if recover() == nil {
+			t.Fatalf("New(FlushBatch=%d) did not panic synchronously", cfg.FlushBatch)
+		}
+	}()
+	New(cfg)
+}
+
+// TestRetireGenStaleGenDoesNotRetireNewOccupant pins retireGen's gen-mismatch
+// early return: a delayed mutRemove landing after the slot was retired,
+// recycled, and re-handed must NOT park the new occupant's slot. Only the
+// retired-bit dedupe branch (gen-identical duplicate removals) is covered by
+// TestDuplicateRemovalDoesNotAliasSlots; the gen-mismatch branch keeps a live
+// occupant out of the retired list and is exercised by no other test.
+func TestRetireGenStaleGenDoesNotRetireNewOccupant(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	e := New(DefaultConfig())
+	defer e.Close()
+	sid, err := e.stateFor("S")
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx, _ := e.slots.alloc()
+	e.slots.setStatus(idx, StatusActive)
+	gen1 := e.slots.gen(idx)
+	ent := entry{price: 425, id: AlertID{1},
+		validFrom: 1, meta: makeEntryMeta(idx, gen1, makeFlags(PriceBid, DirGTE))}
+	e.submit(mutation{op: mutInsert, sid: sid, e: ent})
+	e.Sync()
+	e.submit(mutation{op: mutRemove, sid: sid, e: ent, gen: gen1})
+	e.Sync()
+	// Move idx through recycle and back out: a backed-up flusher's delayed
+	// removal lands after this point.
+	e.slots.recycle(time.Now().Add(time.Hour))
+	idx2, _ := e.slots.alloc()
+	if idx2 != idx {
+		t.Fatalf("setup failed: alloc handed %d, wanted recycled %d", idx2, idx)
+	}
+	if w := e.slots.get(idx).Load(); w&slotRetiredBit != 0 {
+		t.Fatal("recycled handout still carries the retired bit")
+	}
+	gen2 := e.slots.gen(idx)
+	if gen2 <= gen1 {
+		t.Fatalf("setup failed: re-handout gen %d not bumped past %d", gen2, gen1)
+	}
+	e.slots.setStatus(idx, StatusActive)
+	occ := entry{price: 500, id: AlertID{2},
+		validFrom: 1, meta: makeEntryMeta(idx, gen2, makeFlags(PriceBid, DirGTE))}
+	e.submit(mutation{op: mutInsert, sid: sid, e: occ})
+	e.Sync()
+	// The delayed stale removal — gen belongs to the dead handout.
+	e.submit(mutation{op: mutRemove, sid: sid, e: ent, gen: gen1})
+	e.Sync()
+	if w := e.slots.get(idx).Load(); w&slotRetiredBit != 0 {
+		t.Fatal("stale removal retired the new occupant's slot")
+	}
+	if g := e.slots.gen(idx); g != gen2 {
+		t.Fatalf("slot gen=%d after stale removal, want %d", g, gen2)
+	}
+	e.slots.mu.Lock()
+	inRetired := false
+	for _, r := range e.slots.retired {
+		if r.idx == idx {
+			inRetired = true
+		}
+	}
+	e.slots.mu.Unlock()
+	if inRetired {
+		t.Fatal("stale removal parked the new occupant in the retired list")
+	}
+	e.slots.recycle(time.Now().Add(time.Hour))
+	e.slots.mu.Lock()
+	freed := slices.Contains(e.slots.free, idx)
+	e.slots.mu.Unlock()
+	if freed {
+		t.Fatal("stale removal made the live occupant's slot reusable")
+	}
+}
+
+// TestUpsertReplacePausedSlot pins that a PAUSED alert is replaceable: the
+// replace CAS's from-set must include StatusPaused, and the new handout must
+// come back StatusActive — never inheriting PAUSED. Dropping PAUSED from the
+// from-set would strand a zombie tree entry with no ledger ref.
+func TestUpsertReplacePausedSlot(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	e := New(DefaultConfig())
+	defer e.Close()
+	if err := e.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, 425)); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+	if err := e.SetStatus(AlertID{1}, StatusPaused); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+	if err := e.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, 430)); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+	sid, _ := e.syms.Get("USDTRY")
+	ti := treeIndex(PriceBid, DirGTE)
+	tree := e.states[sid].snap.Load().trees[ti]
+	if got := tree.Len(); got != 1 {
+		t.Fatalf("tree Len=%d after paused replace, want 1", got)
+	}
+	for en := range tree.All() {
+		if en.price != 430 {
+			t.Fatalf("entry price=%d, want the new 430", en.price)
+		}
+	}
+	if s := e.Stats(); s.Live != 1 {
+		t.Fatalf("Live=%d, want 1", s.Live)
+	}
+	if st, ok := e.Status(AlertID{1}); !ok || st != StatusActive {
+		t.Fatalf("Status after paused replace = (%v, %v), want (StatusActive, true)", st, ok)
+	}
+	e.Match(&Tick{Symbol: "USDTRY", Bid: 435, Present: 1 << uint(PriceBid), TS: 100})
+	got := drainTriggers(e)
+	if len(got) != 1 || got[0].ID != (AlertID{1}) {
+		t.Fatalf("triggers=%+v, want exactly one fire of the replacement", got)
+	}
+}
+
+// TestCancelPausedAlert pins removeIfLive's from-set deterministically for
+// StatusPaused, from both terminal paths: phase 1 cancels a paused alert
+// (Cancel from PAUSED); phase 2 replaces one (Upsert over a paused slot).
+// TestCancelAndSetStatus only ever cancels from ACTIVE.
+func TestCancelPausedAlert(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	e := New(DefaultConfig())
+	defer e.Close()
+	ti := treeIndex(PriceBid, DirGTE)
+
+	// Phase 1: cancel a paused alert.
+	if err := e.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, 425)); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+	if err := e.SetStatus(AlertID{1}, StatusPaused); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Cancel(AlertID{1}); err != nil {
+		t.Fatalf("Cancel from PAUSED err=%v, want nil", err)
+	}
+	e.Sync()
+	if s := e.Stats(); s.Live != 0 {
+		t.Fatalf("phase 1: Live=%d after cancel, want 0", s.Live)
+	}
+	sid, _ := e.syms.Get("USDTRY")
+	if got := e.states[sid].snap.Load().trees[ti].Len(); got != 0 {
+		t.Fatalf("phase 1: tree Len=%d after cancel, want 0", got)
+	}
+	e.mu.Lock()
+	_, ok := e.refs[AlertID{1}]
+	e.mu.Unlock()
+	if ok {
+		t.Fatal("phase 1: refs entry survived the cancel")
+	}
+
+	// Phase 2: replace a paused alert.
+	if err := e.Upsert(testSpec(2, "USDTRY", PriceBid, DirGTE, 425)); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+	if err := e.SetStatus(AlertID{2}, StatusPaused); err != nil {
+		t.Fatal(err)
+	}
+	e.mu.Lock()
+	oldIdx := entryIdx(e.refs[AlertID{2}].e)
+	e.mu.Unlock()
+	if err := e.Upsert(testSpec(2, "USDTRY", PriceBid, DirGTE, 480)); err != nil {
+		t.Fatalf("phase 2: replace of paused alert err=%v, want nil", err)
+	}
+	e.Sync()
+	if s := e.Stats(); s.Live != 1 {
+		t.Fatalf("phase 2: Live=%d after replace, want 1", s.Live)
+	}
+	tree := e.states[sid].snap.Load().trees[ti]
+	if got := tree.Len(); got != 1 {
+		t.Fatalf("phase 2: tree Len=%d after replace, want 1", got)
+	}
+	for en := range tree.All() {
+		if en.price != 480 {
+			t.Fatalf("phase 2: entry price=%d, want the new 480", en.price)
+		}
+	}
+	// Default ReaperInterval is 1s with a 2s recycle grace: the old slot
+	// cannot be recycled within this test, so the retired bit is stable.
+	if w := e.slots.get(oldIdx).Load(); w&slotRetiredBit == 0 {
+		t.Fatal("phase 2: old slot did not acquire the retired bit")
+	}
+}
+
+// TestSnapshotPinBackoffPairsWithRetireRelease pins the reader/flusher pairing
+// on bare snapshots: pin's increment-then-recheck must always restore the
+// reader count to 0 when it backs off a retired snapshot, and retireRelease
+// must release exactly when the count reaches 0. No existing test calls pin
+// on a retired snapshot or exercises retireRelease's false branch.
+func TestSnapshotPinBackoffPairsWithRetireRelease(t *testing.T) {
+	// (a) Flush-order-first: retirement already marked when the reader pins.
+	s := newSnapshot(0)
+	s.retired.Store(true)
+	if s.pin() {
+		t.Fatal("pin succeeded on a retired snapshot")
+	}
+	if n := s.readers.Load(); n != 0 {
+		t.Fatalf("backed-off pin left readers=%d, want 0", n)
+	}
+	if !s.retireRelease() {
+		t.Fatal("retireRelease returned false with no readers")
+	}
+
+	// (b) Reader-first: the pin is held across retirement.
+	s2 := newSnapshot(0)
+	if !s2.pin() {
+		t.Fatal("pin failed on a live snapshot")
+	}
+	s2.retired.Store(true)
+	if s2.retireRelease() {
+		t.Fatal("retireRelease released while a reader held the snapshot")
+	}
+	s2.unpin()
+	if !s2.retireRelease() {
+		t.Fatal("retireRelease returned false after the reader drained")
+	}
+	if n := s2.readers.Load(); n != 0 {
+		t.Fatalf("readers=%d after release, want 0", n)
+	}
+}
+
+// TestTriggerQueueOverflowDropsCountedExactly pins the saturated-queue
+// accounting deterministically: with no consumer, TryPush succeeds exactly up
+// to capacity, every further push is rejected and counted, and the queue
+// drains FIFO. Existing tests check one rejected push or a draining consumer
+// (nondeterministic drop counts). Drop-counting is the contract — the drops
+// themselves are by design.
+func TestTriggerQueueOverflowDropsCountedExactly(t *testing.T) {
+	q := NewTriggerQueue(4)
+	for i := 0; i < 10; i++ {
+		want := i < 4
+		if got := q.TryPush(Trigger{Price: Price(i)}); got != want {
+			t.Fatalf("push %d accepted=%v, want %v", i, got, want)
+		}
+	}
+	if got := q.Dropped(); got != 6 {
+		t.Fatalf("Dropped=%d, want 6", got)
+	}
+	if got := q.Len(); got != 4 {
+		t.Fatalf("Len=%d, want 4", got)
+	}
+	var prices []Price
+	for {
+		tr, ok := q.Pop()
+		if !ok {
+			break
+		}
+		prices = append(prices, tr.Price)
+	}
+	if !slices.Equal(prices, []Price{0, 1, 2, 3}) {
+		t.Fatalf("drain order=%v, want [0 1 2 3]", prices)
+	}
+	if got := q.Dropped(); got != 6 {
+		t.Fatalf("Dropped=%d after drain, want 6 (drops are never re-counted)", got)
+	}
+}
+
+// TestInternerGetVisibilityImpliesName pins the happens-before between the
+// Interner's two maps: once Get(name) reports a symbol interned by another
+// goroutine, Name(id) must return the exact string — never "". Pins the
+// LoadOrCompute ordering (names.Store before ids publication) under -race.
+func TestInternerGetVisibilityImpliesName(t *testing.T) {
+	in := NewInterner()
+	const n = 1000
+	go func() {
+		for i := 0; i < n; i++ {
+			in.Intern(fmt.Sprintf("SYM%04d", i))
+		}
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for i := 0; i < n; i++ {
+		name := fmt.Sprintf("SYM%04d", i)
+		var id SymbolID
+		for {
+			got, ok := in.Get(name)
+			if ok {
+				id = got
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("symbol %d never became visible via Get within 5s", i)
+			}
+			runtime.Gosched()
+		}
+		if got := in.Name(id); got != name {
+			t.Fatalf("Name(%d)=%q, want %q — Get visibility did not imply Name", id, got, name)
+		}
+	}
+}
+
+// TestTriggersDrainableAfterClose pins the "channel is never closed by the
+// engine" contract: a queued trigger survives Close and Pop still delivers
+// it afterwards. Every existing test drains triggers before Close.
+func TestTriggersDrainableAfterClose(t *testing.T) {
+	defer goleak.VerifyNone(t)
+	e := New(DefaultConfig())
+	if err := e.Upsert(testSpec(1, "USDTRY", PriceBid, DirGTE, 425)); err != nil {
+		t.Fatal(err)
+	}
+	e.Sync()
+	e.Match(&Tick{Symbol: "USDTRY", Bid: 430, Present: TickAllPresent(), TS: 100})
+	e.Close() // drain strictly after Close returned
+	tr, ok := e.Triggers().Pop()
+	if !ok || tr.ID != (AlertID{1}) || tr.Price != 430 {
+		t.Fatalf("post-Close Pop = (%+v, %v), want the fired trigger of alert 1 at 430", tr, ok)
+	}
+	if _, ok := e.Triggers().Pop(); ok {
+		t.Fatal("second Pop after Close returned a trigger, want false")
 	}
 }
 
