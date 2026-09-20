@@ -112,7 +112,7 @@ func (e *Engine) applyBatch(batch []mutation) (stop bool) {
 			p.next.trees[treeIndex(m.e.priceType(), m.e.direction())].Delete(m.e)
 			// Retire the slot (gen-gated, duplicate removals park at most
 			// once); refs/live cleanup is deferred to one locked pass below.
-			e.slots.retireGen(entryIdx(m.e), m.gen, now)
+			e.slots.retireGen(entryIdx(m.e), entryGen(m.e), now)
 			removals = append(removals, refClean{id: m.e.id, idx: entryIdx(m.e)})
 		}
 	}
