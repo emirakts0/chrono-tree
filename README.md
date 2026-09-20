@@ -54,7 +54,7 @@ flowchart LR
     subgraph CP["CONTROL PLANE · single writer"]
         direction TB
         API["Upsert / Cancel /<br/>Pause / Sync"]
-        MQ["Mutation Queue<br/>lossless · unbounded<br/>chunked MPSC"]
+        MQ["Mutation Queue<br/>lossless · unbounded<br/>chunked MPSC<br/>chunk pool ≤ 64"]
         FL["Flusher<br/>COW clone · atomic publish"]
         API --> MQ --> FL
     end

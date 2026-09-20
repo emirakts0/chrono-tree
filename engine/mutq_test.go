@@ -99,6 +99,54 @@ func TestMutQueueRollsChunksAndRecycles(t *testing.T) {
 	runBurst("second burst") // exercises chunk recycling from the free list
 }
 
+// TestChunkQueueFreeListCapped pins the retention bound: drained chunks
+// beyond the free-list cap are released (GC-reclaimable) instead of parked
+// forever, while bursts within the cap keep their chunks parked for
+// alloc-free reuse. Uses 4-item chunks so a few hundred items exercise many
+// chunks; deterministic, single producer, single consumer.
+func TestChunkQueueFreeListCapped(t *testing.T) {
+	q := newChunkQueue[mutation](4)
+
+	countFree := func() int {
+		n := 0
+		for c := q.free; c != nil; c = c.next {
+			n++
+		}
+		return n
+	}
+	drainAll := func() {
+		batch := make([]mutation, 0, 64)
+		for q.pending() > 0 {
+			batch = q.drain(batch)
+			batch = batch[:0]
+		}
+	}
+
+	// Burst within the cap: all drained chunks stay parked for reuse.
+	const small = 5 * 4 // 5 chunks
+	for i := 0; i < small; i++ {
+		q.enqueue(mutation{op: mutInsert})
+	}
+	drainAll()
+	// a full drain resets the single head/tail chunk in place; the other 4 recycle
+	if n := countFree(); n != 4 {
+		t.Fatalf("small burst: free list = %d chunks, want 4", n)
+	}
+
+	// Burst far beyond the cap: the free list must settle at the cap.
+	const big = (2*chunkFreeCap + 3) * 4 // 131 chunks
+	for i := 0; i < big; i++ {
+		q.enqueue(mutation{op: mutInsert})
+	}
+	drainAll()
+	if n := countFree(); n > chunkFreeCap {
+		t.Fatalf("big burst: free list = %d chunks, want <= %d", n, chunkFreeCap)
+	}
+	if p := q.pending(); p != 0 {
+		t.Fatalf("pending = %d after drain, want 0", p)
+	}
+}
+
 // TestMutQueueDrainStopsAtEmpty pins the batch-closing contract the flusher
 // relies on: drain returns without parking when nothing is claimed.
 func TestMutQueueDrainStopsAtEmpty(t *testing.T) {

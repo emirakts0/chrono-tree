@@ -11,9 +11,9 @@ import "sync"
 // Storage is a chain of fixed-size chunks recycled through a free list
 // rather than one growable slice, so a burst never recopies live entries:
 // chunks are allocated only when the queue first reaches a new depth, and
-// emptied chunks are recycled. Memory is bounded by outstanding items
-// (live alerts plus in-flight upserts, ≤ MaxAlerts). Enqueue never blocks
-// and never fails.
+// emptied chunks are recycled — up to chunkFreeCap of them. Chunks drained
+// past the cap are dropped for the GC, so a burst's chunks are held only
+// while it drains, not forever after. Enqueue never blocks and never fails.
 type chunkQueue[T any] struct {
 	mu      sync.Mutex
 	cond    sync.Cond  // wakes a dequeue parked on empty
@@ -22,9 +22,16 @@ type chunkQueue[T any] struct {
 	tail    *qChunk[T] // producer append position (may == head)
 	tailLen int        // populated slots in tail
 	free    *qChunk[T] // recycled emptied chunks (singly linked via next)
+	freeLen int        // length of the free list; capped at chunkFreeCap
 	count   int        // enqueued-but-undrained items
 	chunk   int        // items per chunk; fixed at construction
 }
+
+// chunkFreeCap caps the recycled-chunk free list (~25 MB for the mutation
+// queue's 4096-item chunks). A burst deeper than the cap allocates fresh
+// chunks and releases them as it drains, instead of growing retention to
+// the burst's peak depth permanently. Not cfg-driven, like mutQueueChunk.
+const chunkFreeCap = 64
 
 // qChunk is one fixed-size link of the queue. When populated, all chunks
 // except the tail are full; only the tail may be partially filled.
@@ -49,6 +56,7 @@ func newChunkQueue[T any](chunk int) *chunkQueue[T] {
 func (m *chunkQueue[T]) getChunk() *qChunk[T] {
 	if c := m.free; c != nil {
 		m.free = c.next
+		m.freeLen--
 		c.next = nil
 		return c
 	}
@@ -66,7 +74,9 @@ func (m *chunkQueue[T]) popLen() int {
 
 // advanceLocked recycles a fully consumed head chunk. If it is also the
 // tail (queue now empty), its positions reset in place; otherwise head
-// moves to the next chunk. Lock held.
+// moves to the next chunk and the consumed chunk parks on the free list —
+// or is dropped for the GC when the free list already holds chunkFreeCap.
+// Lock held.
 func (m *chunkQueue[T]) advanceLocked() {
 	if m.head == m.tail {
 		m.headIdx = 0
@@ -76,8 +86,12 @@ func (m *chunkQueue[T]) advanceLocked() {
 	c := m.head
 	m.head = c.next
 	m.headIdx = 0
-	c.next = m.free
-	m.free = c
+	c.next = nil
+	if m.freeLen < chunkFreeCap {
+		c.next = m.free
+		m.free = c
+		m.freeLen++
+	}
 }
 
 // enqueue appends and wakes a parked consumer; the signal runs outside the
