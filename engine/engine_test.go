@@ -1361,7 +1361,7 @@ func TestDuplicateRemovalDoesNotAliasSlots(t *testing.T) {
 		validFrom: 1, meta: makeEntryMeta(idx, gen, makeFlags(PriceBid, DirGTE))}
 	e.submit(mutation{op: mutInsert, sid: sid, e: ent})
 	e.Sync()
-	// Two direct mutRemove submissions for the same entry (gen-identical):
+	// Two direct mutRemove submissions for the same entry (same-handout):
 	// a replacement racing a fire's removal.
 	e.submit(mutation{op: mutRemove, sid: sid, e: ent})
 	e.submit(mutation{op: mutRemove, sid: sid, e: ent})
@@ -2253,7 +2253,7 @@ func TestNewRejectsNegativeFlushBatch(t *testing.T) {
 // TestRetireGenStaleGenDoesNotRetireNewOccupant pins retireGen's gen-mismatch
 // early return: a delayed mutRemove landing after the slot was retired,
 // recycled, and re-handed must NOT park the new occupant's slot. Only the
-// retired-bit dedupe branch (gen-identical duplicate removals) is covered by
+// retired-bit dedupe branch (same-handout duplicate removals) is covered by
 // TestDuplicateRemovalDoesNotAliasSlots; the gen-mismatch branch keeps a live
 // occupant out of the retired list and is exercised by no other test.
 func TestRetireGenStaleGenDoesNotRetireNewOccupant(t *testing.T) {
