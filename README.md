@@ -136,50 +136,50 @@ AMD Ryzen 5 5600H (6 cores / 12 threads; g12 is SMT), Linux/amd64, go1.27.0.
 
 Fires pinned at 50k across all `SweepHold*` runs; population scales 100k → 5M.
 
-| benchmark | threads | ns/op | B/op | allocs/op | |
-|---|---:|---:|---:|---:|---|
-| SweepHold100k | 1 | 559.5 | 24 | 0 | 100k alerts, 50k fires, no match dims |
-| SweepHold100k | 4 | 130.4 | 52 | 0 | |
-| SweepHold100k | 12 | 103.2 | 51 | 0 | |
-| SweepHold1M | 1 | 584.8 | 25 | 0 | 1M alerts, 50k fires |
-| SweepHold1M | 4 | 159.4 | 62 | 0 | |
-| SweepHold1M | 12 | 114.0 | 52 | 0 | |
-| SweepHold5M | 1 | 736.2 | 33 | 0 | 5M alerts, 50k fires |
-| SweepHold5M | 4 | 163.2 | 93 | 0 | |
-| SweepHold5M | 12 | 115.3 | 62 | 0 | |
-| SweepHold100kDims | 1 | 327.5 | 22 | 0 | SweepHold100k with 2 match dims |
-| SweepHold100kDims | 4 | 87.7 | 36 | 0 | |
-| SweepHold100kDims | 12 | 61.6 | 53 | 0 | |
-| SweepHold1MDims | 1 | 434.0 | 79 | 0 | SweepHold1M with 2 match dims |
-| SweepHold1MDims | 4 | 123.7 | 105 | 0 | |
-| SweepHold1MDims | 12 | 67.4 | 55 | 0 | |
-| SweepHold5MDims | 1 | 553.7 | 104 | 0 | SweepHold5M with 2 match dims |
-| SweepHold5MDims | 4 | 149.4 | 123 | 0 | |
-| SweepHold5MDims | 12 | 80.8 | 51 | 0 | |
+| benchmark | ns/op | B/op | allocs/op | |
+|---|---:|---:|---:|---|
+| SweepHold100k-g1 | 559.5 | 24 | 0 | 100k alerts, 50k fires, no match dims |
+| SweepHold100k-g4 | 130.4 | 52 | 0 | |
+| SweepHold100k-g12 | 103.2 | 51 | 0 | |
+| SweepHold1M-g1 | 584.8 | 25 | 0 | 1M alerts, 50k fires |
+| SweepHold1M-g4 | 159.4 | 62 | 0 | |
+| SweepHold1M-g12 | 114.0 | 52 | 0 | |
+| SweepHold5M-g1 | 736.2 | 33 | 0 | 5M alerts, 50k fires |
+| SweepHold5M-g4 | 163.2 | 93 | 0 | |
+| SweepHold5M-g12 | 115.3 | 62 | 0 | |
+| SweepHold100kDims-g1 | 327.5 | 22 | 0 | SweepHold100k with 2 match dims |
+| SweepHold100kDims-g4 | 87.7 | 36 | 0 | |
+| SweepHold100kDims-g12 | 61.6 | 53 | 0 | |
+| SweepHold1MDims-g1 | 434.0 | 79 | 0 | SweepHold1M with 2 match dims |
+| SweepHold1MDims-g4 | 123.7 | 105 | 0 | |
+| SweepHold1MDims-g12 | 67.4 | 55 | 0 | |
+| SweepHold5MDims-g1 | 553.7 | 104 | 0 | SweepHold5M with 2 match dims |
+| SweepHold5MDims-g4 | 149.4 | 123 | 0 | |
+| SweepHold5MDims-g12 | 80.8 | 51 | 0 | |
 
 Sustained-load sweep (`Sweep*`): the same timeframe with fires proportional to
 population (50–70%).
 
-| benchmark | threads | ns/op | B/op | allocs/op | |
-|---|---:|---:|---:|---:|---|
-| Sweep100k | 1 | 616.6 | 27 | 0 | 100k alerts across 500 symbols, no match dims |
-| Sweep100k | 4 | 154.2 | 43 | 0 | |
-| Sweep100k | 12 | 105.9 | 59 | 0 | |
-| Sweep1M | 1 | 4125 | 177 | 0 | 1M alerts across the same 500 symbols |
-| Sweep1M | 4 | 530.5 | 273 | 0 | |
-| Sweep1M | 12 | 756.9 | 298 | 0 | |
-| Sweep5M | 1 | 11306 | 777 | 0 | 5M alerts across the same 500 symbols |
-| Sweep5M | 4 | 2945 | 1165 | 0 | |
-| Sweep5M | 12 | 3801 | 1117 | 0 | |
-| Sweep100kDims | 1 | 343.0 | 24 | 0 | Sweep100k with 2 match dims |
-| Sweep100kDims | 4 | 98.0 | 39 | 0 | |
-| Sweep100kDims | 12 | 59.4 | 38 | 0 | |
-| Sweep1MDims | 1 | 1347 | 385 | 0 | Sweep1M with 2 match dims |
-| Sweep1MDims | 4 | 365.4 | 365 | 0 | |
-| Sweep1MDims | 12 | 230.6 | 249 | 0 | |
-| Sweep5MDims | 1 | 5506 | 1590 | 0 | Sweep5M with 2 match dims |
-| Sweep5MDims | 4 | 1424 | 1199 | 0 | |
-| Sweep5MDims | 12 | 1119 | 761 | 0 | |
+| benchmark | ns/op | B/op | allocs/op | |
+|---|---:|---:|---:|---|
+| Sweep100k-g1 | 616.6 | 27 | 0 | 100k alerts across 500 symbols, no match dims |
+| Sweep100k-g4 | 154.2 | 43 | 0 | |
+| Sweep100k-g12 | 105.9 | 59 | 0 | |
+| Sweep1M-g1 | 4125 | 177 | 0 | 1M alerts across the same 500 symbols |
+| Sweep1M-g4 | 530.5 | 273 | 0 | |
+| Sweep1M-g12 | 756.9 | 298 | 0 | |
+| Sweep5M-g1 | 11306 | 777 | 0 | 5M alerts across the same 500 symbols |
+| Sweep5M-g4 | 2945 | 1165 | 0 | |
+| Sweep5M-g12 | 3801 | 1117 | 0 | |
+| Sweep100kDims-g1 | 343.0 | 24 | 0 | Sweep100k with 2 match dims |
+| Sweep100kDims-g4 | 98.0 | 39 | 0 | |
+| Sweep100kDims-g12 | 59.4 | 38 | 0 | |
+| Sweep1MDims-g1 | 1347 | 385 | 0 | Sweep1M with 2 match dims |
+| Sweep1MDims-g4 | 365.4 | 365 | 0 | |
+| Sweep1MDims-g12 | 230.6 | 249 | 0 | |
+| Sweep5MDims-g1 | 5506 | 1590 | 0 | Sweep5M with 2 match dims |
+| Sweep5MDims-g4 | 1424 | 1199 | 0 | |
+| Sweep5MDims-g12 | 1119 | 761 | 0 | |
 
 Sustained-load sweep, both families: 500 symbols, 1.2M ticks per scenario,
 price-band frontiers advancing.
