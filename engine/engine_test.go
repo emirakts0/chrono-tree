@@ -410,7 +410,6 @@ func TestFlusherAppliesMutations(t *testing.T) {
 	ent := entry{price: 425, id: AlertID{1},
 		validFrom: 1, meta: makeEntryMeta(idx, gen, makeFlags(PriceBid, DirGTE))}
 	e.slots.setStatus(idx, StatusActive)
-	entGen := e.slots.gen(idx)
 	// Publish the ref so the cleanup pass below has something real to clean.
 	e.mu.Lock()
 	e.refs[ent.id] = &alertRef{sid: sid, e: ent}
@@ -424,7 +423,7 @@ func TestFlusherAppliesMutations(t *testing.T) {
 		t.Fatalf("after insert Len=%d, want 1", got)
 	}
 
-	e.submit(mutation{op: mutRemove, sid: sid, e: ent, gen: entGen})
+	e.submit(mutation{op: mutRemove, sid: sid, e: ent})
 	e.Sync()
 	if got := e.states[sid].snap.Load().trees[ti].Len(); got != 0 {
 		t.Fatalf("after remove Len=%d, want 0", got)
@@ -467,8 +466,7 @@ func TestMutationQueueNeverDrops(t *testing.T) {
 	e.slots.setStatus(idx0, StatusActive)
 	if err := e.submit(mutation{op: mutRemove, sid: sid,
 		e: entry{price: 99, id: mkID(0),
-			validFrom: 1, meta: makeEntryMeta(idx0, gen0, makeFlags(PriceLast, DirGTE))},
-		gen: e.slots.gen(idx0)}); err != nil {
+			validFrom: 1, meta: makeEntryMeta(idx0, gen0, makeFlags(PriceLast, DirGTE))}}); err != nil {
 		e.mu.Unlock()
 		t.Fatal(err)
 	}
@@ -480,7 +478,7 @@ func TestMutationQueueNeverDrops(t *testing.T) {
 		idxs = append(idxs, idx)
 		ent := entry{price: Price(100 + i), id: mkID(uint32(i + 1)),
 			validFrom: 1, meta: makeEntryMeta(idx, gen, makeFlags(PriceLast, DirGTE))}
-		if err := e.submit(mutation{op: mutRemove, sid: sid, e: ent, gen: e.slots.gen(idx)}); err != nil {
+		if err := e.submit(mutation{op: mutRemove, sid: sid, e: ent}); err != nil {
 			e.mu.Unlock()
 			t.Fatal(err)
 		}
@@ -523,7 +521,7 @@ func TestCloseDuringDrain(t *testing.T) {
 		e.slots.setStatus(idx, StatusActive)
 		ent := entry{price: Price(100 + i%97), id: mkID(uint32(i + 1)),
 			validFrom: 1, meta: makeEntryMeta(idx, gen, makeFlags(PriceLast, DirGTE))}
-		if err := e.submit(mutation{op: mutRemove, sid: sid, e: ent, gen: e.slots.gen(idx)}); err != nil {
+		if err := e.submit(mutation{op: mutRemove, sid: sid, e: ent}); err != nil {
 			e.mu.Unlock()
 			t.Fatal(err)
 		}
@@ -1365,8 +1363,8 @@ func TestDuplicateRemovalDoesNotAliasSlots(t *testing.T) {
 	e.Sync()
 	// Two direct mutRemove submissions for the same entry (gen-identical):
 	// a replacement racing a fire's removal.
-	e.submit(mutation{op: mutRemove, sid: sid, e: ent, gen: gen})
-	e.submit(mutation{op: mutRemove, sid: sid, e: ent, gen: gen})
+	e.submit(mutation{op: mutRemove, sid: sid, e: ent})
+	e.submit(mutation{op: mutRemove, sid: sid, e: ent})
 	e.Sync()
 	e.slots.recycle(time.Now().Add(time.Hour))
 	hits := 0
@@ -1458,7 +1456,6 @@ func TestSameKeyUpsertRacingFireRemoval(t *testing.T) {
 	e.mu.Unlock()
 	sid := ref.sid
 	oldEnt := ref.e
-	oldGen := e.slots.gen(entryIdx(oldEnt))
 
 	// Fire's first half: CAS ACTIVE→TRIGGERED (exactly what fire does), then
 	// "pause" before enqueuing the deferred removal. This reproduces the
@@ -1477,7 +1474,7 @@ func TestSameKeyUpsertRacingFireRemoval(t *testing.T) {
 	e.Sync()
 
 	// The delayed fire removal finally lands — after the replacement's insert.
-	e.submit(mutation{op: mutRemove, sid: sid, e: oldEnt, gen: oldGen})
+	e.submit(mutation{op: mutRemove, sid: sid, e: oldEnt})
 	e.Sync()
 
 	// The replacement is live and must be indexed exactly once.
@@ -2175,8 +2172,7 @@ func TestSyncBarrierHonoredDuringClose(t *testing.T) {
 	e.slots.setStatus(idx, StatusActive)
 	if err := e.submit(mutation{op: mutRemove, sid: sid,
 		e: entry{price: 99, id: mkID(0),
-			validFrom: 1, meta: makeEntryMeta(idx, gen, makeFlags(PriceLast, DirGTE))},
-		gen: e.slots.gen(idx)}); err != nil {
+			validFrom: 1, meta: makeEntryMeta(idx, gen, makeFlags(PriceLast, DirGTE))}}); err != nil {
 		e.mu.Unlock()
 		t.Fatal(err)
 	}
@@ -2275,7 +2271,7 @@ func TestRetireGenStaleGenDoesNotRetireNewOccupant(t *testing.T) {
 		validFrom: 1, meta: makeEntryMeta(idx, gen1, makeFlags(PriceBid, DirGTE))}
 	e.submit(mutation{op: mutInsert, sid: sid, e: ent})
 	e.Sync()
-	e.submit(mutation{op: mutRemove, sid: sid, e: ent, gen: gen1})
+	e.submit(mutation{op: mutRemove, sid: sid, e: ent})
 	e.Sync()
 	// Move idx through recycle and back out: a backed-up flusher's delayed
 	// removal lands after this point.
@@ -2297,7 +2293,7 @@ func TestRetireGenStaleGenDoesNotRetireNewOccupant(t *testing.T) {
 	e.submit(mutation{op: mutInsert, sid: sid, e: occ})
 	e.Sync()
 	// The delayed stale removal — gen belongs to the dead handout.
-	e.submit(mutation{op: mutRemove, sid: sid, e: ent, gen: gen1})
+	e.submit(mutation{op: mutRemove, sid: sid, e: ent})
 	e.Sync()
 	if w := e.slots.get(idx).Load(); w&slotRetiredBit != 0 {
 		t.Fatal("stale removal retired the new occupant's slot")

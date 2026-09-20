@@ -199,8 +199,8 @@ func (e *Engine) Upsert(a AlertSpec) error {
 		// Gated replace: queue the old entry's removal only if we win the
 		// CAS to CANCELLED. A terminal slot means another path already owns
 		// the removal — a second one would retire the slot twice.
-		if gen, ok := e.slots.casStatusAny(entryIdx(ref.e), StatusCancelled, StatusActive, StatusPaused); ok {
-			replace = mutation{op: mutRemove, sid: ref.sid, e: ref.e, gen: gen}
+		if e.slots.casStatusAny(entryIdx(ref.e), StatusCancelled, StatusActive, StatusPaused) {
+			replace = mutation{op: mutRemove, sid: ref.sid, e: ref.e}
 			hasReplace = true
 		}
 		// Either way this goroutine holds the ref, so it owns the expiry
@@ -284,12 +284,11 @@ func (e *Engine) removeIfLive(id AlertID, want Status) (mutation, error) {
 	if !ok {
 		return mutation{}, ErrNotFound
 	}
-	gen, ok := e.slots.casStatusAny(entryIdx(ref.e), want, StatusActive, StatusPaused)
-	if !ok {
+	if !e.slots.casStatusAny(entryIdx(ref.e), want, StatusActive, StatusPaused) {
 		return mutation{}, ErrInvalidTransition
 	}
 	e.deregExpiry(ref)
-	return mutation{op: mutRemove, sid: ref.sid, e: ref.e, gen: gen}, nil
+	return mutation{op: mutRemove, sid: ref.sid, e: ref.e}, nil
 }
 
 // Cancel permanently retires an alert.

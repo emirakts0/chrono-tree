@@ -450,11 +450,11 @@ func TestUpsertAfterSweepExpiryTerminal(t *testing.T) {
 	// Sweep's first half, exactly as sweep performs it: the terminal CAS plus
 	// its mutRemove. The dereg stands in for the flusher's refClean pass that
 	// would ride the removal. None of it is Synced yet.
-	gen, ok := e.slots.casStatusAny(entryIdx(ref.e), StatusExpired, StatusActive)
+	ok := e.slots.casStatusAny(entryIdx(ref.e), StatusExpired, StatusActive)
 	if !ok {
 		t.Fatal("setup: CAS ACTIVE→EXPIRED failed")
 	}
-	if err := e.submit(mutation{op: mutRemove, sid: ref.sid, e: ref.e, gen: gen}); err != nil {
+	if err := e.submit(mutation{op: mutRemove, sid: ref.sid, e: ref.e}); err != nil {
 		t.Fatal(err)
 	}
 	e.deregExpiry(ref)
