@@ -96,7 +96,6 @@ type mutation struct {
 	op   mutOp
 	sid  SymbolID
 	e    entry
-	gen  uint32        // for mutRemove: handout generation of the entry's slot (entryIdx(e))
 	done chan struct{} // for mutSync: closed once applied
 }
 

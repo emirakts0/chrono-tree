@@ -81,8 +81,8 @@ func (e *Engine) drainExp() {
 // cancelled, and replaced handouts without carrying a generation in the
 // entry. Recycle runs after sweep in this same goroutine — that ordering
 // is the ABA guard. The slot CAS decides exactly-once against racing fires
-// and cancels; removal flows to the flusher with the generation from the
-// word the CAS wins.
+// and cancels; the removal carries the ref's immutable entry, from which
+// the flusher derives the handout gen via entryGen.
 func (e *Engine) sweep(now int64) {
 	const maxPerSweep = 10_000
 	due := e.dueBuf[:0]             // reaper-owned scratch, like expBuf
@@ -104,8 +104,8 @@ func (e *Engine) sweep(now int64) {
 		// The generation cannot change until the slot is retired,
 		// recycled, and re-handed — none of which can happen while this
 		// goroutine is in sweep.
-		if gen, ok := e.slots.casStatusAny(entryIdx(x.ref.e), StatusExpired, StatusActive, StatusPaused); ok {
-			_ = e.submit(mutation{op: mutRemove, sid: x.ref.sid, e: x.ref.e, gen: gen})
+		if e.slots.casStatusAny(entryIdx(x.ref.e), StatusExpired, StatusActive, StatusPaused) {
+			_ = e.submit(mutation{op: mutRemove, sid: x.ref.sid, e: x.ref.e})
 		}
 	}
 	e.expLen.Store(int64(e.expiry.Len()))

@@ -104,7 +104,6 @@ func (e *Engine) fire(sid SymbolID, en *entry, price Price, ts int64) {
 		return
 	}
 	s := e.slots.get(entryIdx(*en))
-	var gen uint32
 	for {
 		cur := s.Load()
 		if slotStatus(cur) != StatusActive {
@@ -122,10 +121,9 @@ func (e *Engine) fire(sid SymbolID, en *entry, price Price, ts int64) {
 		// casStatusAny: the helper's variadic froms loop costs ~8% on
 		// fire-heavy serial scans.
 		if s.CompareAndSwap(cur, cur&^0xff|uint32(StatusTriggered)) {
-			gen = cur >> slotGenShift
 			break
 		}
 	}
 	e.triggers.TryPush(Trigger{ID: en.id, Price: price, TS: ts})
-	e.mutQ.enqueue(mutation{op: mutRemove, sid: sid, e: *en, gen: gen})
+	e.mutQ.enqueue(mutation{op: mutRemove, sid: sid, e: *en})
 }

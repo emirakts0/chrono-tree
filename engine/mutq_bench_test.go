@@ -38,7 +38,7 @@ func benchMutQChan(b *testing.B, producers int) {
 		wgp.Add(1)
 		go func() {
 			defer wgp.Done()
-			m := mutation{op: mutRemove, sid: 1, gen: 1}
+			m := mutation{op: mutRemove, sid: 1}
 			for i := 0; i < per; i++ {
 				q <- m
 			}
@@ -98,7 +98,7 @@ func benchMutQUMPSC(b *testing.B, producers int) {
 		wgp.Add(1)
 		go func() {
 			defer wgp.Done()
-			m := mutation{op: mutRemove, sid: 1, gen: 1}
+			m := mutation{op: mutRemove, sid: 1}
 			for i := 0; i < per; i++ {
 				q.enqueue(m)
 			}
@@ -131,7 +131,7 @@ func benchMutQMutex(b *testing.B, producers int) {
 		wgp.Add(1)
 		go func() {
 			defer wgp.Done()
-			m := mutation{op: mutRemove, sid: 1, gen: 1}
+			m := mutation{op: mutRemove, sid: 1}
 			for i := 0; i < per; i++ {
 				q.enqueue(m)
 			}
