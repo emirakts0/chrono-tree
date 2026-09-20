@@ -42,6 +42,8 @@ go test ./engine -run '^$' -bench='Upsert' -benchmem -count=3
 | FireRemoval | 100.9 | 111 | 0 |
 | SyncLatency | 9374 | 17634 | 8 |
 
+UpsertParallel serializes on the single engine mutex, so 12 goroutines yield ~1.5M ops/s aggregate vs ~1.8M single-goroutine.
+
 ## Mutation queue
 
 | Benchmark | ns/op | B/op | allocs/op |
