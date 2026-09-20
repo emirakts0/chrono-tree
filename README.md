@@ -184,13 +184,6 @@ population (50–70%).
 Sustained-load sweep, both families: 500 symbols, 1.2M ticks per scenario,
 price-band frontiers advancing.
 
-> These tables reflect the lossless mutation queue: every fired alert's
-> removal is queued, delivered, and applied. Tables recorded before
-> 2026-09-20 measured the old dropping queue, which silently shed 30–91% of
-> removal mutations under multi-threaded fire load (`CHRONO_BENCH_DROPS=1`
-> surfaces the count) — those numbers are not comparable: the g12 fire-heavy
-> rows below are the cost of actually doing that work.
-
 ---
 
 <p align="center">
