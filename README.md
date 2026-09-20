@@ -138,51 +138,58 @@ Fires pinned at 50k across all `SweepHold*` runs; population scales 100k → 5M.
 
 | benchmark | threads | ns/op | B/op | allocs/op | |
 |---|---:|---:|---:|---:|---|
-| SweepHold100k | 1 | 555.5 | 24 | 0 | 100k alerts, 50k fires, no match dims |
-| SweepHold100k | 4 | 173.9 | 36 | 0 | |
-| SweepHold100k | 12 | 103.8 | 45 | 0 | |
-| SweepHold1M | 1 | 587.3 | 25 | 0 | 1M alerts, 50k fires |
-| SweepHold1M | 4 | 185.2 | 48 | 0 | |
-| SweepHold1M | 12 | 115.2 | 45 | 0 | |
-| SweepHold5M | 1 | 648.2 | 33 | 0 | 5M alerts, 50k fires |
-| SweepHold5M | 4 | 194.8 | 100 | 0 | |
-| SweepHold5M | 12 | 147.2 | 59 | 0 | |
-| SweepHold100kDims | 1 | 362.0 | 21 | 0 | SweepHold100k with 2 match dims |
-| SweepHold100kDims | 4 | 130.1 | 25 | 0 | |
-| SweepHold100kDims | 12 | 88.0 | 66 | 0 | |
-| SweepHold1MDims | 1 | 483.6 | 78 | 0 | SweepHold1M with 2 match dims |
-| SweepHold1MDims | 4 | 157.3 | 102 | 0 | |
-| SweepHold1MDims | 12 | 98.9 | 88 | 0 | |
-| SweepHold5MDims | 1 | 553.6 | 106 | 0 | SweepHold5M with 2 match dims |
-| SweepHold5MDims | 4 | 184.4 | 107 | 0 | |
-| SweepHold5MDims | 12 | 117.6 | 64 | 0 | |
+| SweepHold100k | 1 | 559.5 | 24 | 0 | 100k alerts, 50k fires, no match dims |
+| SweepHold100k | 4 | 130.4 | 52 | 0 | |
+| SweepHold100k | 12 | 103.2 | 51 | 0 | |
+| SweepHold1M | 1 | 584.8 | 25 | 0 | 1M alerts, 50k fires |
+| SweepHold1M | 4 | 159.4 | 62 | 0 | |
+| SweepHold1M | 12 | 114.0 | 52 | 0 | |
+| SweepHold5M | 1 | 736.2 | 33 | 0 | 5M alerts, 50k fires |
+| SweepHold5M | 4 | 163.2 | 93 | 0 | |
+| SweepHold5M | 12 | 115.3 | 62 | 0 | |
+| SweepHold100kDims | 1 | 327.5 | 22 | 0 | SweepHold100k with 2 match dims |
+| SweepHold100kDims | 4 | 87.7 | 36 | 0 | |
+| SweepHold100kDims | 12 | 61.6 | 53 | 0 | |
+| SweepHold1MDims | 1 | 434.0 | 79 | 0 | SweepHold1M with 2 match dims |
+| SweepHold1MDims | 4 | 123.7 | 105 | 0 | |
+| SweepHold1MDims | 12 | 67.4 | 55 | 0 | |
+| SweepHold5MDims | 1 | 553.7 | 104 | 0 | SweepHold5M with 2 match dims |
+| SweepHold5MDims | 4 | 149.4 | 123 | 0 | |
+| SweepHold5MDims | 12 | 80.8 | 51 | 0 | |
 
 Sustained-load sweep (`Sweep*`): the same timeframe with fires proportional to
 population (50–70%).
 
 | benchmark | threads | ns/op | B/op | allocs/op | |
 |---|---:|---:|---:|---:|---|
-| Sweep100k | 1 | 615.6 | 27 | 0 | 100k alerts across 500 symbols, no match dims |
-| Sweep100k | 4 | 171.1 | 34 | 0 | |
-| Sweep100k | 12 | 106.2 | 48 | 0 | |
-| Sweep1M | 1 | 4227 | 178 | 0 | 1M alerts across the same 500 symbols |
-| Sweep1M | 4 | 753.6 | 217 | 0 | |
-| Sweep1M | 12 | 553.5 | 227 | 0 | |
-| Sweep5M | 1 | 13035 | 683 | 0 | 5M alerts across the same 500 symbols |
-| Sweep5M | 4 | 3351.5 | 726 | 0 | |
-| Sweep5M | 12 | 2632.5 | 557 | 0 | |
-| Sweep100kDims | 1 | 352.8 | 23 | 0 | Sweep100k with 2 match dims |
-| Sweep100kDims | 4 | 110.9 | 46 | 0 | |
-| Sweep100kDims | 12 | 66.0 | 34 | 0 | |
-| Sweep1MDims | 1 | 1109.5 | 164 | 0 | Sweep1M with 2 match dims |
-| Sweep1MDims | 4 | 312.1 | 267 | 0 | |
-| Sweep1MDims | 12 | 197.8 | 153 | 0 | |
-| Sweep5MDims | 1 | 3993.5 | 565 | 0 | Sweep5M with 2 match dims |
-| Sweep5MDims | 4 | 1218 | 558 | 0 | |
-| Sweep5MDims | 12 | 805.5 | 312 | 0 | |
+| Sweep100k | 1 | 616.6 | 27 | 0 | 100k alerts across 500 symbols, no match dims |
+| Sweep100k | 4 | 154.2 | 43 | 0 | |
+| Sweep100k | 12 | 105.9 | 59 | 0 | |
+| Sweep1M | 1 | 4125 | 177 | 0 | 1M alerts across the same 500 symbols |
+| Sweep1M | 4 | 530.5 | 273 | 0 | |
+| Sweep1M | 12 | 756.9 | 298 | 0 | |
+| Sweep5M | 1 | 11306 | 777 | 0 | 5M alerts across the same 500 symbols |
+| Sweep5M | 4 | 2945 | 1165 | 0 | |
+| Sweep5M | 12 | 3801 | 1117 | 0 | |
+| Sweep100kDims | 1 | 343.0 | 24 | 0 | Sweep100k with 2 match dims |
+| Sweep100kDims | 4 | 98.0 | 39 | 0 | |
+| Sweep100kDims | 12 | 59.4 | 38 | 0 | |
+| Sweep1MDims | 1 | 1347 | 385 | 0 | Sweep1M with 2 match dims |
+| Sweep1MDims | 4 | 365.4 | 365 | 0 | |
+| Sweep1MDims | 12 | 230.6 | 249 | 0 | |
+| Sweep5MDims | 1 | 5506 | 1590 | 0 | Sweep5M with 2 match dims |
+| Sweep5MDims | 4 | 1424 | 1199 | 0 | |
+| Sweep5MDims | 12 | 1119 | 761 | 0 | |
 
 Sustained-load sweep, both families: 500 symbols, 1.2M ticks per scenario,
 price-band frontiers advancing.
+
+> These tables reflect the lossless mutation queue: every fired alert's
+> removal is queued, delivered, and applied. Tables recorded before
+> 2026-09-20 measured the old dropping queue, which silently shed 30–91% of
+> removal mutations under multi-threaded fire load (`CHRONO_BENCH_DROPS=1`
+> surfaces the count) — those numbers are not comparable: the g12 fire-heavy
+> rows below are the cost of actually doing that work.
 
 ---
 
